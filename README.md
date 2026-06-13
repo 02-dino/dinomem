@@ -115,7 +115,7 @@ Saved as `memory/_note_<slug>.md`. Recalled when you ask "what's on my build lis
 
 > **Note:** Memory is recall-based, not always-on. The agent searches for relevant memories when needed — nothing is automatically injected into every turn.
 
-> ⚠️ Memory is for **short facts, decisions, and preferences only**. Do not save long documents (contracts, books, legal text) to memory — large files pollute LLM context and degrade agent behavior.
+> ⚠️ Memory is for **short, recallable knowledge** — facts, decisions, preferences, patterns, lessons, and user traits. Do not save long documents (contracts, books, legal text) to memory — large files pollute LLM context and degrade agent behavior.
 >
 > **Want this?** dinomem-neuron (private repo) adds full RAG support for long documents — contracts, books, legal text — stored separately and searchable without polluting memory.
 
