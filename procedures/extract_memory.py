@@ -5,7 +5,7 @@ Memory Extraction Script
 Extracts memories from archived session files using LLM:
   - Scans all .archived.* files in sessions directory
   - Filters out already-processed archives (deduplication)
-  - Calls LLM per archive to extract insights, decisions, preferences
+  - Calls LLM per archive to extract insights, patterns, lessons, decisions, preferences
   - Writes to memory/YYYY-MM-DD.md (OpenClaw native format)
   - Compacts when file exceeds 6k chars
 
@@ -506,31 +506,31 @@ Required JSON structure:
 {{
   "context": "1-2 sentence overview of this specific session, or empty string if nothing memorable",
   "insights": [
-    "[factual] Verifiable structural fact about market mechanisms, asset behavior, or institutional patterns",
-    "[pattern] Reusable structural relationship that applies beyond the specific asset — institutional buying precedes repricing, token unlocks create supply overhang, RWA headlines favor liquid proxies",
-    "[prediction] Time-bounded directional market call with explicit expiry date",
-    "[uncertain] Unconfirmed signal or rumor requiring verification",
-    "[preference] Permanent user trait or strategic boundary"
+    "[factual] Verifiable structural fact or principle that holds true beyond this session",
+    "[pattern] Reusable relationship or mechanism that applies beyond this specific case",
+    "[lesson] Something learned from a mistake, outcome, or experiment",
+    "[uncertain] Unconfirmed signal or hypothesis requiring verification",
+    "[preference] Permanent user trait, style, or strategic boundary"
   ],
   "source_scores": [
-    "Source name + reliability assessment: accuracy track record, reaction speed, bias direction"
+    "Source name + reliability assessment: accuracy track record, bias direction"
   ],
   "decisions": [
     "Decisions made or actions taken",
     "Framework validation: whether a prior pattern/rule held true or failed in this instance"
   ],
   "user_preferences": [
-    "What you learned about the user's style or boundaries — permanent traits only"
+    "What you learned about the user's style, preferences, or boundaries — permanent traits only"
   ],
   "topics": ["#hashtag topics covered, lowercase, no spaces"]
 }}
 
 Rules:
-- EVERY insight MUST start with one of: [factual], [pattern], [prediction], [uncertain], [preference]
-- [factual] items MUST be structural truths, NOT transient event data. Do NOT tag specific prices on dates, one-time approvals, or transient metrics as [factual]. Those belong in context only.
-- [pattern] items MUST abstract beyond the specific ticker — state the transferable mechanism
-- [prediction] items MUST include an expires date (7 days from today unless user specified otherwise)
-- [source_scores] track reliability over time: which sources have been right/wrong and why
+- EVERY insight MUST start with one of: [factual], [pattern], [lesson], [uncertain], [preference]
+- [factual] items MUST be structural truths, NOT transient event data or one-time occurrences
+- [pattern] items MUST abstract beyond the specific case — state the transferable mechanism
+- [lesson] items MUST reflect a concrete takeaway from an outcome, mistake, or experiment
+- [source_scores] track reliability over time: which sources or tools have been right/wrong and why
 - [decisions] MUST include framework validation when a prior rule was tested
 - Return empty arrays if nothing is worth recalling
 - No markdown inside JSON values, plain text only
