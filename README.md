@@ -9,7 +9,7 @@ Every decision you've made, every preference you've set, every pattern your agen
 ## What it does
 
 - **Auto session archiving** — old sessions are archived automatically before they're lost. Nothing gets dropped silently.
-- **Memory extraction** — an LLM reads archived sessions and distills key facts, decisions, and preferences into `memory/*.md`
+- **Memory extraction** — an LLM reads archived sessions and distills key facts, decisions, preferences, patterns, and lessons into `memory/*.md`
 - **Semantic search** — memories are embedded locally (no API calls, no cloud) and searchable via `memory_search`
 - **Memory pinning** — tell your agent "remember this" and it saves a permanent `_pin_*.md`, protected from all cleanup
 - **Memory cleanup** — daily dedup + weekly LLM review keeps memory lean. Noise removed, contradictions flagged.
@@ -30,7 +30,7 @@ OpenClaw session (.jsonl)
         │
         ▼
 [extract_memory.py]
-  LLM reads archived sessions → extracts facts, decisions, preferences
+  LLM reads archived sessions → extracts facts, decisions, preferences, patterns, lessons
   Writes to memory/YYYY-MM-DD.md + updates MEMORY.md index
         │
         ▼
