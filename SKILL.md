@@ -14,7 +14,7 @@ triggers:
   - "agent needs long-term memory"
   - "set up session archiving"
   - "install vector db memory"
-author: dinotlgrm
+author: dino
 ---
 
 # 🦕 dinomem — Dino Agent Memory
@@ -29,7 +29,7 @@ Persistent memory system for OpenClaw agents. Gives your agent long-term memory 
 
 ## Procedure
 
-1. Clone the repo: `git clone https://github.com/dinotlgrm/dinomem`
+1. Clone the repo: `git clone https://github.com/02-dino/dinomem`
 2. Run install: `bash dinomem/scripts/install.sh --workspace <your-workspace-path> --agent-id <your-agent-id>`
 3. Restart OpenClaw: `openclaw gateway restart`
 4. Verify TEI is running: `curl http://localhost:8080/health`
