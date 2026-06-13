@@ -143,8 +143,8 @@ if [ "$PURGE" = 1 ]; then
     procedures/session_reset.py \
     procedures/auto_session_reset.py \
     procedures/extract_memory.py \
-    tools/memory_cleanup.py \
-    tools/memory_review.py \
+    procedures/memory_cleanup.py \
+    procedures/memory_review.py \
     tools/config_tool.py; do
     [ -f "$WS/$f" ] && rm "$WS/$f" && ok "removed $f" || skip "$f not found"
   done

@@ -74,7 +74,7 @@ for f in procedures/session_reset.py procedures/auto_session_reset.py procedures
   fi
 done
 
-for f in tools/memory_cleanup.py tools/memory_review.py; do
+for f in procedures/memory_cleanup.py procedures/memory_review.py; do
   dst="$WS/$f"
   if [ -f "$dst" ] && [ "$FORCE" = 0 ]; then
     skip "$f (exists, use --force to overwrite)"
@@ -118,7 +118,7 @@ if [ "$DO_CRON" = 1 ]; then
   fi
 
   # memory_cleanup — daily at 5:00 UTC
-  CLEANUP_CRON="0 5 * * * cd $WS && python3 tools/memory_cleanup.py >> logs/memory_cleanup.log 2>&1"
+  CLEANUP_CRON="0 5 * * * cd $WS && python3 procedures/memory_cleanup.py >> logs/memory_cleanup.log 2>&1"
   if crontab -l 2>/dev/null | grep -qF "memory_cleanup.py"; then
     skip "memory_cleanup cron (exists)"
   else
@@ -127,7 +127,7 @@ if [ "$DO_CRON" = 1 ]; then
   fi
 
   # memory_review — weekly Sunday at 5:30 UTC
-  REVIEW_CRON="30 5 * * 0 cd $WS && python3 tools/memory_review.py >> logs/memory_review.log 2>&1"
+  REVIEW_CRON="30 5 * * 0 cd $WS && python3 procedures/memory_review.py >> logs/memory_review.log 2>&1"
   if crontab -l 2>/dev/null | grep -qF "memory_review.py"; then
     skip "memory_review cron (exists)"
   else
