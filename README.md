@@ -177,10 +177,12 @@ Interested? → [@dinotlgrm](https://t.me/dinotlgrm) on Telegram
 ├── procedures/
 │   ├── auto_session_reset.py   # Cron entry point — runs every 15 min
 │   ├── session_reset.py        # Archives old/compacted sessions
-│   └── extract_memory.py       # Extracts memories from archives via LLM
-├── tools/
+│   ├── extract_memory.py       # Extracts memories from archives via LLM
 │   ├── memory_cleanup.py       # Daily dedup of memory files
-│   └── memory_review.py        # Weekly LLM review (valid/invalidated/noise)
+│   ├── memory_review.py        # Weekly LLM review (valid/invalidated/noise)
+│   └── workspace_backup.py     # Weekly snapshot backup (keep 3, auto-rotate)
+├── tools/
+│   └── config_tool.py          # Safe writer for root config files (agent self-config)
 ├── logs/
 └── memory/
     ├── _pin_*.md               # Permanent user-pinned memories (never deleted)
@@ -188,6 +190,17 @@ Interested? → [@dinotlgrm](https://t.me/dinotlgrm) on Telegram
     └── YYYY-MM-DD.md           # Daily memory files (auto-generated)
 MEMORY.md                       # Searchable index (auto-generated, do not edit)
 ```
+
+---
+
+## Cron schedule
+
+| Time | Script | What runs |
+|------|--------|-----------|
+| Every 15 min | `auto_session_reset.py` | Session archive + memory extraction |
+| Daily 5:00 UTC | `memory_cleanup.py` | Dedup memory files |
+| Weekly Sun 2:00 UTC | `workspace_backup.py` | Snapshot backup (keep 3) |
+| Weekly Sun 5:30 UTC | `memory_review.py` | LLM review — valid/invalidated/noise |
 
 ---
 

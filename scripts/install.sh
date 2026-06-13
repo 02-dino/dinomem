@@ -61,7 +61,7 @@ done
 
 # ── 2) Copy scripts ───────────────────────────────────────────────────────────
 hr "Copying scripts"
-for f in procedures/session_reset.py procedures/auto_session_reset.py procedures/extract_memory.py; do
+for f in procedures/session_reset.py procedures/auto_session_reset.py procedures/extract_memory.py procedures/workspace_backup.py; do
   dst="$WS/$f"
   if [ -f "$dst" ] && [ "$FORCE" = 0 ]; then
     skip "$f (exists, use --force to overwrite)"
@@ -115,6 +115,15 @@ if [ "$DO_CRON" = 1 ]; then
   else
     (crontab -l 2>/dev/null; echo "# dinomem: auto session reset + memory extraction"; echo "$RESET_CRON") | crontab -
     ok "auto_session_reset cron (every 15 min)"
+  fi
+
+  # workspace_backup — weekly Sunday at 2:00 UTC (snapshot of memory + config files)
+  BACKUP_CRON="0 2 * * 0 cd $WS && python3 procedures/workspace_backup.py >> logs/workspace_backup.log 2>&1"
+  if crontab -l 2>/dev/null | grep -qF "workspace_backup.py"; then
+    skip "workspace_backup cron (exists)"
+  else
+    (crontab -l 2>/dev/null; echo "# dinomem: weekly workspace snapshot (keep 3)"; echo "$BACKUP_CRON") | crontab -
+    ok "workspace_backup cron (weekly Sunday 2:00 UTC)"
   fi
 
   # memory_cleanup — daily at 5:00 UTC

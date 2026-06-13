@@ -39,6 +39,7 @@ CRON_PATTERNS=(
   "auto_session_reset.py"
   "memory_cleanup.py"
   "memory_review.py"
+  "workspace_backup.py"
   "docker-compose.tei.yml"
   "dinomem:"
 )
@@ -148,6 +149,15 @@ if [ "$PURGE" = 1 ]; then
     tools/config_tool.py; do
     [ -f "$WS/$f" ] && rm "$WS/$f" && ok "removed $f" || skip "$f not found"
   done
+fi
+
+# ── Snapshots (optional) ──────────────────────────────────────────────────────
+if [ "$PURGE_DATA" = 1 ]; then
+  if [ -d "$WS/.backups/snapshots" ]; then
+    rm -rf "$WS/.backups/snapshots" && ok "removed .backups/snapshots/"
+  else
+    skip ".backups/snapshots not found"
+  fi
 fi
 
 # ── Purge data (optional, explicit) ───────────────────────────────────────────
