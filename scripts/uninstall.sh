@@ -102,6 +102,13 @@ if mf.get("enabled") is False:
     mf.pop("enabled", None)
     changed.append("compaction.memoryFlush.enabled")
 
+# Revert workspaceBootstrap / maxBootstrapFileChars / maxBootstrapTotalChars
+if defaults.get("workspaceBootstrap") == "always":
+    defaults.pop("workspaceBootstrap", None)
+    changed.append("workspaceBootstrap")
+defaults.pop("maxBootstrapFileChars", None)
+defaults.pop("maxBootstrapTotalChars", None)
+
 # Revert memorySearch
 ms = cfg.get("memorySearch", {})
 if ms.get("provider") == "openai-compatible":
