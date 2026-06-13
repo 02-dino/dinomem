@@ -361,6 +361,17 @@ BLOCK="$BEGIN
       memory/_pin_*.md: {when: [permanent_fact,decision,lesson], note: use memory_pin rule NOT config_tool}
       memory/_note_*.md: {when: [todo,reminder,build_task], note: use memory_pin rule NOT config_tool}
       docs/<slug>.md: {when: [long_doc,contract,book,legal], note: save to docs/ then run docs_ingest.py}
+    conflict_resolution:
+      when: user intent overrides existing setting (e.g. "be concise" when verbose already set)
+      action: use patch not append — replace existing section by key
+      hint: read file first, find conflicting key, call patch with section_key
+    dedup:
+      handled_by: config_tool.py append_to (auto-skip if duplicate or 85%+ similar)
+      llm_should: still prefer patch over append when overriding known existing key
+    removal:
+      when: user says "remove X", "stop doing Y", "delete that rule"
+      action: call remove with section_key
+      confirm: always show what will be removed before calling remove
     ambiguous: ask one clarifying question then route
     confirm_before_write: [SOUL.md, IDENTITY.md, AGENTS.md]
     skip_confirm: [TOOLS.md, USER.md]
