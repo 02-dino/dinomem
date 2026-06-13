@@ -13,6 +13,7 @@ Every decision you've made, every preference you've set, every pattern your agen
 - **Semantic search** — memories are embedded locally (no API calls, no cloud) and searchable via `memory_search`
 - **Memory pinning** — tell your agent "remember this" and it saves a permanent `_pin_*.md`, protected from all cleanup
 - **Memory cleanup** — daily dedup + weekly LLM review keeps memory lean. Noise removed, contradictions flagged.
+- **Agent self-configuration** — tell your agent to change its tone, add a tool, or set a rule — it writes to the right file automatically
 - **Zero-config install** — one script handles Docker, cron, and OpenClaw config patches
 
 ---
