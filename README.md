@@ -119,6 +119,8 @@ Saved as `memory/_note_<slug>.md`. Recalled when you ask "what's on my build lis
 >
 > **Want this?** dinomem-neuron (private repo) adds full RAG support for long documents — contracts, books, legal text — stored separately and searchable without polluting memory. → [@dinotlgrm](https://t.me/dinotlgrm)
 
+> dinomem-neuron also takes `_note_` further — if your note implies a date or deadline, it automatically creates a Google Calendar event and deletes the note when the date passes.
+
 
 ### Agent self-configuration
 
