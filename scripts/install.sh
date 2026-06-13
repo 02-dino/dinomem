@@ -406,6 +406,43 @@ else
   ok "AGENTS.md wired"
 fi
 
+# ── 6b) Wire TOOLS.md ────────────────────────────────────────────────────────
+hr "TOOLS.md"
+TOOLS="$WS/TOOLS.md"
+TOOLS_MARKER="# dinomem: workspace_backup"
+TOOLS_BLOCK="$TOOLS_MARKER
+  workspace_backup:
+    path: procedures/workspace_backup.py
+    type: exec
+    capabilities:
+      - full_workspace_snapshot
+      - list_backups
+      - restore_all
+      - restore_single_file
+    inputs:
+      cmd:
+        type: enum
+        values: ['(none)', '--list', '--restore', '--restore --file PATH', '--restore --yes']
+      target:
+        type: string
+        required: false
+        note: 'Snapshot name or index from --list. Default: latest.'
+      file:
+        type: string
+        required: false
+        note: 'Relative path to restore single file e.g. memory/2026-06-01.md'
+    output:
+      type: text
+    constraints:
+      mode: read_write"
+
+if grep -qF "$TOOLS_MARKER" "$TOOLS" 2>/dev/null; then
+  skip "TOOLS.md already has workspace_backup entry"
+else
+  printf '\n%s\n' "$TOOLS_BLOCK" >> "$TOOLS"
+  ok "TOOLS.md wired (workspace_backup)"
+fi
+
 # ── 7) Verify tools allowlist ─────────────────────────────────────────────────
 hr "Tools allowlist"
 python3 - <<PYEOF
