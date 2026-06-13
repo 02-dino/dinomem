@@ -395,7 +395,7 @@ BLOCK="$BEGIN
     list: python3 procedures/workspace_backup.py --list
     restore_all: python3 procedures/workspace_backup.py --restore [index|name] [--yes]
     restore_file: python3 procedures/workspace_backup.py --restore [index|name] --file <path>
-  note: file-backup.sh is internal safety layer only — not for user-facing restore
+  note: backup runs automatically via cron — LLM does not need to trigger it manually
 $END"
 
 touch "$AGENTS"
