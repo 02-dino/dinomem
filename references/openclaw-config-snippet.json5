@@ -1,0 +1,73 @@
+// dinomem — OpenClaw config reference
+// Add/merge these blocks into your ~/.openclaw/openclaw.json
+// The install.sh script patches these automatically.
+// Manual reference if you prefer to configure by hand.
+
+{
+  // Session reset: idle-based 7 days (not daily)
+  // Prevents premature resets for active agents.
+  // auto_session_reset.py handles memory-aware resets independently.
+  session: {
+    reset: {
+      mode: "idle",
+      idleMinutes: 10080,  // 7 days
+    },
+  },
+
+  models: {
+    providers: {
+      // TEI embedding server (sentence-transformers, local Docker)
+      "tei-embed": {
+        api: "openai",
+        baseUrl: "http://localhost:8080/v1",
+        apiKey: "dummy",  // TEI does not require auth
+        models: [{ id: "sentence-transformers/all-MiniLM-L6-v2" }],
+      },
+    },
+  },
+
+  agents: {
+    defaults: {
+      // Disable TTL-based context pruning.
+      // TTL pruning drops messages by age (blunt) — bad for continuity.
+      // Let compaction handle context management instead (summarizes before dropping).
+      contextPruning: {
+        mode: "off",
+      },
+
+      // Compaction: safeguard mode
+      // Triggers when: contextTokens > contextWindow - reserveTokens
+      // e.g. for 200k window: triggers at 150k active tokens
+      compaction: {
+        mode: "safeguard",
+        truncateAfterCompaction: false,
+        memoryFlush: {
+          enabled: false,
+          softThresholdTokens: 10000,
+        },
+        // reserveTokens and keepRecentTokens are intentionally omitted.
+        // OpenClaw defaults (reserveTokens: 16384, floor: 20000) are model-agnostic.
+        // Hardcoding these would break small context window models (8k/32k).
+        // Only set these manually if you know your model's context window:
+        //   reserveTokens: 16384,    // headroom for prompts + output
+        //   keepRecentTokens: 20000, // preserved after compaction
+      },
+
+      // Memory search via local TEI embedding server
+      memorySearch: {
+        provider: "openai-compatible",
+        model: "sentence-transformers/all-MiniLM-L6-v2",
+        remote: {
+          baseUrl: "http://localhost:8080/v1",
+        },
+        // Hybrid search: 70% vector + 30% text (BM25-style)
+        query: {
+          hybrid: {
+            vectorWeight: 0.7,
+            textWeight: 0.3,
+          },
+        },
+      },
+    },
+  },
+}

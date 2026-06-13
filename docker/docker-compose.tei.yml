@@ -1,0 +1,29 @@
+version: "3.8"
+
+services:
+  tei-embed:
+    image: ghcr.io/huggingface/text-embeddings-inference:1.5
+    ports:
+      - "8080:80"
+    environment:
+      - MODEL_ID=sentence-transformers/all-MiniLM-L6-v2
+    command:
+      - --model-id
+      - sentence-transformers/all-MiniLM-L6-v2
+      - --port
+      - "80"
+    # Optional: GPU support (uncomment if you have nvidia-docker)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s

@@ -1,0 +1,17 @@
+{
+  "name": "dinomem",
+  "displayName": "dinomem — Dino Agent Memory",
+  "version": "0.1.0",
+  "description": "Persistent memory system for OpenClaw agents. Auto session archiving, memory extraction, and local vector DB via sentence-transformers.",
+  "author": "dinotlgrm",
+  "homepage": "https://github.com/dinotlgrm/dinomem",
+  "license": "MIT",
+  "keywords": ["memory", "session", "vector-db", "agent", "openclaw"],
+  "requires": {
+    "openclaw": ">=2026.1.0",
+    "bins": ["docker", "python3"]
+  },
+  "install": "bash scripts/install.sh",
+  "uninstall": "bash scripts/uninstall.sh",
+  "update": "bash scripts/update.sh"
+}

@@ -1,0 +1,407 @@
+#!/usr/bin/env bash
+# dinomem — install script
+# Sets up Dino Agent Memory System for an OpenClaw agent.
+# Idempotent: safe to run multiple times.
+#
+# Usage:
+#   bash scripts/install.sh [--workspace DIR] [--agent-id ID] [--no-docker] [--no-cron] [--force]
+#
+# Options:
+#   --workspace DIR   Path to agent workspace (default: $OPENCLAW_WORKSPACE or ~/.openclaw/workspace)
+#   --agent-id ID     OpenClaw agent ID (default: detected from workspace name)
+#   --no-docker       Skip TEI Docker setup
+#   --no-cron         Skip crontab registration
+#   --force           Overwrite existing files
+set -euo pipefail
+
+SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+WS="${OPENCLAW_WORKSPACE:-$HOME/.openclaw/workspace}"
+AGENT_ID=""
+DO_DOCKER=1
+DO_CRON=1
+FORCE=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --workspace)  WS="$2"; shift 2 ;;
+    --agent-id)   AGENT_ID="$2"; shift 2 ;;
+    --no-docker)  DO_DOCKER=0; shift ;;
+    --no-cron)    DO_CRON=0; shift ;;
+    --force)      FORCE=1; shift ;;
+    -h|--help)    grep -E '^#( |$)' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+ok()   { printf '  \033[32m[ok]\033[0m   %s\n' "$*"; }
+skip() { printf '  \033[33m[skip]\033[0m %s\n' "$*"; }
+warn() { printf '  \033[33m[warn]\033[0m %s\n' "$*"; }
+fail() { printf '  \033[31m[fail]\033[0m %s\n' "$*"; exit 1; }
+hr()   { printf '\033[1m== %s ==\033[0m\n' "$*"; }
+
+[ -d "$WS" ] || fail "Workspace not found: $WS  (pass --workspace DIR)"
+
+# Auto-detect agent ID from workspace directory name
+if [ -z "$AGENT_ID" ]; then
+  AGENT_ID="$(basename "$WS")"
+  AGENT_ID="${AGENT_ID#workspace-}"  # strip "workspace-" prefix if present
+fi
+
+OPENCLAW_DIR="$(dirname "$WS")"
+SESSIONS_DIR="$OPENCLAW_DIR/agents/$AGENT_ID/sessions"
+
+echo
+hr "dinomem -> $WS (agent: $AGENT_ID)"
+
+# ── 1) Create workspace directories ──────────────────────────────────────────
+hr "Directories"
+for d in procedures tools logs memory .memory_archive; do
+  if [ -d "$WS/$d" ]; then skip "$d/ (exists)"; else mkdir -p "$WS/$d"; ok "$d/"; fi
+done
+
+# ── 2) Copy scripts ───────────────────────────────────────────────────────────
+hr "Copying scripts"
+for f in procedures/session_reset.py procedures/auto_session_reset.py procedures/extract_memory.py; do
+  dst="$WS/$f"
+  if [ -f "$dst" ] && [ "$FORCE" = 0 ]; then
+    skip "$f (exists, use --force to overwrite)"
+  else
+    cp "$SKILL_DIR/$f" "$dst"
+    sed -i "s|DINOMEM_WORKSPACE_PLACEHOLDER|$WS|g" "$dst"
+    sed -i "s|DINOMEM_AGENT_SESSIONS_PLACEHOLDER|$SESSIONS_DIR|g" "$dst"
+    sed -i "s|DINOMEM_AGENT_ID_PLACEHOLDER|$AGENT_ID|g" "$dst"
+    ok "$f"
+  fi
+done
+
+for f in tools/memory_cleanup.py tools/memory_review.py; do
+  dst="$WS/$f"
+  if [ -f "$dst" ] && [ "$FORCE" = 0 ]; then
+    skip "$f (exists, use --force to overwrite)"
+  else
+    cp "$SKILL_DIR/$f" "$dst"
+    sed -i "s|DINOMEM_WORKSPACE_PLACEHOLDER|$WS|g" "$dst"
+    sed -i "s|DINOMEM_AGENT_SESSIONS_PLACEHOLDER|$SESSIONS_DIR|g" "$dst"
+    sed -i "s|DINOMEM_AGENT_ID_PLACEHOLDER|$AGENT_ID|g" "$dst"
+    ok "$f"
+  fi
+done
+
+# ── 3) TEI Docker setup ───────────────────────────────────────────────────────
+if [ "$DO_DOCKER" = 1 ]; then
+  hr "TEI Embedding Server (Docker)"
+  if ! command -v docker >/dev/null 2>&1; then
+    warn "Docker not found — skipping TEI setup. Install Docker and run: docker compose -f $WS/docker-compose.tei.yml up -d"
+  else
+    cp "$SKILL_DIR/docker/docker-compose.tei.yml" "$WS/docker-compose.tei.yml"
+    ok "docker-compose.tei.yml copied"
+    if docker compose -f "$WS/docker-compose.tei.yml" ps 2>/dev/null | grep -q "running"; then
+      skip "TEI container already running"
+    else
+      docker compose -f "$WS/docker-compose.tei.yml" up -d
+      ok "TEI container started on port 8080"
+    fi
+  fi
+fi
+
+# ── 4) Register cron jobs ─────────────────────────────────────────────────────
+if [ "$DO_CRON" = 1 ]; then
+  hr "Cron jobs"
+
+  # auto_session_reset — every 15 min (orchestrates session archive + memory extraction)
+  RESET_CRON="*/15 * * * * cd $WS && python3 procedures/auto_session_reset.py >> logs/auto_reset.log 2>&1"
+  if crontab -l 2>/dev/null | grep -qF "auto_session_reset.py"; then
+    skip "auto_session_reset cron (exists)"
+  else
+    (crontab -l 2>/dev/null; echo "# dinomem: auto session reset + memory extraction"; echo "$RESET_CRON") | crontab -
+    ok "auto_session_reset cron (every 15 min)"
+  fi
+
+  # memory_cleanup — daily at 5:00 UTC
+  CLEANUP_CRON="0 5 * * * cd $WS && python3 tools/memory_cleanup.py >> logs/memory_cleanup.log 2>&1"
+  if crontab -l 2>/dev/null | grep -qF "memory_cleanup.py"; then
+    skip "memory_cleanup cron (exists)"
+  else
+    (crontab -l 2>/dev/null; echo "# dinomem: daily memory deduplication"; echo "$CLEANUP_CRON") | crontab -
+    ok "memory_cleanup cron (daily 5:00 UTC)"
+  fi
+
+  # memory_review — weekly Sunday at 5:30 UTC
+  REVIEW_CRON="30 5 * * 0 cd $WS && python3 tools/memory_review.py >> logs/memory_review.log 2>&1"
+  if crontab -l 2>/dev/null | grep -qF "memory_review.py"; then
+    skip "memory_review cron (exists)"
+  else
+    (crontab -l 2>/dev/null; echo "# dinomem: weekly memory review (LLM)"; echo "$REVIEW_CRON") | crontab -
+    ok "memory_review cron (weekly Sunday 5:30 UTC)"
+  fi
+
+  # note_review — daily via OpenClaw cron (LLM judges resolved _note_*.md and deletes them)
+  # Registered via OpenClaw cron API, not crontab
+  NOTE_REVIEW_CHECK=$(python3 -c "
+import subprocess, json, sys
+try:
+    r = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)
+    jobs = json.loads(r.stdout) if r.returncode == 0 else []
+    exists = any('note' in j.get('name','').lower() and 'review' in j.get('name','').lower() for j in (jobs if isinstance(jobs, list) else jobs.get('jobs', {}).get('jobs', [])))
+    print('exists' if exists else 'missing')
+except: print('skip')
+" 2>/dev/null)
+  if [ "$NOTE_REVIEW_CHECK" = "exists" ]; then
+    skip "note_review OpenClaw cron (exists)"
+  elif [ "$NOTE_REVIEW_CHECK" = "skip" ]; then
+    warn "Could not check OpenClaw cron — add Daily Note Review cron manually via OpenClaw"
+  else
+    python3 - <<PYEOF
+import subprocess, json
+job = {
+    "name": "Daily Note Review",
+    "schedule": {"kind": "cron", "expr": "0 6 * * *", "tz": "UTC"},
+    "payload": {
+        "kind": "agentTurn",
+        "message": "Scan all memory/_note_*.md files in $WS/memory/. For each file, check if the task/todo described is already completed based on workspace state (check if relevant files exist, features built, etc). If resolved: delete the _note_*.md file, and if the outcome is worth preserving permanently, create a _pin_*.md instead. If still pending: leave it.",
+        "timeoutSeconds": 120
+    },
+    "sessionTarget": "isolated",
+    "delivery": {"mode": "none"}
+}
+r = subprocess.run(['openclaw', 'cron', 'add', '--json', json.dumps(job)], capture_output=True, text=True, timeout=15)
+if r.returncode == 0:
+    print("  \033[32m[ok]\033[0m   note_review OpenClaw cron registered (daily 6:00 UTC)")
+else:
+    print(f"  \033[33m[warn]\033[0m Could not register note_review cron: {r.stderr[:100]}")
+PYEOF
+  fi
+
+  # TEI @reboot
+  if [ "$DO_DOCKER" = 1 ] && command -v docker >/dev/null 2>&1; then
+    TEI_CRON="@reboot sleep 30 && docker compose -f $WS/docker-compose.tei.yml up -d >> /tmp/tei-startup.log 2>&1"
+    if crontab -l 2>/dev/null | grep -qF "docker-compose.tei.yml"; then
+      skip "TEI @reboot cron (exists)"
+    else
+      (crontab -l 2>/dev/null; echo "# dinomem: TEI auto-start on reboot"; echo "$TEI_CRON") | crontab -
+      ok "TEI @reboot cron registered"
+    fi
+  fi
+fi
+
+# ── 5) Patch openclaw.json config ─────────────────────────────────────────────
+hr "OpenClaw config"
+OPENCLAW_JSON="$OPENCLAW_DIR/openclaw.json"
+if [ ! -f "$OPENCLAW_JSON" ]; then
+  warn "openclaw.json not found at $OPENCLAW_JSON — skipping config patch"
+else
+  python3 - <<PYEOF
+import json, sys
+
+path = "$OPENCLAW_JSON"
+with open(path) as f:
+    cfg = json.load(f)
+
+changed = []
+
+# session.reset -> idle 7 days
+session = cfg.setdefault("session", {})
+reset = session.setdefault("reset", {})
+if reset.get("mode") != "idle" or reset.get("idleMinutes") != 10080:
+    reset["mode"] = "idle"
+    reset["idleMinutes"] = 10080
+    changed.append("session.reset -> idle 7 days")
+
+agents = cfg.setdefault("agents", {})
+defaults = agents.setdefault("defaults", {})
+
+# contextPruning -> off (let compaction handle context, not TTL-based blunt pruning)
+pruning = defaults.setdefault("contextPruning", {})
+if pruning.get("mode") != "off":
+    defaults["contextPruning"] = {"mode": "off"}
+    changed.append("contextPruning.mode -> off (compaction handles context)")
+
+# compaction -> safeguard with recommended settings
+compaction = defaults.setdefault("compaction", {})
+    # Only patch mode and memoryFlush — leave reserveTokens/keepRecentTokens to OpenClaw defaults.
+    # reserveTokens default (16384) + floor (20000) are model-agnostic.
+    # Hardcoding 50k would break small context window models (8k/32k).
+    compaction_patch = {
+        "mode": "safeguard",
+        "truncateAfterCompaction": False,
+        "memoryFlush": {"enabled": False, "softThresholdTokens": 10000},
+    }
+    needs_update = any(compaction.get(k) != v for k, v in compaction_patch.items())
+    if needs_update:
+        compaction.update(compaction_patch)
+        changed.append("compaction -> safeguard mode (reserveTokens/keepRecentTokens left to OpenClaw defaults)")
+
+# memorySearch -> TEI openai-compatible
+mem_search = defaults.get("memorySearch", {})
+if mem_search.get("provider") != "openai-compatible":
+    defaults["memorySearch"] = {
+        "provider": "openai-compatible",
+        "model": "sentence-transformers/all-MiniLM-L6-v2",
+        "remote": {"baseUrl": "http://localhost:8080/v1"},
+        "query": {"hybrid": {"vectorWeight": 0.7, "textWeight": 0.3}},
+    }
+    changed.append("memorySearch -> TEI openai-compatible (localhost:8080)")
+
+# models.providers -> add tei-embed provider
+providers = cfg.setdefault("models", {}).setdefault("providers", {})
+if "tei-embed" not in providers:
+    providers["tei-embed"] = {
+        "api": "openai",
+        "baseUrl": "http://localhost:8080/v1",
+        "apiKey": "dummy",
+        "models": [{"id": "sentence-transformers/all-MiniLM-L6-v2"}],
+    }
+    changed.append("models.providers.tei-embed -> added")
+
+if changed:
+    with open(path, "w") as f:
+        json.dump(cfg, f, indent=2)
+    for c in changed:
+        print(f"  \033[32m[ok]\033[0m   patched: {c}")
+    print("  \033[33m[warn]\033[0m Restart OpenClaw: openclaw gateway restart")
+else:
+    print("  \033[33m[skip]\033[0m openclaw.json already configured")
+PYEOF
+fi
+
+# ── 6) Wire AGENTS.md ─────────────────────────────────────────────────────────
+hr "AGENTS.md"
+AGENTS="$WS/AGENTS.md"
+BEGIN="<!-- BEGIN:dinomem (managed — do not edit between markers) -->"
+END="<!-- END:dinomem -->"
+BLOCK="$BEGIN
+## dinomem — memory system
+  memory_index:
+    file: MEMORY.md
+    instruction: |
+      If the query topic appears in MEMORY.md (Searchable — Active section),
+      call memory_search for the topic and then memory_get to retrieve the full details before responding.
+  constraints:
+    - id: M0_no_assumptions
+      when:
+        context_unclear: true
+      action:
+        - memory_search for relevant context and then memory_get to retrieve the full details
+        - fallback: ask_clarification
+
+  memory_pin:
+    description: |
+      Manual memory pinning. When user says "remember this", "save this", "ingat ini",
+      or shares a short note/fact they want preserved:
+      1. Classify: permanent knowledge vs transient note/todo
+      2. Convert content to clean markdown
+      3. Save with correct prefix (see rules below)
+      4. Confirm to user: "Saved to memory as _pin_<slug>.md" or "_note_<slug>.md"
+      NOTE: Only for short content (facts, decisions, todos, short notes).
+      WARNING: Do NOT save long/verbatim docs (legal, UU, books, contracts) here.
+      memory/ files are indexed and injected into LLM context — large files will
+      pollute context, degrade behavior, and cause unpredictable responses.
+      For long docs: save to docs/<slug>.md, then ingest via:
+        python3 procedures/docs_ingest.py --file docs/<slug>.md
+      Searchable after ingestion via tools/docs_search.py (RAG).
+    rules:
+      - permanent:
+          prefix: "_pin_"
+          location: "memory/"
+          never_auto_delete: true
+          use_for: user preferences, lessons learned, decisions, architecture choices
+          format: "# Title\n\n<content>"
+          slug: lowercase, hyphens, max 30 chars, descriptive
+      - transient:
+          prefix: "_note_"
+          location: "memory/"
+          auto_delete_when: resolved/completed (via daily cron)
+          use_for: todos, build reminders, planned features, "remember to do X"
+          format: "# Title\n\nstatus: pending\n\n<content>"
+          slug: lowercase, hyphens, max 30 chars, descriptive
+
+  memory_recall:
+    description: |
+      memory_search and memory_get are OpenClaw native tools that query memory/*.md files.
+      Memories are NOT injected into context automatically every turn — they must be recalled.
+    when_to_use_memory_search:
+      - User asks about something they mentioned before
+      - Query topic appears in MEMORY.md index
+      - Context is unclear and prior decisions/preferences may be relevant
+      - User references a past conversation, decision, or preference
+    when_to_use_memory_get:
+      - After memory_search returns a relevant result
+      - To retrieve full content of a specific memory file
+    constraints:
+      - id: M0_no_assumptions
+        when:
+          context_unclear: true
+        action:
+          - memory_search for relevant context and then memory_get to retrieve full details
+          - fallback: ask_clarification
+    when_NOT_to_use:
+      - Do not call memory_search on every turn by default — only when recall is relevant
+      - Do not assume memory exists without searching first
+    workflow:
+      1. Check MEMORY.md index for relevant topic keywords
+      2. If match found: call memory_search with the topic
+      3. If memory_search returns results: call memory_get to retrieve full details
+      4. Use retrieved context to inform response
+
+  self_config:
+    tool: tools/config_tool.py
+    trigger: user intent implies storing/changing agent behavior, persona, tools, preferences, or knowledge
+    rule: LLM classifies intent -> selects target -> generates content -> calls config_tool.py
+    routing:
+      SOUL.md: {when: [tone,verbosity,style,personality], op: append, format: "key: value"}
+      IDENTITY.md: {when: [name,role,persona], op: write, format: "key: value"}
+      AGENTS.md: {when: [sop,rule,workflow,constraint,when_to_use], op: append, format: "## section\n  key: value"}
+      TOOLS.md: {when: [new_tool,script_spec,capability], op: append, format: "## tool_name\n  path: ...\n  when_to_use: ..."}
+      USER.md: {when: [user_pref,user_context,user_info], op: append, format: "- key: value"}
+      memory/_pin_*.md: {when: [permanent_fact,decision,lesson], note: use memory_pin rule NOT config_tool}
+      memory/_note_*.md: {when: [todo,reminder,build_task], note: use memory_pin rule NOT config_tool}
+      docs/<slug>.md: {when: [long_doc,contract,book,legal], note: save to docs/ then run docs_ingest.py}
+    ambiguous: ask one clarifying question then route
+    confirm_before_write: [SOUL.md, IDENTITY.md, AGENTS.md]
+    skip_confirm: [TOOLS.md, USER.md]
+$END"
+
+touch "$AGENTS"
+if grep -qF "$BEGIN" "$AGENTS" 2>/dev/null; then
+  skip "AGENTS.md already wired (use --force to refresh)"
+else
+  printf '\n%s\n' "$BLOCK" >> "$AGENTS"
+  ok "AGENTS.md wired"
+fi
+
+# ── 7) Verify tools allowlist ─────────────────────────────────────────────────
+hr "Tools allowlist"
+python3 - <<PYEOF
+import json
+
+path = "$OPENCLAW_DIR/openclaw.json"
+try:
+    cfg = json.load(open(path))
+    agents_list = cfg.get("agents", {}).get("list", [])
+    agent = next((a for a in agents_list if a.get("id") == "$AGENT_ID"), None)
+    if agent:
+        tools_allow = agent.get("tools", {}).get("allow", [])
+        missing = [t for t in ["memory_search", "memory_get"] if t not in tools_allow]
+        if missing:
+            print(f"  \033[33m[warn]\033[0m Agent '$AGENT_ID' tools.allow is missing: {missing}")
+            print(f"  \033[33m[warn]\033[0m Add these to agents.list[$AGENT_ID].tools.allow in openclaw.json")
+        else:
+            print(f"  \033[32m[ok]\033[0m   memory_search + memory_get in tools.allow")
+    else:
+        print(f"  \033[33m[warn]\033[0m Agent '$AGENT_ID' not found in agents.list — add memory_search + memory_get to tools.allow manually")
+except Exception as e:
+    print(f"  \033[33m[warn]\033[0m Could not check tools.allow: {e}")
+PYEOF
+
+echo
+hr "done"
+echo "  dinomem installed for agent: $AGENT_ID"
+echo "  workspace: $WS"
+echo ""
+echo "  Next steps:"
+echo "  1. Restart OpenClaw:  openclaw gateway restart"
+echo "  2. Verify TEI:        curl http://localhost:8080/health"
+echo "  3. Add to tools.allow in openclaw.json: memory_search, memory_get"
+echo "  4. First extraction:  python3 $WS/procedures/auto_session_reset.py"
+echo ""
+echo "  Undo: bash $SKILL_DIR/scripts/uninstall.sh --workspace $WS --agent-id $AGENT_ID"
