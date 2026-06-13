@@ -8,7 +8,7 @@ Every decision you've made, every preference you've set, every pattern your agen
 
 ## What it does
 
-- **Auto session archiving** — every 15 min, old sessions are archived before they're lost. Nothing gets dropped silently.
+- **Auto session archiving** — old sessions are archived automatically before they're lost. Nothing gets dropped silently.
 - **Memory extraction** — an LLM reads archived sessions and distills key facts, decisions, and preferences into `memory/*.md`
 - **Semantic search** — memories are embedded locally (no API calls, no cloud) and searchable via `memory_search`
 - **Memory pinning** — tell your agent "remember this" and it saves a permanent `_pin_*.md`, protected from all cleanup
