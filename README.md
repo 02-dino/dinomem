@@ -278,9 +278,16 @@ bash dinomem/scripts/update.sh --workspace ~/.openclaw/workspace-myagent
 ## Uninstall
 
 ```bash
-bash dinomem/scripts/uninstall.sh --workspace ~/.openclaw/workspace-myagent
-# Add --purge to also remove scripts (memory data is always preserved)
+bash dinomem/scripts/uninstall.sh --workspace ~/.openclaw/workspace-myagent --agent-id myagent
 ```
+
+This removes: cron jobs, AGENTS.md block, openclaw.json patches, TEI Docker container.
+
+Optional flags:
+- `--purge` — also remove installed scripts
+- `--purge-data` — also delete `memory/`, `logs/`, `MEMORY.md` (asks for confirmation)
+
+Run `openclaw gateway restart` after uninstall to apply config changes.
 
 ---
 
