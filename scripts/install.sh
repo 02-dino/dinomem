@@ -384,6 +384,18 @@ BLOCK="$BEGIN
     ambiguous: ask one clarifying question then route
     confirm_before_write: [SOUL.md, IDENTITY.md, AGENTS.md]
     skip_confirm: [TOOLS.md, USER.md]
+
+## backup_restore
+  when:
+    - user asks to restore workspace, files, or memory
+    - user asks "what backups do I have"
+    - user asks to undo a change to a root file or memory file
+  tool: procedures/workspace_backup.py
+  routing:
+    list: python3 procedures/workspace_backup.py --list
+    restore_all: python3 procedures/workspace_backup.py --restore [index|name] [--yes]
+    restore_file: python3 procedures/workspace_backup.py --restore [index|name] --file <path>
+  note: file-backup.sh is internal safety layer only — not for user-facing restore
 $END"
 
 touch "$AGENTS"
