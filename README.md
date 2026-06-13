@@ -117,9 +117,9 @@ Saved as `memory/_note_<slug>.md`. Recalled when you ask "what's on my build lis
 
 > ⚠️ Memory is for **short, recallable knowledge** — facts, decisions, preferences, patterns, lessons, and user traits. Do not save long documents (contracts, books, legal text) to memory — large files pollute LLM context and degrade agent behavior.
 >
-> **Want this?** dinomem-neuron is a private repo upgrade to dinomem that adds full RAG support for long documents — contracts, books, legal text — stored separately and searchable without polluting memory.
+> A private repo upgrade is available that adds full RAG support for long documents — contracts, books, legal text — stored separately and searchable without polluting memory.
 
-> dinomem-neuron also takes `_note_` further — if your note implies a date or deadline, it automatically creates a Google Calendar event and deletes the note when the date passes.
+> The same upgrade also takes `_note_` further — if your note implies a date or deadline, it automatically creates a Google Calendar event and deletes the note when the date passes.
 
 
 ### Agent self-configuration
