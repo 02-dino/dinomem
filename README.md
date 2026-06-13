@@ -11,7 +11,7 @@ Every decision you've made, every preference you've set, every pattern your agen
 - **Auto session archiving** — old sessions are archived automatically before they're lost. Nothing gets dropped silently.
 - **Memory extraction** — an LLM reads archived sessions and distills key facts, decisions, preferences, patterns, and lessons into `memory/*.md`
 - **Semantic search** — memories are embedded locally (no API calls, no cloud) and searchable via `memory_search`
-- **Memory pinning** — tell your agent "remember this" and it saves a permanent `_pin_*.md`, protected from all cleanup
+- **Memory pinning** — tell your agent "remember this" and it saves a permanent `_pin_*.md`, protected from all cleanup. For todos and reminders, `_note_*.md` — auto-deleted once resolved.
 - **Memory cleanup** — daily dedup + weekly LLM review keeps memory lean. Noise removed, contradictions flagged.
 - **Agent self-configuration** — tell your agent to change its tone, add a tool, or set a rule — it writes to the right file automatically
 - **Zero-config install** — one script handles Docker, cron, and OpenClaw config patches
