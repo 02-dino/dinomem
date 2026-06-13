@@ -232,19 +232,9 @@ compaction = defaults.setdefault("compaction", {})
         changed.append("compaction -> safeguard mode (reserveTokens/keepRecentTokens left to OpenClaw defaults)")
 
 # workspaceBootstrap -> always (root files injected every turn, not skipped on continuation)
-if defaults.get("workspaceBootstrap") != "always":
+if defaults.get("workspaceBootstrap") not in (None, "always"):
     defaults["workspaceBootstrap"] = "always"
     changed.append("workspaceBootstrap -> always (root files injected every turn)")
-
-# maxBootstrapFileChars -> 10000 (prevent large files from polluting context)
-if defaults.get("maxBootstrapFileChars", 20000) > 10000:
-    defaults["maxBootstrapFileChars"] = 10000
-    changed.append("maxBootstrapFileChars -> 10000 (per-file cap)")
-
-# maxBootstrapTotalChars -> 60000 (total cap across all root files)
-if "maxBootstrapTotalChars" not in defaults:
-    defaults["maxBootstrapTotalChars"] = 60000
-    changed.append("maxBootstrapTotalChars -> 60000 (total cap)")
 
 # memorySearch -> TEI openai-compatible
 mem_search = defaults.get("memorySearch", {})

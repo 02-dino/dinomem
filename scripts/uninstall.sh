@@ -102,12 +102,10 @@ if mf.get("enabled") is False:
     mf.pop("enabled", None)
     changed.append("compaction.memoryFlush.enabled")
 
-# Revert workspaceBootstrap / maxBootstrapFileChars / maxBootstrapTotalChars
-if defaults.get("workspaceBootstrap") == "always":
-    defaults.pop("workspaceBootstrap", None)
+# Revert workspaceBootstrap (only if explicitly set)
+if "workspaceBootstrap" in defaults:
+    defaults.pop("workspaceBootstrap")
     changed.append("workspaceBootstrap")
-defaults.pop("maxBootstrapFileChars", None)
-defaults.pop("maxBootstrapTotalChars", None)
 
 # Revert memorySearch
 ms = cfg.get("memorySearch", {})

@@ -205,8 +205,6 @@ The installer automatically patches `~/.openclaw/openclaw.json`:
 | `memorySearch.provider` | `openai-compatible` | Use local TEI server |
 | `memorySearch.remote.baseUrl` | `http://localhost:8080/v1` | TEI Docker endpoint |
 | `agents.defaults.workspaceBootstrap` | `always` | Root files (AGENTS.md, SOUL.md, etc) injected every turn — not skipped on continuation turns |
-| `agents.defaults.maxBootstrapFileChars` | `10000` | Per-file cap — prevents large root files from polluting context |
-| `agents.defaults.maxBootstrapTotalChars` | `60000` | Total cap across all root files |
 
 See `references/openclaw-config-snippet.json5` for the full annotated config.
 
