@@ -2,7 +2,7 @@
 
 > Your OpenClaw agent forgets everything when a session resets. dinomem fixes that.
 
-Every decision you've made, every preference you've set, every pattern your agent has learned — gone the moment a session resets. dinomem gives your agent a memory that persists: sessions are archived, key facts are extracted by an LLM, and everything is embedded locally for semantic search. Your agent picks up exactly where it left off.
+Every decision you've made, every preference you've set, every pattern your agent has learned — gone the moment a session resets. dinomem gives your agent a memory that persists: sessions are archived, facts, decisions, preferences, patterns, and lessons are extracted by an LLM, and everything is embedded locally for semantic search. Your agent picks up exactly where it left off.
 
 ---
 
@@ -26,7 +26,7 @@ OpenClaw session (.jsonl)
         │  every 15 min (cron)
         ▼
 [session_reset.py]
-  Archives sessions older than 7 days or after 5 compactions
+  Archives sessions idle for 7 days or after 5 compactions; deletes archives older than 7 days
         │
         ▼
 [extract_memory.py]
@@ -35,7 +35,7 @@ OpenClaw session (.jsonl)
         │
         ▼
 [TEI embedding server]
-  Embeds MEMORY.md entries locally (sentence-transformers, ~80MB, CPU-only)
+  Embeds memory/*.md entries locally (sentence-transformers, ~80MB, CPU-only)
         │
         ▼
 [memory_search tool]
@@ -117,7 +117,7 @@ Saved as `memory/_note_<slug>.md`. Recalled when you ask "what's on my build lis
 
 > ⚠️ Memory is for **short, recallable knowledge** — facts, decisions, preferences, patterns, lessons, and user traits. Do not save long documents (contracts, books, legal text) to memory — large files pollute LLM context and degrade agent behavior.
 >
-> A private repo upgrade is available that adds full RAG support for long documents — contracts, books, legal text — stored separately and searchable without polluting memory.
+> An upgrade is available in a private repo (dinomem-neuron) that adds full RAG support for long documents — contracts, books, legal text — stored separately and searchable without polluting memory.
 
 > The same upgrade also takes `_note_` further — if your note implies a date or deadline, it automatically creates a Google Calendar event and deletes the note when the date passes.
 
@@ -152,7 +152,7 @@ It also adds:
 - **Contradiction detection** — flags when new memories conflict with existing ones
 - **Emergent insights** — finds patterns across memories you never explicitly stated
 
-The repo is private — access granted after onboarding.
+The dinomem-neuron repo is private — access granted after onboarding.
 
 Interested? → [@dinotlgrm](https://t.me/dinotlgrm) on Telegram
 
