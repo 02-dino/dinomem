@@ -78,7 +78,7 @@ for rf in $ROOT_FILES; do
     TOTAL_CHARS=$((TOTAL_CHARS + RF_SIZE))
     if [ "$RF_SIZE" -gt 20000 ]; then
       warn "$rf is ${RF_SIZE} chars — exceeds maxBootstrapFileChars (20000). Content beyond limit won't be injected."
-      warn "  Fix: trim $rf (remove outdated sections) OR increase agents.defaults.maxBootstrapFileChars in openclaw.json."
+      warn "  Trim $rf: remove outdated or redundant sections to keep it lightweight."
     elif [ "$RF_SIZE" -gt 15000 ]; then
       warn "$rf is ${RF_SIZE} chars — approaching maxBootstrapFileChars (20000). Consider trimming soon."
     fi
@@ -86,7 +86,7 @@ for rf in $ROOT_FILES; do
 done
 if [ "$TOTAL_CHARS" -gt 60000 ]; then
   warn "Total root files: ${TOTAL_CHARS} chars — exceeds maxBootstrapTotalChars (60000). Some files won't be fully injected."
-  warn "  Fix: check sizes with 'wc -c *.md' and trim the largest files, OR increase agents.defaults.maxBootstrapTotalChars."
+  warn "  Check sizes: wc -c *.md — trim the largest files, remove outdated sections."
 elif [ "$TOTAL_CHARS" -gt 50000 ]; then
   warn "Total root files: ${TOTAL_CHARS} chars — approaching maxBootstrapTotalChars (60000). Consider trimming soon."
 else
