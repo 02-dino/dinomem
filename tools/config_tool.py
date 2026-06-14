@@ -50,13 +50,18 @@ def check_size(filename, new_content):
         warnings.append(
             f"{filename} will be {projected} chars after write — exceeds maxBootstrapFileChars ({MAX_FILE_CHARS}). "
             f"Content beyond limit won't be injected into context (root files are injected every turn — smaller = faster + more reliable). "
-            f"Trim {filename}: remove sections you no longer use, merge duplicates, keep rules concise."
+            f"Trim {filename}: remove sections you no longer use, merge duplicates, keep rules concise. "
+            f"Tips: (1) one rule = one line, not a paragraph; (2) drop examples if the rule is self-evident; "
+            f"(3) merge sections that say the same thing from different angles; "
+            f"(4) delete rules that describe default/obvious behavior; "
+            f"(5) flatten nested YAML beyond 3 levels."
         )
     elif projected > WARN_FILE_CHARS:
         warnings.append(
             f"{filename} will be {projected} chars after write — approaching maxBootstrapFileChars ({MAX_FILE_CHARS}). "
             f"Root files are injected every turn — keep them lightweight. "
-            f"Trim {filename} soon: remove outdated sections, merge duplicates."
+            f"Trim {filename} soon: remove outdated sections, merge duplicates. "
+            f"Tips: one rule = one line; drop self-evident examples; delete default/obvious rules; flatten deep nesting."
         )
 
     # Total across all root files
@@ -71,7 +76,8 @@ def check_size(filename, new_content):
         warnings.append(
             f"Total root files will be {total} chars — exceeds maxBootstrapTotalChars ({MAX_TOTAL_CHARS}). "
             f"Some files won't be fully injected (all root files load every turn — total size matters). "
-            f"Check sizes: wc -c {' '.join(ALLOWED_FILES)} — trim the largest files: remove unused sections, merge duplicates, keep rules concise."
+            f"Check sizes: wc -c {' '.join(ALLOWED_FILES)} — trim the largest files. "
+            f"Tips: one rule = one line; drop self-evident examples; merge duplicate sections; delete default/obvious rules; flatten deep nesting."
         )
     elif total > WARN_TOTAL_CHARS:
         warnings.append(
