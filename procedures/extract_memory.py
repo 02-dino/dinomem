@@ -516,8 +516,13 @@ Required JSON structure:
     "Source name + reliability assessment: accuracy track record, bias direction"
   ],
   "decisions": [
-    "Decisions made or actions taken",
-    "Framework validation: whether a prior pattern/rule held true or failed in this instance"
+    "[decision] Explicit choice made: what was chosen, what was rejected, and why — must be honored in future sessions"
+  ],
+  "corrections": [
+    "[correction] Something the user corrected the AI about — exact mistake and the correct behavior"
+  ],
+  "operational": [
+    "[operational] Critical fact needed to act correctly: repo names, file paths, tool names, config values, pipeline structure"
   ],
   "user_preferences": [
     "What you learned about the user's style, preferences, or boundaries — permanent traits only"
@@ -531,7 +536,9 @@ Rules:
 - [pattern] items MUST abstract beyond the specific case — state the transferable mechanism
 - [lesson] items MUST reflect a concrete takeaway from an outcome, mistake, or experiment
 - [source_scores] track reliability over time: which sources or tools have been right/wrong and why
-- [decisions] MUST include framework validation when a prior rule was tested
+- [decision] items MUST capture what was chosen AND what was rejected — these are commitments to honor in future sessions
+- [correction] items MUST capture the exact mistake made AND the correct behavior — highest priority for recall
+- [operational] items MUST be specific and actionable: exact names, paths, values — NOT vague descriptions
 - Return empty arrays if nothing is worth recalling
 - No markdown inside JSON values, plain text only
 - Focus on RECALLABLE knowledge, not operational logs
@@ -559,6 +566,8 @@ Rules:
             'insights': llm_output.get('insights', []),
             'source_scores': llm_output.get('source_scores', []),
             'decisions': llm_output.get('decisions', []),
+            'corrections': llm_output.get('corrections', []),
+            'operational': llm_output.get('operational', []),
             'user_preferences': llm_output.get('user_preferences', []),
             'topics': llm_output.get('topics', [])
         }
@@ -567,12 +576,14 @@ Rules:
             summary['insights'] or
             summary['source_scores'] or
             summary['decisions'] or
+            summary['corrections'] or
+            summary['operational'] or
             summary['user_preferences']
         )
         if not has_content:
             log(f"   ℹ️  Nothing memorable in {archive_filename}, skipping")
             return None
-        log(f"   ✅ Extracted {len(summary['insights'])} insights, {len(summary['decisions'])} decisions from {archive_filename}")
+        log(f"   ✅ Extracted {len(summary['insights'])} insights, {len(summary['decisions'])} decisions, {len(summary['corrections'])} corrections, {len(summary['operational'])} operational from {archive_filename}")
         return summary
     except json.JSONDecodeError as e:
         log(f"   ⚠️  JSON parse failed for {archive_filename}: {e}")
@@ -591,8 +602,19 @@ def write_memory_file(summary, dedup=True):
     insights = summary.get('insights', [])
     source_scores = summary.get('source_scores', [])
     decisions = summary.get('decisions', [])
+    corrections = summary.get('corrections', [])
+    operational = summary.get('operational', [])
     prefs = summary.get('user_preferences', [])
     topics = summary.get('topics', [])
+    # TTL tagging: append decay hint to operational/decision/correction items
+    today_str = summary.get('date', datetime.now().strftime("%Y-%m-%d"))
+    from datetime import timedelta
+    def ttl_tag(items, days):
+        expiry = (datetime.strptime(today_str, "%Y-%m-%d") + timedelta(days=days)).strftime("%Y-%m-%d")
+        return [f"{i} [expires:{expiry}]" if "[expires:" not in i else i for i in items]
+    operational = ttl_tag(operational, 90)
+    decisions = ttl_tag(decisions, 180)
+    corrections = ttl_tag(corrections, 365)
     # Deduplicate against existing file
     if dedup and file_exists:
         try:
@@ -600,10 +622,12 @@ def write_memory_file(summary, dedup=True):
             insights = [i for i in insights if i not in existing]
             source_scores = [s for s in source_scores if s not in existing]
             decisions = [d for d in decisions if d not in existing]
+            corrections = [c for c in corrections if c not in existing]
+            operational = [o for o in operational if o not in existing]
             prefs = [p for p in prefs if p not in existing]
         except Exception:
             pass
-    if not context and not insights and not source_scores and not decisions and not prefs:
+    if not context and not insights and not source_scores and not decisions and not corrections and not operational and not prefs:
         log(f"   ℹ️  Nothing new to add to {memory_file.name}, skipping")
         return True
     # Build new content block
@@ -627,6 +651,16 @@ def write_memory_file(summary, dedup=True):
     if decisions:
         new_lines.append("## Decisions")
         for item in decisions:
+            new_lines.append(f"- {item}")
+        new_lines.append("")
+    if corrections:
+        new_lines.append("## Corrections")
+        for item in corrections:
+            new_lines.append(f"- {item}")
+        new_lines.append("")
+    if operational:
+        new_lines.append("## Operational")
+        for item in operational:
             new_lines.append(f"- {item}")
         new_lines.append("")
     if prefs:
