@@ -49,13 +49,14 @@ def check_size(filename, new_content):
     if projected > MAX_FILE_CHARS:
         warnings.append(
             f"{filename} will be {projected} chars after write — exceeds maxBootstrapFileChars ({MAX_FILE_CHARS}). "
-            f"Content beyond limit won't be injected into context. "
-            f"Trim {filename}: remove outdated or redundant sections to keep it lightweight."
+            f"Content beyond limit won't be injected into context (root files are injected every turn — smaller = faster + more reliable). "
+            f"Trim {filename}: remove sections you no longer use, merge duplicates, keep rules concise."
         )
     elif projected > WARN_FILE_CHARS:
         warnings.append(
             f"{filename} will be {projected} chars after write — approaching maxBootstrapFileChars ({MAX_FILE_CHARS}). "
-            f"Consider trimming {filename} soon — remove outdated sections."
+            f"Root files are injected every turn — keep them lightweight. "
+            f"Trim {filename} soon: remove outdated sections, merge duplicates."
         )
 
     # Total across all root files
@@ -69,12 +70,13 @@ def check_size(filename, new_content):
     if total > MAX_TOTAL_CHARS:
         warnings.append(
             f"Total root files will be {total} chars — exceeds maxBootstrapTotalChars ({MAX_TOTAL_CHARS}). "
-            f"Some files won't be fully injected into context. "
-            f"Check sizes: wc -c {' '.join(ALLOWED_FILES)} — trim the largest files, remove outdated sections."
+            f"Some files won't be fully injected (all root files load every turn — total size matters). "
+            f"Check sizes: wc -c {' '.join(ALLOWED_FILES)} — trim the largest files: remove unused sections, merge duplicates, keep rules concise."
         )
     elif total > WARN_TOTAL_CHARS:
         warnings.append(
             f"Total root files will be {total} chars — approaching maxBootstrapTotalChars ({MAX_TOTAL_CHARS}). "
+            f"All root files load every turn — keep total size lean. "
             f"Check sizes: wc -c {' '.join(ALLOWED_FILES)} — consider trimming soon."
         )
 
