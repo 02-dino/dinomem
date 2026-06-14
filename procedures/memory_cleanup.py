@@ -177,7 +177,27 @@ def cleanup():
             removed_count += len(remove_indices)
         print(f"Semantic dedup: {removed_count} duplicates removed across {len(md_files)} files (TEI {'available' if get_embeddings(['test']) is not None else 'unavailable, used string fallback'}).")
 
-    # ── Pass 2: Bootcheck cleanup ──
+    # ── Pass 2: TTL expiry cleanup ──
+    today = datetime.now(timezone.utc).date()
+    expires_pattern = re.compile(r'\[expires:(\d{4}-\d{2}-\d{2})\]')
+    ttl_removed = 0
+    for md_file in md_files:
+        if not md_file.exists():
+            continue
+        lines = md_file.read_text(encoding='utf-8').split('\n')
+        new_lines = []
+        for line in lines:
+            m = expires_pattern.search(line)
+            if m:
+                expiry = datetime.strptime(m.group(1), '%Y-%m-%d').date()
+                if expiry < today:
+                    ttl_removed += 1
+                    continue
+            new_lines.append(line)
+        md_file.write_text('\n'.join(new_lines), encoding='utf-8')
+    print(f"TTL expiry: {ttl_removed} expired items deleted.")
+
+    # ── Pass 3: Bootcheck cleanup ──
     for md_file in md_files:
         if not md_file.exists():
             continue
