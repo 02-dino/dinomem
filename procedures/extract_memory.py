@@ -593,6 +593,114 @@ Rules:
         return None
 
 
+def _get_tei_embedding(text):
+    """Get single embedding from TEI. Returns vector or None."""
+    try:
+        import urllib.request as _ur
+        payload = json.dumps({"input": [text], "model": ""}).encode()
+        req = _ur.Request("http://localhost:8080/v1/embeddings", data=payload,
+                          headers={"Content-Type": "application/json"}, method="POST")
+        with _ur.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read())
+        return data["data"][0]["embedding"]
+    except Exception:
+        return None
+
+def _cosine_sim(a, b):
+    dot = sum(x * y for x, y in zip(a, b))
+    na = sum(x * x for x in a) ** 0.5
+    nb = sum(x * x for x in b) ** 0.5
+    return dot / (na * nb) if na and nb else 0.0
+
+def _contradiction_check_items(new_items, memory_dir, threshold=0.85):
+    """
+    For each new item, find semantically similar items in existing memory.
+    If contradiction detected via LLM → supersede old item, keep new.
+    If same thing → skip new (dedup).
+    If update → supersede old, keep new.
+    Returns filtered new_items list.
+    """
+    if not new_items:
+        return new_items
+
+    item_pattern = re.compile(
+        r'^(\s*-\s*)\[(operational|decision|correction)\]\s*(.+?)$'
+    )
+    existing_items = []
+    md_files = sorted([f for f in memory_dir.glob("*.md")
+                       if f.name != "MEMORY.md" and not f.name.startswith("_")])
+    for md_file in md_files:
+        lines = md_file.read_text(encoding='utf-8').split('\n')
+        for i, line in enumerate(lines):
+            if item_pattern.match(line):
+                existing_items.append((md_file, i, line, line.strip()))
+
+    if not existing_items:
+        return new_items
+
+    kept_new = []
+    for new_item in new_items:
+        new_vec = _get_tei_embedding(new_item)
+        if new_vec is None:
+            kept_new.append(new_item)
+            continue
+
+        candidates = []
+        for (md_file, line_idx, raw_line, item_text) in existing_items:
+            ex_vec = _get_tei_embedding(item_text)
+            if ex_vec and _cosine_sim(new_vec, ex_vec) >= threshold:
+                candidates.append((md_file, line_idx, raw_line, item_text))
+
+        if not candidates:
+            kept_new.append(new_item)
+            continue
+
+        candidate_texts = '\n'.join(f'- {c[3]}' for c in candidates)
+        prompt = f"""You are a memory contradiction checker.
+
+New item to store:
+{new_item}
+
+Existing similar items in memory:
+{candidate_texts}
+
+Classify the relationship. Reply with JSON only:
+{{"verdict": "same" | "update" | "contradiction" | "unrelated", "reason": "one sentence"}}
+
+- same: new item is equivalent to an existing one (skip new)
+- update: new item supersedes existing (delete old, keep new)
+- contradiction: new item conflicts with existing (delete old, keep new)
+- unrelated: different enough to coexist (keep both)"""
+
+        success, response = call_llm(prompt, max_tokens=100, reasoning=False)
+        if not success:
+            kept_new.append(new_item)
+            continue
+
+        try:
+            clean = response.strip().lstrip('```json').lstrip('```').rstrip('```').strip()
+            result = json.loads(clean)
+            verdict = result.get('verdict', 'unrelated')
+        except Exception:
+            kept_new.append(new_item)
+            continue
+
+        if verdict == 'same':
+            log(f"   ⏭️  Contradiction check: skipped duplicate item")
+            continue
+        elif verdict in ('update', 'contradiction'):
+            for (md_file, line_idx, raw_line, item_text) in candidates:
+                lines = md_file.read_text(encoding='utf-8').split('\n')
+                if line_idx < len(lines):
+                    lines[line_idx] = ''
+                    md_file.write_text('\n'.join(lines), encoding='utf-8')
+            log(f"   ♻️  Contradiction check: superseded {len(candidates)} old item(s) ({verdict})")
+            kept_new.append(new_item)
+        else:
+            kept_new.append(new_item)
+
+    return kept_new
+
 def write_memory_file(summary, dedup=True):
     """Write memory summary to memory/YYYY-MM-DD.md. Deduplicates, compacts if needed."""
     today = summary.get('date', datetime.now().strftime("%Y-%m-%d"))
@@ -615,6 +723,12 @@ def write_memory_file(summary, dedup=True):
     operational = ttl_tag(operational, 90)
     decisions = ttl_tag(decisions, 180)
     corrections = ttl_tag(corrections, 365)
+    # Contradiction check for high-stakes categories before dedup
+    if file_exists:
+        decisions = _contradiction_check_items(decisions, MEMORY_DIR)
+        corrections = _contradiction_check_items(corrections, MEMORY_DIR)
+        operational = _contradiction_check_items(operational, MEMORY_DIR)
+
     # Deduplicate against existing file
     if dedup and file_exists:
         try:
