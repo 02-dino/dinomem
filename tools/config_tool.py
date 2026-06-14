@@ -14,6 +14,22 @@ Usage (CLI):
 
 Usage (import):
   from tools.config_tool import append_to, patch_section, remove_section, write_file
+
+## CONTENT WRITING PRINCIPLES (for LLM generating content to pass to this script)
+Root files are injected into LLM context every turn. Every character costs tokens.
+Write content that is lean, precise, and machine-parseable.
+
+Rules:
+  - One rule = one line. If it needs a paragraph, it's too verbose — compress it.
+  - No redundant symbols: no decorative dashes, arrows, bullets unless structurally needed.
+  - No aesthetic padding: no "---" dividers, no empty section headers, no trailing whitespace.
+  - No self-evident examples: if the rule is clear, drop the example.
+  - No redundant preamble: never start with "This section describes..." or "The following rules...".
+  - No duplicate intent: if two rules say the same thing from different angles, merge into one.
+  - No dead rules: if the behavior is already default or obvious, omit it.
+  - Flatten nesting: max 2-3 levels of YAML/indent. Deeper = restructure.
+  - No prose in config: use key: value or bullet points, not sentences.
+  - Human readable: concise does not mean cryptic. A user should still understand it.
 """
 
 import argparse
