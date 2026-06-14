@@ -7,12 +7,26 @@ Skips regenerable data (vector DBs, session archives, logs, caches).
 Keeps last 3 snapshots — auto-rotates oldest.
 
 Usage:
-  python3 procedures/workspace_backup.py                    # create snapshot
-  python3 procedures/workspace_backup.py --list             # list snapshots
-  python3 procedures/workspace_backup.py --restore          # restore latest (interactive)
-  python3 procedures/workspace_backup.py --restore latest   # restore latest (no prompt)
-  python3 procedures/workspace_backup.py --restore <file>   # restore specific snapshot
-  python3 procedures/workspace_backup.py --restore --file memory/2026-06-01.md  # restore one file
+  python3 procedures/workspace_backup.py                                          # create snapshot
+  python3 procedures/workspace_backup.py --list                                   # list snapshots + cron backups
+  python3 procedures/workspace_backup.py --restore                                # restore latest (interactive)
+  python3 procedures/workspace_backup.py --restore latest                         # restore latest (no prompt)
+  python3 procedures/workspace_backup.py --restore <file>                         # restore specific snapshot
+  python3 procedures/workspace_backup.py --restore --file memory/2026-06-01.md   # restore one file
+  python3 procedures/workspace_backup.py --restore --file exports/crontab.txt    # restore linux crontab
+  python3 procedures/workspace_backup.py --restore --file exports/openclaw-config.json  # restore openclaw config
+  python3 procedures/workspace_backup.py --restore-crons                          # restore all openclaw cron jobs
+  python3 procedures/workspace_backup.py --restore-crons --agent analyst          # restore analyst crons only
+
+What's inside the tar.gz:
+  - memory/, MEMORY.md, AGENTS.md, SOUL.md, IDENTITY.md, TOOLS.md, USER.md, HEARTBEAT.md
+  - topics/, docs/
+  - openclaw.json
+  - exports/crontab.txt        (linux crontab snapshot)
+  - exports/openclaw-config.json (openclaw config snapshot)
+
+Separate (not in tar.gz, restored via --restore-crons):
+  - .backups/snapshots/openclaw-cron-jobs-{ts}.json
 
 Cron: weekly Sunday 2:00 UTC (registered by install.sh)
 """
@@ -66,12 +80,21 @@ def create_snapshot():
     ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
     archive = BACKUP_DIR / f"snapshot-{ts}.tar.gz"
 
+    # Export live state into exports/ so they land inside the tar.gz
+    _export_linux_crontab()
+    _export_openclaw_config()
+
     with tarfile.open(archive, "w:gz") as tar:
         for item in INCLUDE:
             path = WORKSPACE / item
             if path.exists():
                 tar.add(path, arcname=item)
                 log(f"  + {item}")
+        # exports/ — live state snapshots
+        exports_path = WORKSPACE / "exports"
+        if exports_path.exists():
+            tar.add(exports_path, arcname="exports")
+            log(f"  + exports/")
         if OPENCLAW_JSON.exists():
             tar.add(OPENCLAW_JSON, arcname="openclaw.json")
             log(f"  + openclaw.json")
@@ -84,10 +107,37 @@ def create_snapshot():
         old.unlink()
         log(f"pruned: {old.name}")
 
-    # Backup OpenClaw cron jobs
+    # Backup OpenClaw cron jobs (separate — needs CLI to restore)
     _backup_crons(ts)
 
     return archive
+
+# ── Live State Exports (go inside tar.gz) ────────────────────────────────────
+def _export_linux_crontab():
+    exports = WORKSPACE / "exports"
+    exports.mkdir(exist_ok=True)
+    out = exports / "crontab.txt"
+    try:
+        r = subprocess.run(["crontab", "-l"], capture_output=True, text=True, timeout=10)
+        out.write_text(r.stdout if r.returncode == 0 else "# no crontab\n")
+        log(f"exported: exports/crontab.txt")
+    except Exception as e:
+        log(f"crontab export: skipped ({e})")
+
+def _export_openclaw_config():
+    exports = WORKSPACE / "exports"
+    exports.mkdir(exist_ok=True)
+    out = exports / "openclaw-config.json"
+    try:
+        r = subprocess.run(["openclaw", "config", "get", "--json"],
+                           capture_output=True, text=True, timeout=15)
+        if r.returncode == 0 and r.stdout.strip():
+            out.write_text(r.stdout)
+        elif OPENCLAW_JSON.exists():
+            out.write_text(OPENCLAW_JSON.read_text())
+        log(f"exported: exports/openclaw-config.json")
+    except Exception as e:
+        log(f"openclaw config export: skipped ({e})")
 
 # ── Cron Backup ───────────────────────────────────────────────────────────────
 CRON_BACKUP_DIR = BACKUP_DIR  # same folder as snapshots
