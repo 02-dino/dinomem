@@ -147,11 +147,11 @@ Instructions:
 4. Return ONLY the reviewed entries. One per line. Format:
    - [status] original text
 
-5. For invalidated market claims: include the outcome (e.g., "pump did not sustain, dropped 40% from $X to $Y").
+5. For invalidated entries: briefly note why — what changed, what actually happened, or why it's no longer true.
 
-6. For expired predictions: note the expiry and what actually happened.
+6. For expired time-sensitive entries: note the expiry and what actually happened if known.
 
-7. For framework facts (workflow_market, analysis_template): if they appear in newer files, they are redundant. Omit them.
+7. For framework/workflow facts that appear in newer files: they are redundant. Omit them.
 
 8. Be concise. Do not add commentary outside the tagged lines.
 
