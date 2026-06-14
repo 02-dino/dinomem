@@ -56,6 +56,20 @@ SESSIONS_DIR="$OPENCLAW_DIR/agents/$AGENT_ID/sessions"
 echo
 hr "dinomem -> $WS (agent: $AGENT_ID)"
 
+# ── 0) Pre-flight compatibility checks ───────────────────────────────────────────
+hr "Pre-flight checks"
+# Existing vector DB
+if [ -d "$WS/kb/vector_db" ] && [ "$(ls -A "$WS/kb/vector_db" 2>/dev/null)" ]; then
+  warn "kb/vector_db/ already exists and is not empty — dinomem will write to this path."
+  warn "If this belongs to another system, back it up first or use a different workspace."
+else
+  ok "kb/vector_db/ clear"
+fi
+# Existing AGENTS.md memory block
+if [ -f "$WS/AGENTS.md" ] && grep -qF "memory_recall" "$WS/AGENTS.md" 2>/dev/null; then
+  warn "AGENTS.md already has a memory_recall section — dinomem block will be appended. Check for duplicates after install."
+fi
+
 # ── 1) Create workspace directories ──────────────────────────────────────────
 hr "Directories"
 for d in procedures tools logs memory .memory_archive; do
@@ -95,6 +109,11 @@ if [ "$DO_DOCKER" = 1 ]; then
   hr "TEI Embedding Server (Docker)"
   if ! command -v docker >/dev/null 2>&1; then
     warn "Docker not found — skipping TEI setup. Install Docker and run: docker compose -f $WS/docker-compose.tei.yml up -d"
+  elif lsof -i :8080 >/dev/null 2>&1 || ss -tlnp 2>/dev/null | grep -q ':8080 '; then
+    warn "Port 8080 already in use — another service may clash with TEI. Check: lsof -i :8080"
+    warn "Use --no-docker to skip TEI, or change TEI port in docker-compose.tei.yml after install."
+    cp "$SKILL_DIR/docker/docker-compose.tei.yml" "$WS/docker-compose.tei.yml"
+    ok "docker-compose.tei.yml copied (TEI not started — port conflict)"
   else
     cp "$SKILL_DIR/docker/docker-compose.tei.yml" "$WS/docker-compose.tei.yml"
     ok "docker-compose.tei.yml copied"
@@ -215,10 +234,15 @@ with open(path) as f:
 
 changed = []
 
-# session.reset -> idle 7 days
+# session.reset -> idle 7 days (skip if user already has custom idle config)
 session = cfg.setdefault("session", {})
 reset = session.setdefault("reset", {})
-if reset.get("mode") != "idle" or reset.get("idleMinutes") != 10080:
+if reset.get("mode") not in (None, "idle"):
+    print(f"  \033[33m[warn]\033[0m session.reset.mode is '{reset.get('mode')}' — skipping (dinomem needs idle mode; set manually if needed)")
+elif reset.get("idleMinutes") and reset.get("idleMinutes") != 10080:
+    print(f"  \033[33m[warn]\033[0m session.reset.idleMinutes is {reset.get('idleMinutes')} (custom) — keeping existing value")
+    reset["mode"] = "idle"  # ensure mode is set even if minutes kept
+else:
     reset["mode"] = "idle"
     reset["idleMinutes"] = 10080
     changed.append("session.reset -> idle 7 days")
@@ -252,9 +276,12 @@ if defaults.get("workspaceBootstrap") not in (None, "always"):
     defaults["workspaceBootstrap"] = "always"
     changed.append("workspaceBootstrap -> always (root files injected every turn)")
 
-# memorySearch -> TEI openai-compatible
+# memorySearch -> TEI openai-compatible (skip if user already has custom provider)
 mem_search = defaults.get("memorySearch", {})
-if mem_search.get("provider") != "openai-compatible":
+existing_provider = mem_search.get("provider")
+if existing_provider and existing_provider not in (None, "openai-compatible", "built-in"):
+    print(f"  \033[33m[warn]\033[0m memorySearch.provider is '{existing_provider}' (custom) — skipping. dinomem TEI won't be wired automatically. Set manually if needed.")
+elif mem_search.get("provider") != "openai-compatible":
     defaults["memorySearch"] = {
         "provider": "openai-compatible",
         "model": "sentence-transformers/all-MiniLM-L6-v2",

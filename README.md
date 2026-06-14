@@ -206,6 +206,23 @@ MEMORY.md                       # Searchable index (auto-generated, do not edit)
 
 ---
 
+## Compatibility
+
+dinomem is designed for a default OpenClaw setup. If your agent is already customized, read this before installing.
+
+| Potential clash | What happens | How to avoid |
+|----------------|-------------|-------------|
+| Custom `session.reset` config | install.sh warns and keeps your existing value | Nothing — your config is preserved |
+| Custom `memorySearch.provider` | install.sh warns and skips TEI wiring | Wire TEI manually after install |
+| Port 8080 in use | install.sh warns, copies docker-compose but does not start TEI | Change port in `docker-compose.tei.yml` or use `--no-docker` |
+| Existing `kb/vector_db/` | install.sh warns — dinomem will write to this path | Back up first, or use a separate workspace |
+| Existing `memory_recall` in AGENTS.md | install.sh warns — block will be appended | Remove duplicate manually after install |
+| Existing backup system | Weekly backup cron may be redundant | Use `--no-backup-cron` to skip |
+
+> If your agent has heavy customization, run `bash scripts/install.sh --no-docker --no-cron` first to inspect what would change, then apply cron and Docker manually.
+
+---
+
 ## OpenClaw config patches
 
 The installer automatically patches `~/.openclaw/openclaw.json`:
