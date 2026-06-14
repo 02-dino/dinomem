@@ -79,6 +79,7 @@ with open(path) as f:
     cfg = json.load(f)
 
 changed = []
+defaults = cfg.get("agents", {}).get("defaults", {})
 
 # Revert session reset
 sr = cfg.get("session", {}).get("reset", {})
@@ -88,13 +89,13 @@ if sr.get("mode") == "idle":
     changed.append("session.reset")
 
 # Revert contextPruning
-cp = cfg.get("contextPruning", {})
+cp = defaults.get("contextPruning", {})
 if cp.get("mode") == "off":
     cp.pop("mode", None)
     changed.append("contextPruning.mode")
 
 # Revert compaction
-comp = cfg.get("compaction", {})
+comp = defaults.get("compaction", {})
 if comp.get("mode") == "safeguard":
     comp.pop("mode", None)
     changed.append("compaction.mode")
@@ -103,13 +104,13 @@ if mf.get("enabled") is False:
     mf.pop("enabled", None)
     changed.append("compaction.memoryFlush.enabled")
 
-# Revert workspaceBootstrap (only if explicitly set)
+# Revert workspaceBootstrap
 if "workspaceBootstrap" in defaults:
     defaults.pop("workspaceBootstrap")
     changed.append("workspaceBootstrap")
 
 # Revert memorySearch
-ms = cfg.get("memorySearch", {})
+ms = defaults.get("memorySearch", {})
 if ms.get("provider") == "openai-compatible":
     ms.pop("provider", None)
     ms.pop("remote", None)
