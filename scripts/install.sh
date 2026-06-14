@@ -355,6 +355,24 @@ BLOCK="$BEGIN
         - memory_search for relevant context and then memory_get to retrieve the full details
         - fallback: ask_clarification
 
+    - id: M1_pre_tool_call
+      when:
+        about_to_call_tool_or_script_with_side_effects: true
+      action:
+        - memory_search for relevant context before executing
+      note: applies to any tool call or script execution that writes, deletes, pushes, modifies, or triggers external state
+
+    - id: M2_cross_session_signals
+      when:
+        any_of:
+          - user mentions named entity (file path, repo name, tool name, config, pipeline, script)
+          - user uses temporal reference ("tadi", "sebelumnya", "kemarin", "yang lalu", "before", "last time")
+          - user uses implicit reference ("itu", "yang itu", "yang kita buat", "that", "the one we")
+          - user request is clearly a continuation (fix, update, lanjut, tambah, upgrade, extend)
+      action:
+        - memory_search for relevant context before responding or acting
+      note: mechanical — do not rely on judgment to decide if recall is needed; if signal present, recall always
+
   memory_pin:
     description: |
       Manual memory pinning. When user says "remember this", "save this", "ingat ini",
@@ -405,6 +423,22 @@ BLOCK="$BEGIN
         action:
           - memory_search for relevant context and then memory_get to retrieve full details
           - fallback: ask_clarification
+      - id: M1_pre_tool_call
+        when:
+          about_to_call_tool_or_script_with_side_effects: true
+        action:
+          - memory_search for relevant context before executing
+        note: applies to any tool call or script execution that writes, deletes, pushes, modifies, or triggers external state
+      - id: M2_cross_session_signals
+        when:
+          any_of:
+            - user mentions named entity (file path, repo name, tool name, config, pipeline, script)
+            - user uses temporal reference ("tadi", "sebelumnya", "kemarin", "yang lalu", "before", "last time")
+            - user uses implicit reference ("itu", "yang itu", "yang kita buat", "that", "the one we")
+            - user request is clearly a continuation (fix, update, lanjut, tambah, upgrade, extend)
+        action:
+          - memory_search for relevant context before responding or acting
+        note: mechanical — do not rely on judgment to decide if recall is needed; if signal present, recall always
     when_NOT_to_use:
       - Do not call memory_search on every turn by default — only when recall is relevant
       - Do not assume memory exists without searching first
