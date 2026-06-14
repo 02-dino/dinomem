@@ -136,7 +136,7 @@ dinomem includes a routing system that detects your intent and writes to the cor
 
 ---
 
-## Want more?
+## Want more? → [dinomem-neuron](https://t.me/dinotlgrm) (private repo)
 
 dinomem gives your agent memory. **dinomem-neuron** gives it the ability to learn.
 
