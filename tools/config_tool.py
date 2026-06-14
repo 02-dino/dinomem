@@ -30,6 +30,31 @@ Rules:
   - Flatten nesting: max 2-3 levels of YAML/indent. Deeper = restructure.
   - No prose in config: use key: value or bullet points, not sentences.
   - Human readable: concise does not mean cryptic. A user should still understand it.
+
+## WHAT BELONGS IN ROOT FILES vs OUTSIDE
+Root files = always-on behavioral config. Only put things here that the agent needs every single turn.
+
+BELONGS in root files:
+  - Routing rules: when to use which tool
+  - Behavioral constraints: what to never do
+  - User preferences: tone, language, format
+  - Identity: persona, name, role
+  - Active tool specs: path, inputs, when_to_use
+
+DOES NOT BELONG in root files (put elsewhere):
+  - One-time setup instructions → README or docs/
+  - Historical context or past decisions → memory/*.md
+  - Long reference docs, legal text, contracts → docs/ + RAG
+  - Tool implementation details (how it works internally) → inline comments in the script
+  - Workflow examples or tutorials → README
+  - Anything only needed occasionally → memory/*.md or docs/
+
+REMOVE from root files if:
+  - The rule hasn't been triggered in months
+  - It describes behavior that is already default
+  - It duplicates something already in another root file
+  - It was added for a one-time task and never generalized
+  - It's longer than 3 lines and could be a memory entry instead
 """
 
 import argparse
