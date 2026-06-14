@@ -138,8 +138,11 @@ dinomem includes a routing system that detects your intent and writes to the cor
 
 ## Want more?
 
-dinomem is the foundation. After a few weeks, your agent has hundreds of memories.
-**dinomem-neuron** is what happens next.
+dinomem gives your agent memory. **dinomem-neuron** gives it the ability to learn.
+
+The difference: dinomem remembers what you tell it. dinomem-neuron figures out things you never said.
+
+After a few weeks of sessions, neuron starts finding structure in your memories — patterns across decisions, contradictions you didn't notice, insights that only emerge when you look at everything together. It builds a knowledge graph, synthesizes it, and promotes only what survives multiple cycles into long-term memory. Your agent's behavior changes — not because you updated a config, but because it learned.
 
 > *"After 3 weeks, my agent told me I've been contradicting myself on position sizing — I never noticed."*
 >
@@ -150,8 +153,7 @@ dinomem is the foundation. After a few weeks, your agent has hundreds of memorie
 It also adds:
 - **Calendar integration** — `_note_` files linked to Google Calendar, auto-deleted when the event passes
 - **RAG for long docs** — semantic search over contracts, books, legal text without touching memory
-- **Contradiction detection** — flags when new memories conflict with existing ones
-- **Emergent insights** — finds patterns across memories you never explicitly stated
+- **Contradiction detection** — flags when new memories conflict with existing ones, blocks promotion until resolved
 
 The dinomem-neuron repo is private — access granted after onboarding.
 
