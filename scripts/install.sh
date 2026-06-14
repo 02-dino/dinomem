@@ -69,6 +69,14 @@ fi
 if [ -f "$WS/AGENTS.md" ] && grep -qF "memory_recall" "$WS/AGENTS.md" 2>/dev/null; then
   warn "AGENTS.md already has a memory_recall section — dinomem block will be appended. Check for duplicates after install."
 fi
+# AGENTS.md size check
+if [ -f "$WS/AGENTS.md" ]; then
+  AGENTS_SIZE=$(wc -c < "$WS/AGENTS.md")
+  if [ "$AGENTS_SIZE" -gt 15000 ]; then
+    warn "AGENTS.md is ${AGENTS_SIZE} chars (>15000) — may exceed maxBootstrapFileChars after dinomem block is appended."
+    warn "Consider trimming AGENTS.md or increasing agents.defaults.maxBootstrapFileChars in openclaw.json."
+  fi
+fi
 
 # ── 1) Create workspace directories ──────────────────────────────────────────
 hr "Directories"

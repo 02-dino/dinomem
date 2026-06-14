@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 """
-memory_cleanup.py — Lightweight deduplication + bootcheck cleanup.
+memory_cleanup.py — Lightweight deduplication + bootcheck cleanup + MEMORY.md size trim.
 
 What it does:
 1. Removes duplicate [factual] entries across memory files (keeps earliest)
 2. Auto-deduplicates known framework recitation (workflow_market, analysis_template, etc.)
 3. Removes redundant bootcheck-only files (no new facts, just framework recitation)
+4. Trims MEMORY.md index if over MAX_INDEX_CHARS — removes oldest entries only.
+   Raw data in memory/*.md is never touched. Index can be rebuilt anytime.
 
-What it does NOT do: stale data flagging, prediction expiry, uncertain cleanup, MEMORY.md edits.
+What it does NOT do: stale data flagging, prediction expiry, uncertain cleanup.
 That is handled by memory_review.py and OpenClaw's own memory system.
 
-Run: python3 memory_cleanup.py
+Run: python3 procedures/memory_cleanup.py
 """
 
-import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,28 +22,21 @@ from difflib import SequenceMatcher
 
 WORKSPACE = Path("DINOMEM_WORKSPACE_PLACEHOLDER")
 MEMORY_DIR = WORKSPACE / "memory"
-# Archive lives OUTSIDE memory/ so memory-core (memory_search) does NOT index these
-# pre-dedup backup snapshots — they're continuity-only, not searchable content.
 ARCHIVE_DIR = WORKSPACE / ".memory_archive"
+MEMORY_INDEX = WORKSPACE / "MEMORY.md"
 
 SIM_THRESHOLD = 0.80
+MAX_INDEX_CHARS = 18000  # 90% of default maxBootstrapFileChars (20000)
 
-# Add agent-specific framework facts here that should be deduplicated.
-# These are recitations of your AGENTS.md/workflow structure — not real memories.
-# Example: "workflow_market has two main paths", "analysis_template has four sections"
-# Leave empty for a generic agent with no custom framework facts.
 KNOWN_FRAMEWORK_FACTS = [
-    # Generic patterns safe to deduplicate across all agents:
     "framework validation: The AI successfully recalled",
     "framework validation: The AI correctly identified",
     "user expects exact adherence to instructions",
     "user expects structured and detailed recall",
 ]
 
-
 def similar(a, b):
     return SequenceMatcher(None, a, b).ratio()
-
 
 def is_duplicate(text, seen_facts):
     text_lower = text.lower()
@@ -53,7 +47,6 @@ def is_duplicate(text, seen_facts):
         if similar(text, seen) >= SIM_THRESHOLD:
             return True
     return False
-
 
 def cleanup():
     today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -84,24 +77,19 @@ def cleanup():
                     continue
                 seen_facts.append(fact)
                 file_has_new_facts = True
-            # Track non-framework entries as "new facts" — including reviewed tags
-            elif re.match(r'^\s*-\s*\[(pattern|preference|uncertain|prediction|valid|invalidated)\]', line):
+            elif re.match(r'^\s*-\s*\[(pattern|preference|uncertain|prediction|valid|invalidated|lesson)\]', line):
                 file_has_new_facts = True
             new_lines.append(line)
 
-        # After dedup, check if file is just bootcheck/framework recitation
         cleaned = '\n'.join(new_lines)
         is_redundant = False
         if not file_has_new_facts and len(new_lines) > 3:
-            # Check if content is mostly bootcheck or framework recitation
             bootcheck_keywords = ['bootcheck', 'framework validation', 'operational procedures',
                                   'workflow_market', 'analysis_template', 'AI successfully recalled']
-            content_lower = cleaned.lower()
-            if any(kw in content_lower for kw in bootcheck_keywords):
+            if any(kw in cleaned.lower() for kw in bootcheck_keywords):
                 is_redundant = True
 
         if is_redundant:
-            # Archive the whole file then delete
             with open(ARCHIVE_DIR / f"{md_file.stem}_bootcheck_{today_str}.md", 'a', encoding='utf-8') as f:
                 f.write(f"# Bootcheck removal from {md_file.name} on {today_display}\n\n")
                 f.write(cleaned + '\n')
@@ -109,18 +97,55 @@ def cleanup():
             bootcheck_removed += 1
             continue
 
-        # Rewrite file
         with open(md_file, 'w', encoding='utf-8') as f:
             f.write(cleaned)
 
-        # Archive removed
         if removed_parts:
             with open(ARCHIVE_DIR / f"{md_file.stem}_dedup_{today_str}.md", 'a', encoding='utf-8') as f:
                 f.write(f"# Removed from {md_file.name} on {today_display}\n")
                 f.write('\n'.join(removed_parts) + '\n')
 
-    print(f"Memory dedup complete: {removed_count} duplicate facts removed, {bootcheck_removed} bootcheck files removed from {len(md_files)} files.")
-    print(f"NOTE: MEMORY.md and topics/INDEX.md are managed by OpenClaw. Do not manually regenerate.")
+    print(f"Memory dedup: {removed_count} duplicates removed, {bootcheck_removed} bootcheck files removed from {len(md_files)} files.")
+
+    trim_memory_index()
+
+
+def trim_memory_index():
+    """
+    Trim MEMORY.md index if over MAX_INDEX_CHARS.
+    Removes oldest entries (top of index) until under limit.
+    Raw data in memory/*.md is never touched — index can be rebuilt anytime.
+    """
+    if not MEMORY_INDEX.exists():
+        return
+
+    content = MEMORY_INDEX.read_text(encoding="utf-8")
+    if len(content) <= MAX_INDEX_CHARS:
+        print(f"MEMORY.md: {len(content)} chars — under limit, no trim needed.")
+        return
+
+    print(f"MEMORY.md: {len(content)} chars exceeds limit ({MAX_INDEX_CHARS}) — trimming oldest entries...")
+
+    lines = content.splitlines()
+
+    # Find where index entries start (lines starting with [TAG])
+    header_end = 0
+    for i, line in enumerate(lines):
+        if re.match(r'^\[[\w]+\]', line.strip()):
+            header_end = i
+            break
+
+    header = lines[:header_end]
+    entries = lines[header_end:]
+
+    removed = 0
+    while entries and len("\n".join(header + entries)) > MAX_INDEX_CHARS:
+        entries.pop(0)
+        removed += 1
+
+    MEMORY_INDEX.write_text("\n".join(header + entries), encoding="utf-8")
+    print(f"Trimmed {removed} oldest entries from MEMORY.md. Raw data in memory/*.md untouched.")
+    print(f"To rebuild full index: python3 procedures/extract_memory.py --rebuild")
 
 
 if __name__ == "__main__":
