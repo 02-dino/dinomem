@@ -14,6 +14,7 @@ Every decision you've made, every preference you've set, every pattern your agen
 - **Memory pinning** — tell your agent "remember this" and it saves a permanent `_pin_*.md`, protected from all cleanup. For todos and reminders, `_note_*.md` — auto-deleted once resolved.
 - **Memory cleanup** — daily dedup + weekly LLM review keeps memory lean. Noise removed, contradictions flagged.
 - **Agent self-configuration** — tell your agent to change its tone, add a tool, or set a rule — it writes to the right file automatically
+- **Weekly snapshot backup** — memory, config, and root files backed up automatically. Keep-3 rotation, never clutters disk. Restore anytime via `workspace_backup.py`.
 - **Zero-config install** — one script handles Docker, cron, and OpenClaw config patches
 
 ---
@@ -166,6 +167,7 @@ Interested? → [@dinotlgrm](https://t.me/dinotlgrm) on Telegram
 | `--agent-id ID` | Detected from workspace name | OpenClaw agent ID |
 | `--no-docker` | — | Skip TEI Docker setup |
 | `--no-cron` | — | Skip crontab registration |
+| `--no-backup-cron` | — | Skip weekly backup cron (if you have your own backup system) |
 | `--force` | — | Overwrite existing scripts |
 
 ---

@@ -4,13 +4,14 @@
 # Idempotent: safe to run multiple times.
 #
 # Usage:
-#   bash scripts/install.sh [--workspace DIR] [--agent-id ID] [--no-docker] [--no-cron] [--force]
+#   bash scripts/install.sh [--workspace DIR] [--agent-id ID] [--no-docker] [--no-cron] [--no-backup-cron] [--force]
 #
 # Options:
 #   --workspace DIR   Path to agent workspace (default: $OPENCLAW_WORKSPACE or ~/.openclaw/workspace)
 #   --agent-id ID     OpenClaw agent ID (default: detected from workspace name)
 #   --no-docker       Skip TEI Docker setup
 #   --no-cron         Skip crontab registration
+#   --no-backup-cron  Skip weekly backup cron (if you have your own backup system)
 #   --force           Overwrite existing files
 set -euo pipefail
 
@@ -19,6 +20,7 @@ WS="${OPENCLAW_WORKSPACE:-$HOME/.openclaw/workspace}"
 AGENT_ID=""
 DO_DOCKER=1
 DO_CRON=1
+DO_BACKUP_CRON=1
 FORCE=0
 
 while [ $# -gt 0 ]; do
@@ -26,7 +28,8 @@ while [ $# -gt 0 ]; do
     --workspace)  WS="$2"; shift 2 ;;
     --agent-id)   AGENT_ID="$2"; shift 2 ;;
     --no-docker)  DO_DOCKER=0; shift ;;
-    --no-cron)    DO_CRON=0; shift ;;
+    --no-cron)         DO_CRON=0; shift ;;
+    --no-backup-cron)  DO_BACKUP_CRON=0; shift ;;
     --force)      FORCE=1; shift ;;
     -h|--help)    grep -E '^#( |$)' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
@@ -118,12 +121,16 @@ if [ "$DO_CRON" = 1 ]; then
   fi
 
   # workspace_backup — weekly Sunday at 2:00 UTC (snapshot of memory + config files)
-  BACKUP_CRON="0 2 * * 0 cd $WS && python3 procedures/workspace_backup.py >> logs/workspace_backup.log 2>&1"
-  if crontab -l 2>/dev/null | grep -qF "workspace_backup.py"; then
-    skip "workspace_backup cron (exists)"
+  if [ "$DO_BACKUP_CRON" = 1 ]; then
+    BACKUP_CRON="0 2 * * 0 cd $WS && python3 procedures/workspace_backup.py >> logs/workspace_backup.log 2>&1"
+    if crontab -l 2>/dev/null | grep -qF "workspace_backup.py"; then
+      skip "workspace_backup cron (exists)"
+    else
+      (crontab -l 2>/dev/null; echo "# dinomem: weekly workspace snapshot (keep 3)"; echo "$BACKUP_CRON") | crontab -
+      ok "workspace_backup cron (weekly Sunday 2:00 UTC)"
+    fi
   else
-    (crontab -l 2>/dev/null; echo "# dinomem: weekly workspace snapshot (keep 3)"; echo "$BACKUP_CRON") | crontab -
-    ok "workspace_backup cron (weekly Sunday 2:00 UTC)"
+    skip "workspace_backup cron (--no-backup-cron)"
   fi
 
   # memory_cleanup — daily at 5:00 UTC
