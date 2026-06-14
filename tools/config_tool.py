@@ -26,12 +26,45 @@ BACKUP_SCRIPT = WORKSPACE.parent.parent / "scripts/file-backup.sh"
 
 ALLOWED_FILES = {"SOUL.md", "IDENTITY.md", "AGENTS.md", "TOOLS.md", "USER.md"}
 
-DEDUP_THRESHOLD = 0.85  # similarity ratio above which content is considered duplicate
+DEDUP_THRESHOLD = 0.85
+MAX_FILE_CHARS = 20000   # matches agents.defaults.maxBootstrapFileChars default
+MAX_TOTAL_CHARS = 60000  # matches agents.defaults.maxBootstrapTotalChars default
+WARN_FILE_CHARS = 15000  # warn at 75% of limit
+WARN_TOTAL_CHARS = 50000 # warn at 83% of limit  # similarity ratio above which content is considered duplicate
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def backup(path):
     if BACKUP_SCRIPT.exists():
         subprocess.run([str(BACKUP_SCRIPT), str(path)], capture_output=True)
+
+def check_size(filename, new_content):
+    """Check if writing new_content would exceed per-file or total bootstrap limits.
+    Returns list of warning strings (empty = ok).
+    """
+    warnings = []
+    path = WORKSPACE / filename
+    existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    projected = len(existing) + len(new_content)
+
+    if projected > MAX_FILE_CHARS:
+        warnings.append(f"{filename} will be {projected} chars after write — exceeds maxBootstrapFileChars ({MAX_FILE_CHARS}). Content beyond limit won't be injected into context.")
+    elif projected > WARN_FILE_CHARS:
+        warnings.append(f"{filename} will be {projected} chars after write — approaching maxBootstrapFileChars ({MAX_FILE_CHARS}).")
+
+    # Total across all root files
+    total = projected
+    for f in ALLOWED_FILES:
+        if f == filename:
+            continue
+        p = WORKSPACE / f
+        if p.exists():
+            total += len(p.read_text(encoding="utf-8"))
+    if total > MAX_TOTAL_CHARS:
+        warnings.append(f"Total root files will be {total} chars — exceeds maxBootstrapTotalChars ({MAX_TOTAL_CHARS}). Some files won't be fully injected.")
+    elif total > WARN_TOTAL_CHARS:
+        warnings.append(f"Total root files will be {total} chars — approaching maxBootstrapTotalChars ({MAX_TOTAL_CHARS}).")
+
+    return warnings
 
 def validate(content):
     return "\x00" not in content and len(content) <= 50_000
@@ -85,10 +118,15 @@ def append_to(filename, content):
     if is_dup:
         return {"ok": True, "file": filename, "action": "skip", "reason": f"duplicate: {reason}"}
 
+    size_warnings = check_size(filename, content)
+
     backup(path)
     sep = "\n" if existing and not existing.endswith("\n\n") else ""
     path.write_text(existing + sep + content.strip() + "\n", encoding="utf-8")
-    return {"ok": True, "file": filename, "action": "append"}
+    result = {"ok": True, "file": filename, "action": "append"}
+    if size_warnings:
+        result["warnings"] = size_warnings
+    return result
 
 def patch_section(filename, section_key, content):
     """
@@ -110,9 +148,13 @@ def patch_section(filename, section_key, content):
     if start is None:
         return append_to(filename, content)
 
+    size_warnings = check_size(filename, content)
     backup(path)
     path.write_text("".join(lines[:start] + [content.strip() + "\n"] + lines[end:]), encoding="utf-8")
-    return {"ok": True, "file": filename, "action": "patch", "section": section_key}
+    result = {"ok": True, "file": filename, "action": "patch", "section": section_key}
+    if size_warnings:
+        result["warnings"] = size_warnings
+    return result
 
 def remove_section(filename, section_key):
     """
