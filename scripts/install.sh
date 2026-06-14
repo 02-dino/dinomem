@@ -76,17 +76,21 @@ for rf in $ROOT_FILES; do
   if [ -f "$WS/$rf" ]; then
     RF_SIZE=$(wc -c < "$WS/$rf")
     TOTAL_CHARS=$((TOTAL_CHARS + RF_SIZE))
-    if [ "$RF_SIZE" -gt 15000 ]; then
-      warn "$rf is ${RF_SIZE} chars (>15000) — may exceed maxBootstrapFileChars (20000 default)."
-      warn "  Consider trimming $rf or increasing agents.defaults.maxBootstrapFileChars in openclaw.json."
+    if [ "$RF_SIZE" -gt 20000 ]; then
+      warn "$rf is ${RF_SIZE} chars — exceeds maxBootstrapFileChars (20000). Content beyond limit won't be injected."
+      warn "  Fix: trim $rf (remove outdated sections) OR increase agents.defaults.maxBootstrapFileChars in openclaw.json."
+    elif [ "$RF_SIZE" -gt 15000 ]; then
+      warn "$rf is ${RF_SIZE} chars — approaching maxBootstrapFileChars (20000). Consider trimming soon."
     fi
   fi
 done
-if [ "$TOTAL_CHARS" -gt 50000 ]; then
-  warn "Total root files size is ${TOTAL_CHARS} chars (>50000) — may exceed maxBootstrapTotalChars (60000 default)."
-  warn "  Consider trimming root files or increasing agents.defaults.maxBootstrapTotalChars in openclaw.json."
+if [ "$TOTAL_CHARS" -gt 60000 ]; then
+  warn "Total root files: ${TOTAL_CHARS} chars — exceeds maxBootstrapTotalChars (60000). Some files won't be fully injected."
+  warn "  Fix: check sizes with 'wc -c *.md' and trim the largest files, OR increase agents.defaults.maxBootstrapTotalChars."
+elif [ "$TOTAL_CHARS" -gt 50000 ]; then
+  warn "Total root files: ${TOTAL_CHARS} chars — approaching maxBootstrapTotalChars (60000). Consider trimming soon."
 else
-  ok "Root files size: ${TOTAL_CHARS} chars total — within limits"
+  ok "Root files: ${TOTAL_CHARS} chars total — within limits"
 fi
 
 # ── 1) Create workspace directories ──────────────────────────────────────────

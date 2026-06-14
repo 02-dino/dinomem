@@ -47,9 +47,17 @@ def check_size(filename, new_content):
     projected = len(existing) + len(new_content)
 
     if projected > MAX_FILE_CHARS:
-        warnings.append(f"{filename} will be {projected} chars after write — exceeds maxBootstrapFileChars ({MAX_FILE_CHARS}). Content beyond limit won't be injected into context.")
+        warnings.append(
+            f"{filename} will be {projected} chars after write — exceeds maxBootstrapFileChars ({MAX_FILE_CHARS}). "
+            f"Content beyond limit won't be injected into context. "
+            f"Fix options: (1) trim {filename} manually — remove outdated sections; "
+            f"(2) increase limit: set agents.defaults.maxBootstrapFileChars in openclaw.json."
+        )
     elif projected > WARN_FILE_CHARS:
-        warnings.append(f"{filename} will be {projected} chars after write — approaching maxBootstrapFileChars ({MAX_FILE_CHARS}).")
+        warnings.append(
+            f"{filename} will be {projected} chars after write — approaching maxBootstrapFileChars ({MAX_FILE_CHARS}). "
+            f"Consider trimming {filename} soon or increasing agents.defaults.maxBootstrapFileChars."
+        )
 
     # Total across all root files
     total = projected
@@ -60,9 +68,18 @@ def check_size(filename, new_content):
         if p.exists():
             total += len(p.read_text(encoding="utf-8"))
     if total > MAX_TOTAL_CHARS:
-        warnings.append(f"Total root files will be {total} chars — exceeds maxBootstrapTotalChars ({MAX_TOTAL_CHARS}). Some files won't be fully injected.")
+        warnings.append(
+            f"Total root files will be {total} chars — exceeds maxBootstrapTotalChars ({MAX_TOTAL_CHARS}). "
+            f"Some files won't be fully injected into context. "
+            f"Fix options: (1) trim the largest root files — run: wc -c {' '.join(ALLOWED_FILES)}; "
+            f"(2) increase limit: set agents.defaults.maxBootstrapTotalChars in openclaw.json."
+        )
     elif total > WARN_TOTAL_CHARS:
-        warnings.append(f"Total root files will be {total} chars — approaching maxBootstrapTotalChars ({MAX_TOTAL_CHARS}).")
+        warnings.append(
+            f"Total root files will be {total} chars — approaching maxBootstrapTotalChars ({MAX_TOTAL_CHARS}). "
+            f"Check sizes: wc -c {' '.join(ALLOWED_FILES)}. "
+            f"Consider trimming or increasing agents.defaults.maxBootstrapTotalChars."
+        )
 
     return warnings
 
