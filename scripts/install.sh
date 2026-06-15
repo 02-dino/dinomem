@@ -454,7 +454,16 @@ BLOCK="$BEGIN
             - user uses implicit reference ("itu", "yang itu", "yang kita buat", "that", "the one we")
             - user request is clearly a continuation (fix, update, lanjut, tambah, upgrade, extend)
         action:
-          - memory_search for relevant context before responding or acting
+          - memory_search MUST be the FIRST tool call — before filesystem checks, before exec, before any other tool
+        enforcement:
+          - NO exceptions — do not rationalize skipping because "I already know" or "it's obvious"
+          - Do NOT check filesystem (ls, find, cat) to answer questions about repos/tools/access — check memory first
+          - If memory_search returns nothing relevant, then proceed with other tools
+          - Violating M2 = repeating mistakes across sessions
+        examples:
+          - user says "dinomem-neuron" → memory_search "dinomem-neuron" FIRST, not ls github/
+          - user says "the script we made" → memory_search before assuming which script
+          - user says "do u have access" → memory_search before saying yes/no
         note: mechanical — do not rely on judgment to decide if recall is needed; if signal present, recall always
     when_NOT_to_use:
       - Do not call memory_search on every turn by default — only when recall is relevant
