@@ -131,20 +131,32 @@ done
 if [ "$DO_DOCKER" = 1 ]; then
   hr "TEI Embedding Server (Docker)"
   if ! command -v docker >/dev/null 2>&1; then
-    warn "Docker not found — skipping TEI setup. Install Docker and run: docker compose -f $WS/docker-compose.tei.yml up -d"
+    warn "Docker not found — skipping TEI setup. Install Docker and re-run."
   elif lsof -i :8080 >/dev/null 2>&1 || ss -tlnp 2>/dev/null | grep -q ':8080 '; then
-    warn "Port 8080 already in use — another service may clash with TEI. Check: lsof -i :8080"
-    warn "Use --no-docker to skip TEI, or change TEI port in docker-compose.tei.yml after install."
-    cp "$SKILL_DIR/docker/docker-compose.tei.yml" "$WS/docker-compose.tei.yml"
-    ok "docker-compose.tei.yml copied (TEI not started — port conflict)"
+    warn "Port 8080 already in use — TEI not started. Check: lsof -i :8080"
+    warn "Use --no-docker to skip TEI, or free port 8080 and re-run."
   else
-    cp "$SKILL_DIR/docker/docker-compose.tei.yml" "$WS/docker-compose.tei.yml"
-    ok "docker-compose.tei.yml copied"
-    if docker compose -f "$WS/docker-compose.tei.yml" ps 2>/dev/null | grep -q "running"; then
-      skip "TEI container already running"
+    # Detect Compose plugin; fallback to docker run
+    if docker compose version >/dev/null 2>&1; then
+      cp "$SKILL_DIR/docker/docker-compose.tei.yml" "$WS/docker-compose.tei.yml"
+      ok "docker-compose.tei.yml copied"
+      if docker compose -f "$WS/docker-compose.tei.yml" ps 2>/dev/null | grep -q "running"; then
+        skip "TEI container already running"
+      else
+        docker compose -f "$WS/docker-compose.tei.yml" up -d
+        ok "TEI container started on port 8080 (compose)"
+      fi
     else
-      docker compose -f "$WS/docker-compose.tei.yml" up -d
-      ok "TEI container started on port 8080"
+      warn "docker compose plugin not found — using docker run fallback"
+      if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^tei-embed$'; then
+        skip "TEI container already running (tei-embed)"
+      else
+        docker run -d --name tei-embed --restart unless-stopped \
+          -p 8080:80 \
+          ghcr.io/huggingface/text-embeddings-inference:cpu-1.6 \
+          --model-id sentence-transformers/all-MiniLM-L6-v2 --auto-truncate
+        ok "TEI container started on port 8080 (docker run)"
+      fi
     fi
   fi
 fi
@@ -232,7 +244,12 @@ PYEOF
 
   # TEI @reboot
   if [ "$DO_DOCKER" = 1 ] && command -v docker >/dev/null 2>&1; then
+    if docker compose version >/dev/null 2>&1; then
     TEI_CRON="@reboot sleep 30 && docker compose -f $WS/docker-compose.tei.yml up -d >> /tmp/tei-startup.log 2>&1"
+  else
+    TEI_CRON="@reboot sleep 30 && docker start tei-embed >> /tmp/tei-startup.log 2>&1"
+  fi
+  TEI_CRON="$TEI_CRON" # assigned above
     if crontab -l 2>/dev/null | grep -qF "docker-compose.tei.yml"; then
       skip "TEI @reboot cron (exists)"
     else
@@ -244,7 +261,8 @@ fi
 
 # ── 5) Patch openclaw.json config ─────────────────────────────────────────────
 hr "OpenClaw config"
-OPENCLAW_JSON="$OPENCLAW_DIR/openclaw.json"
+OPENCLAW_JSON="${OPENCLAW_JSON:-$HOME/.openclaw/openclaw.json}"
+[ -f "$OPENCLAW_JSON" ] || OPENCLAW_JSON="$OPENCLAW_DIR/openclaw.json"
 if [ ! -f "$OPENCLAW_JSON" ]; then
   warn "openclaw.json not found at $OPENCLAW_JSON — skipping config patch"
 else
@@ -281,18 +299,18 @@ if pruning.get("mode") != "off":
 
 # compaction -> safeguard with recommended settings
 compaction = defaults.setdefault("compaction", {})
-    # Only patch mode and memoryFlush — leave reserveTokens/keepRecentTokens to OpenClaw defaults.
-    # reserveTokens default (16384) + floor (20000) are model-agnostic.
-    # Hardcoding 50k would break small context window models (8k/32k).
-    compaction_patch = {
-        "mode": "safeguard",
-        "truncateAfterCompaction": False,
-        "memoryFlush": {"enabled": False, "softThresholdTokens": 10000},
-    }
-    needs_update = any(compaction.get(k) != v for k, v in compaction_patch.items())
-    if needs_update:
-        compaction.update(compaction_patch)
-        changed.append("compaction -> safeguard mode (reserveTokens/keepRecentTokens left to OpenClaw defaults)")
+# Only patch mode and memoryFlush — leave reserveTokens/keepRecentTokens to OpenClaw defaults.
+# reserveTokens default (16384) + floor (20000) are model-agnostic.
+# Hardcoding 50k would break small context window models (8k/32k).
+compaction_patch = {
+    "mode": "safeguard",
+    "truncateAfterCompaction": False,
+    "memoryFlush": {"enabled": False, "softThresholdTokens": 10000},
+}
+needs_update = any(compaction.get(k) != v for k, v in compaction_patch.items())
+if needs_update:
+    compaction.update(compaction_patch)
+    changed.append("compaction -> safeguard mode (reserveTokens/keepRecentTokens left to OpenClaw defaults)")
 
 # workspaceBootstrap -> always (root files injected every turn, not skipped on continuation)
 if defaults.get("workspaceBootstrap") not in (None, "always"):
@@ -317,10 +335,10 @@ elif mem_search.get("provider") != "openai-compatible":
 providers = cfg.setdefault("models", {}).setdefault("providers", {})
 if "tei-embed" not in providers:
     providers["tei-embed"] = {
-        "api": "openai",
+        "api": "openai-completions",
         "baseUrl": "http://localhost:8080/v1",
         "apiKey": "dummy",
-        "models": [{"id": "sentence-transformers/all-MiniLM-L6-v2"}],
+        "models": [{"id": "sentence-transformers/all-MiniLM-L6-v2", "name": "sentence-transformers/all-MiniLM-L6-v2"}],
     }
     changed.append("models.providers.tei-embed -> added")
 
