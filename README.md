@@ -1,8 +1,8 @@
 # 🦕 dinomem — Dino Agent Memory
 
-> Your OpenClaw agent forgets everything when a session resets. dinomem fixes that.
+> Your OpenClaw agent forgets things. dinomem fixes that.
 
-Every decision you've made, every preference you've set, every pattern your agent has learned — gone the moment a session resets. dinomem gives your agent a memory that persists: sessions are archived, facts, decisions, preferences, patterns, and lessons are extracted by an LLM, and everything is embedded locally for semantic search. Your agent picks up exactly where it left off.
+dinomem gives your agent a memory that persists: sessions are archived, facts, decisions, preferences, patterns, and lessons are extracted by an LLM, and everything is embedded locally for semantic search. Your agent picks up exactly where it left off.
 
 ---
 
@@ -50,7 +50,7 @@ OpenClaw session (.jsonl)
         ▼
 [extract_memory.py]
   LLM reads archived sessions → extracts facts, decisions, preferences, patterns, lessons
-  Writes to memory/YYYY-MM-DD.md + updates MEMORY.md index
+  Writes to memory/YYYY-MM-DD_<type>_<slug>.md (one file per item) + updates MEMORY.md index
 
 MEMORY.md is a machine-facing navigation index, not the memories themselves.
 Its purpose: help the agent decide which memory_search queries to run.
@@ -209,7 +209,7 @@ Access granted after onboarding → [@dinotlgrm](https://t.me/dinotlgrm)
 └── memory/
     ├── _pin_*.md               # Permanent user-pinned memories (never deleted)
     ├── _note_*.md              # Transient todos/reminders (auto-deleted when resolved)
-    └── YYYY-MM-DD.md           # Daily memory files (auto-generated)
+    └── YYYY-MM-DD_<type>_<slug>.md  # Per-item memory files (auto-generated, one file per extracted item)
 MEMORY.md                       # Searchable index (auto-generated, do not edit)
 ```
 
