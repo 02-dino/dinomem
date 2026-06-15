@@ -831,11 +831,60 @@ Classify the relationship. Reply with JSON only:
 
     return kept_new
 
+def _slugify(text, max_len=40):
+    """Convert text to a filesystem-safe slug."""
+    import re as _re
+    text = text.lower().strip()
+    text = _re.sub(r'[^\w\s-]', '', text)
+    text = _re.sub(r'[\s_]+', '-', text)
+    text = text.strip('-')
+    return text[:max_len]
+
+def _write_item_file(memory_dir, date_str, item_type, item_text, topics, context_snippet):
+    """Write a single memory item as its own .md file with YAML frontmatter."""
+    # Build slug from first 40 chars of item text (strip tags first)
+    clean_text = re.sub(r'\s*\[(ctx|expires|\w+):[^\]]*\]', '', item_text).strip()
+    clean_text = re.sub(r'^\[(\w+)\]\s*', '', clean_text)  # strip leading [type] tag
+    slug = _slugify(clean_text, max_len=40)
+    filename = f"{date_str}_{item_type}_{slug}.md"
+    filepath = memory_dir / filename
+    # Skip if identical file already exists
+    if filepath.exists():
+        existing = filepath.read_text(encoding='utf-8')
+        if item_text in existing:
+            return False, filepath  # duplicate
+    # Extract expires tag if present
+    expires_match = re.search(r'\[expires:([^\]]+)\]', item_text)
+    expires = expires_match.group(1) if expires_match else ""
+    # Extract ctx tag if present
+    ctx_match = re.search(r'\[ctx:([^\]]+)\]', item_text)
+    ctx = ctx_match.group(1) if ctx_match else ""
+    # Build topic string
+    topic_str = ' '.join(topics) if topics else ""
+    # YAML frontmatter + content
+    frontmatter_lines = [
+        "---",
+        f"type: {item_type}",
+        f"date: {date_str}",
+    ]
+    if expires:
+        frontmatter_lines.append(f"expires: {expires}")
+    if ctx:
+        frontmatter_lines.append(f"ctx: {ctx}")
+    if topic_str:
+        frontmatter_lines.append(f"topics: {topic_str}")
+    if context_snippet:
+        frontmatter_lines.append(f"session_ctx: {context_snippet[:80].replace(chr(10), ' ')}")
+    frontmatter_lines.append("---")
+    frontmatter_lines.append("")
+    frontmatter_lines.append(item_text)
+    frontmatter_lines.append("")
+    filepath.write_text('\n'.join(frontmatter_lines), encoding='utf-8')
+    return True, filepath
+
 def write_memory_file(summary, dedup=True):
-    """Write memory summary to memory/YYYY-MM-DD.md. Deduplicates, compacts if needed."""
+    """Write memory summary as per-item files: memory/YYYY-MM-DD_<type>_<slug>.md"""
     today = summary.get('date', datetime.now().strftime("%Y-%m-%d"))
-    memory_file = MEMORY_DIR / f"{today}.md"
-    file_exists = memory_file.exists()
     context = summary.get('context', '').strip()
     insights = summary.get('insights', [])
     source_scores = summary.get('source_scores', [])
@@ -844,128 +893,51 @@ def write_memory_file(summary, dedup=True):
     operational = summary.get('operational', [])
     prefs = summary.get('user_preferences', [])
     topics = summary.get('topics', [])
-    # TTL tagging: append decay hint to operational/decision/correction items
-    today_str = summary.get('date', datetime.now().strftime("%Y-%m-%d"))
+
+    # TTL tagging
     from datetime import timedelta
     def ttl_tag(items, days):
-        expiry = (datetime.strptime(today_str, "%Y-%m-%d") + timedelta(days=days)).strftime("%Y-%m-%d")
+        expiry = (datetime.strptime(today, "%Y-%m-%d") + timedelta(days=days)).strftime("%Y-%m-%d")
         return [f"{i} [expires:{expiry}]" if "[expires:" not in i else i for i in items]
     operational = ttl_tag(operational, 90)
     decisions = ttl_tag(decisions, 180)
     corrections = ttl_tag(corrections, 365)
-    # Contradiction check for high-stakes categories before dedup
-    if file_exists:
-        decisions = _contradiction_check_items(decisions, MEMORY_DIR)
-        corrections = _contradiction_check_items(corrections, MEMORY_DIR)
-        operational = _contradiction_check_items(operational, MEMORY_DIR)
 
-    # Deduplicate against existing file
-    if dedup and file_exists:
-        try:
-            existing = memory_file.read_text(encoding='utf-8')
-            insights = [i for i in insights if i not in existing]
-            source_scores = [s for s in source_scores if s not in existing]
-            decisions = [d for d in decisions if d not in existing]
-            corrections = [c for c in corrections if c not in existing]
-            operational = [o for o in operational if o not in existing]
-            prefs = [p for p in prefs if p not in existing]
-        except Exception:
-            pass
-    if not context and not insights and not source_scores and not decisions and not corrections and not operational and not prefs:
-        log(f"   ℹ️  Nothing new to add to {memory_file.name}, skipping")
-        return True
-    # Build new content block
-    new_lines = []
-    timestamp = datetime.now().strftime("%H:%M")
-    new_lines.append(f"<!-- session chunk: {timestamp} -->")
-    new_lines.append("")
-    if context:
-        new_lines.append(context)
-        new_lines.append("")
-    if insights:
-        new_lines.append("## Key Insights")
-        for item in insights:
-            new_lines.append(f"- {item}")
-        new_lines.append("")
-    if source_scores:
-        new_lines.append("## Source Scores")
-        for item in source_scores:
-            new_lines.append(f"- {item}")
-        new_lines.append("")
-    if decisions:
-        new_lines.append("## Decisions")
-        for item in decisions:
-            new_lines.append(f"- {item}")
-        new_lines.append("")
-    if corrections:
-        new_lines.append("## Corrections")
-        for item in corrections:
-            new_lines.append(f"- {item}")
-        new_lines.append("")
-    if operational:
-        new_lines.append("## Operational")
-        for item in operational:
-            new_lines.append(f"- {item}")
-        new_lines.append("")
-    if prefs:
-        new_lines.append("## User Preferences")
-        for item in prefs:
-            new_lines.append(f"- {item}")
-        new_lines.append("")
-    if topics:
-        new_lines.append(" ".join(topics))
-        new_lines.append("")
-    new_content = "\n".join(new_lines)
-    # Step 1: Always append
-    try:
-        mode = 'a' if file_exists else 'w'
-        with open(memory_file, mode, encoding='utf-8') as f:
-            if not file_exists:
-                f.write(f"# {today}\n\n")
-            f.write(new_content)
-        action = "appended to" if file_exists else "created"
-        log(f"✅ Memory summary {action}: {memory_file.name}")
-    except Exception as e:
-        log(f"⚠️  Failed to append memory file: {e}")
-        return False
-    # Step 2: Check total size and compact if needed
-    full_content = memory_file.read_text(encoding='utf-8')
-    if len(full_content) > MEMORY_MAX_CHARS:
-        counts = load_compaction_counts()
-        filename = memory_file.name
-        count = counts.get(filename, 0)
-        if count < 3:
-            log(f"   📦 Total ({len(full_content)} chars) exceeds {MEMORY_MAX_CHARS} — compacting (attempt {count + 1}/3)...")
-            compacted = _compact_memory_file(full_content, "")
-            counts[filename] = count + 1
-            save_compaction_counts(counts)
-            if compacted and len(compacted) <= MEMORY_MAX_CHARS:
-                try:
-                    with open(memory_file, 'w', encoding='utf-8') as f:
-                        f.write(compacted)
-                    log(f"✅ Memory compacted to {len(compacted)} chars: {memory_file.name}")
-                    return True
-                except Exception as e:
-                    log(f"⚠️  Failed to write compacted memory: {e}")
-                    return False
+    # Contradiction check for high-stakes categories
+    decisions = _contradiction_check_items(decisions, MEMORY_DIR)
+    corrections = _contradiction_check_items(corrections, MEMORY_DIR)
+    operational = _contradiction_check_items(operational, MEMORY_DIR)
+
+    # Context snippet for frontmatter (first 80 chars of session context)
+    ctx_snippet = context[:80] if context else ""
+
+    # Map item type → list
+    item_groups = [
+        ('insight', insights),
+        ('source_score', source_scores),
+        ('decision', decisions),
+        ('correction', corrections),
+        ('operational', operational),
+        ('preference', prefs),
+    ]
+
+    written = 0
+    skipped = 0
+    for item_type, items in item_groups:
+        for item in items:
+            ok, fpath = _write_item_file(MEMORY_DIR, today, item_type, item, topics, ctx_snippet)
+            if ok:
+                written += 1
+                log(f"   ✅ [{item_type}] → {fpath.name}")
             else:
-                log(f"   ⚠️  Compaction failed or still over cap, truncating...")
-        else:
-            log(f"   ⚠️  Compaction limit reached (3/3) for {memory_file.name}, truncating...")
-        # Truncate
-        truncated = full_content[:MEMORY_MAX_CHARS].rsplit('\n', 1)[0]
-        truncated += "\n\n... [truncated to fit cap]\n"
-        try:
-            with open(memory_file, 'w', encoding='utf-8') as f:
-                f.write(truncated)
-            log(f"✅ Memory truncated to {len(truncated)} chars: {memory_file.name}")
-            return True
-        except Exception as e:
-            log(f"⚠️  Failed to write truncated memory: {e}")
-            return False
+                skipped += 1
+
+    if written == 0 and skipped == 0:
+        log(f"   ℹ️  Nothing to write for {today}")
+        return True
+
+    log(f"✅ Wrote {written} item file(s), skipped {skipped} duplicate(s) for {today}")
     return True
-
-
 def _compact_memory_file(existing, new_content):
     """Call LLM to merge existing + new memory into a compact single summary."""
     prompt = f"""You are an AI agent compacting your own daily memory notes. Merge the EXISTING notes with the NEW chunk into a single concise summary. Preserve all insights, decisions, and user preferences — deduplicate similar items and drop obsolete ones.
