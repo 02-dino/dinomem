@@ -261,6 +261,7 @@ The installer automatically patches `~/.openclaw/openclaw.json`:
 | `memorySearch.provider` | `openai-compatible` | Use local TEI server |
 | `memorySearch.remote.baseUrl` | `http://localhost:8080/v1` | TEI Docker endpoint |
 | `agents.defaults.workspaceBootstrap` | `always` | Root files (AGENTS.md, SOUL.md, etc) injected every turn — not skipped on continuation turns |
+| `startupContext.enabled` | `false` | Disable startup push-injection of recent memory files — dinomem uses `memory_search` pull instead, which is more precise and scales better |
 
 See `references/openclaw-config-snippet.json5` for the full annotated config.
 

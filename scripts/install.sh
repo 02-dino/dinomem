@@ -317,6 +317,12 @@ if defaults.get("workspaceBootstrap") not in (None, "always"):
     defaults["workspaceBootstrap"] = "always"
     changed.append("workspaceBootstrap -> always (root files injected every turn)")
 
+# startupContext.enabled -> false (use memory_search pull instead of startup push-injection)
+startup_ctx = defaults.setdefault("startupContext", {})
+if startup_ctx.get("enabled") is not False:
+    startup_ctx["enabled"] = False
+    changed.append("startupContext.enabled -> false (memory_search pull is more precise than startup push)")
+
 # memorySearch -> TEI openai-compatible (skip if user already has custom provider)
 mem_search = defaults.get("memorySearch", {})
 existing_provider = mem_search.get("provider")
