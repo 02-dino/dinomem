@@ -99,10 +99,21 @@ comp = defaults.get("compaction", {})
 if comp.get("mode") == "safeguard":
     comp.pop("mode", None)
     changed.append("compaction.mode")
+if "truncateAfterCompaction" in comp:
+    comp.pop("truncateAfterCompaction", None)
+    changed.append("compaction.truncateAfterCompaction")
 mf = comp.get("memoryFlush", {})
 if mf.get("enabled") is False:
     mf.pop("enabled", None)
     changed.append("compaction.memoryFlush.enabled")
+if "softThresholdTokens" in mf:
+    mf.pop("softThresholdTokens", None)
+    changed.append("compaction.memoryFlush.softThresholdTokens")
+# Remove tei-embed provider
+providers = cfg.get("models", {}).get("providers", {})
+if "tei-embed" in providers:
+    del providers["tei-embed"]
+    changed.append("models.providers.tei-embed")
 
 # Revert workspaceBootstrap
 if "workspaceBootstrap" in defaults:
@@ -147,10 +158,31 @@ if [ "$PURGE" = 1 ]; then
     procedures/extract_memory.py \
     procedures/memory_cleanup.py \
     procedures/memory_review.py \
+    procedures/workspace_backup.py \
     tools/config_tool.py; do
     [ -f "$WS/$f" ] && rm "$WS/$f" && ok "removed $f" || skip "$f not found"
   done
 fi
+
+# ── OpenClaw cron (Daily Note Review) ────────────────────────────────────────
+hr "OpenClaw cron"
+python3 - <<PYEOF
+import subprocess, json
+try:
+    r = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)
+    jobs = json.loads(r.stdout) if r.returncode == 0 else []
+    job_list = jobs if isinstance(jobs, list) else jobs.get('jobs', {}).get('jobs', [])
+    targets = [j for j in job_list if 'note' in j.get('name','').lower() and 'review' in j.get('name','').lower()]
+    if not targets:
+        print("  \033[33m[skip]\033[0m Daily Note Review cron not found")
+    else:
+        for j in targets:
+            jid = j.get('id') or j.get('jobId')
+            subprocess.run(['openclaw', 'cron', 'remove', jid], capture_output=True, timeout=10)
+            print(f"  \033[32m[ok]\033[0m   removed OpenClaw cron: {j.get('name')} ({jid})")
+except Exception as e:
+    print(f"  \033[33m[warn]\033[0m Could not remove OpenClaw cron: {e}")
+PYEOF
 
 # ── Snapshots (optional) ──────────────────────────────────────────────────────
 if [ "$PURGE_DATA" = 1 ]; then
