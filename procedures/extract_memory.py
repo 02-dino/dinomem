@@ -522,7 +522,7 @@ Required JSON structure:
     "[correction] Something the user corrected the AI about — exact mistake and the correct behavior"
   ],
   "operational": [
-    "[operational] Critical fact needed to act correctly: repo names, file paths, tool names, config values, pipeline structure"
+    "[operational] Critical fact needed to act correctly: repo names, file paths, tool names, config values, pipeline structure. MUST include default assumption where relevant — e.g. 'push access confirmed, use github-push.sh, do not ask user' or 'always read X before editing Y'. If the fact implies a behavioral default, state it explicitly."
   ],
   "user_preferences": [
     "What you learned about the user's style, preferences, or boundaries — permanent traits only"
