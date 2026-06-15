@@ -19,6 +19,24 @@ Every decision you've made, every preference you've set, every pattern your agen
 
 ---
 
+## Why dinomem is different
+
+Most agent memory systems:
+
+```
+Session → Embed → Search
+```
+
+dinomem:
+
+```
+Session → Archive → Extract → Structure → Search → Review → Cleanup
+```
+
+The difference: memory quality improves over time instead of accumulating noise forever. The pipeline is the product — not the embedding layer.
+
+---
+
 ## How memory works
 
 ```
@@ -143,26 +161,22 @@ dinomem includes a routing system that detects your intent and writes to the cor
 
 ## Want more? → dinomem-neuron (private repo)
 
-dinomem gives your agent memory. **dinomem-neuron** gives it the ability to learn.
+dinomem gives your agent memory.
+**dinomem-neuron turns those memories into long-term knowledge that changes behavior over time.**
 
-The difference: dinomem remembers what you tell it. dinomem-neuron figures out things you never said.
+Every night, neuron analyzes relationships across memories, synthesizes recurring patterns, detects contradictions, and promotes durable insights into always-present knowledge. Your agent doesn't just remember experiences — it develops persistent understanding from them.
 
-After a few weeks of sessions, neuron starts finding structure in your memories — patterns across decisions, contradictions you didn't notice, insights that only emerge when you look at everything together. It builds a knowledge graph, synthesizes it, and promotes only what survives multiple cycles into long-term memory. Your agent's behavior changes — not because you updated a config, but because it learned.
+Advanced learning layer available separately:
 
-> *"After 3 weeks, my agent told me I've been contradicting myself on position sizing — I never noticed."*
->
-> *"It connected a decision I made in January to a pattern from November. I didn't remember either."*
->
-> *"My agent now has a structured knowledge base it built itself. I didn't write a single line of it."*
+- **Behavioral learning** — recurring patterns are promoted into permanent knowledge that influences future responses on every turn
+- **Memory graph + synthesis** — discovers connections and insights you never explicitly stated
+- **Contradiction detection** — prevents conflicting beliefs from being promoted into long-term knowledge
+- **Long-document RAG** — contracts, books, legal text, manuals; stored separately and never pollute memory
+- **Calendar integration** — `_note_` files linked to Google Calendar and automatically resolved when events pass
 
-It also adds:
-- **Calendar integration** — `_note_` files linked to Google Calendar, auto-deleted when the event passes
-- **RAG for long docs** — semantic search over contracts, books, legal text without touching memory
-- **Contradiction detection** — flags when new memories conflict with existing ones, blocks promotion until resolved
+The result: an agent that doesn't just remember what happened — it changes based on what it has learned.
 
-The dinomem-neuron repo is private — access granted after onboarding.
-
-Interested? → [@dinotlgrm](https://t.me/dinotlgrm) on Telegram
+Access granted after onboarding → [@dinotlgrm](https://t.me/dinotlgrm)
 
 ---
 
@@ -225,7 +239,7 @@ dinomem is designed for a default OpenClaw setup. If your agent is already custo
 | Existing `kb/vector_db/` | install.sh warns — dinomem will write to this path | Back up first, or use a separate workspace |
 | Existing `memory_recall` in AGENTS.md | install.sh warns — block will be appended | Remove duplicate manually after install |
 | Existing backup system | Weekly backup cron may be redundant | Use `--no-backup-cron` to skip |
-| **Native Codex plugin active** | OpenClaw skips raw `MEMORY.md` injection and uses a memory pointer instead — breaks dinomem's always-injected guarantee | **Do not activate `plugins.entries.codex`** when using dinomem. No config override exists — this is hardcoded in OpenClaw internals. |
+| Native Codex plugin active | OpenClaw skips raw `MEMORY.md` injection and uses a memory pointer instead — breaks dinomem's always-injected guarantee | Do not activate `plugins.entries.codex` when using dinomem. No config override exists — this is hardcoded in OpenClaw internals. |
 
 > `memory/*.md` daily files are never injected automatically regardless — always on-demand via `memory_search`.
 
@@ -321,7 +335,9 @@ Set it under `agents.defaults.compaction.reserveTokens` in `openclaw.json`. See 
 Your OpenClaw default model via the gateway. Falls back to OpenRouter (`google/gemini-2.5-flash`) if the gateway call fails.
 
 **How is this different from OpenClaw's built-in memory?**
-OpenClaw has native `memory_search`/`memory_get` tools but no automatic extraction pipeline. dinomem adds the pipeline: session archiving → LLM extraction → structured `memory/*.md` files → embeddings. The native tools then search those files.
+See "Why dinomem is different" above.
+
+Short version: OpenClaw retrieves memories. dinomem creates and maintains them.
 
 ---
 
