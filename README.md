@@ -307,6 +307,15 @@ Not natively. Use WSL2 with Ubuntu.
 **Will it affect my existing agent config?**
 The installer patches `openclaw.json` and appends to `AGENTS.md`. It does not delete anything. Use `--force` only to overwrite existing scripts.
 
+**Should I set `reserveTokens`?**
+Yes, if your model has a context window larger than 200k. Use this formula: `reserveTokens = contextWindow - 200000`. This fixes two things:
+1. **Context bloat** — compaction triggers early, before the session is too full to recover. Prevents the compaction-overflow death spiral.
+2. **Response speed** — inference slows non-linearly above ~200k active tokens. Keeping context lean = faster responses.
+
+Examples: 200k model → `50000`, 1M model → `800000`, 128k model → skip (already under limit).
+
+Set it under `agents.defaults.compaction.reserveTokens` in `openclaw.json`. See `references/openclaw-config-snippet.json5` for the full annotated example.
+
 **What LLM does it use for memory extraction?**
 Your OpenClaw default model via the gateway. Falls back to OpenRouter (`google/gemini-2.5-flash`) if the gateway call fails.
 

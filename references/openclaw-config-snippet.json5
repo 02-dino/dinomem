@@ -47,12 +47,20 @@
           enabled: false,
           softThresholdTokens: 10000,
         },
-        // reserveTokens and keepRecentTokens are intentionally omitted.
-        // OpenClaw defaults (reserveTokens: 16384, floor: 20000) are model-agnostic.
-        // Hardcoding these would break small context window models (8k/32k).
-        // Only set these manually if you know your model's context window:
-        //   reserveTokens: 50000,    // example for 200k context models (Claude, Gemini)
-        //   keepRecentTokens: 32000, // preserved after compaction
+        // reserveTokens: set this to keep active context below ~200k tokens.
+        // Formula: reserveTokens = max(0, contextWindow - 200000)
+        // Why 200k? Two reasons:
+        //   1. Context bloat — compaction triggers early, before the session is too
+        //      full to recover. Prevents the compaction-overflow death spiral.
+        //   2. Response speed — inference slows non-linearly above ~200k active tokens.
+        //      Keeping context lean = faster TTFT regardless of model window size.
+        // Examples:
+        //   200k model (Claude Sonnet, Gemini) → reserveTokens: 50000
+        //   1M model (Gemini 1.5 Pro)          → reserveTokens: 800000
+        //   128k model                          → reserveTokens: 0  (already under limit)
+        // Not patched by install.sh — set manually based on your model.
+        //   reserveTokens: 50000,
+        //   keepRecentTokens: 32000, // tokens preserved after each compaction
       },
 
       // Root files (AGENTS.md, SOUL.md, TOOLS.md, etc) injected every turn.
