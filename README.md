@@ -357,7 +357,8 @@ This removes: cron jobs, AGENTS.md block, openclaw.json patches, TEI Docker cont
 
 Optional flags:
 - `--purge` — also remove installed scripts
-- `--purge-data` — also delete `memory/`, `logs/`, `MEMORY.md` (asks for confirmation)
+- `--purge-data` — remove `logs/` and snapshots (memory is preserved)
+- `--purge-memory` — ⚠️ permanently delete `memory/` and `MEMORY.md` (requires typing `wipe memory` to confirm)
 
 Run `openclaw gateway restart` after uninstall to apply config changes.
 

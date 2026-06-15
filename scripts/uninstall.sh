@@ -1,25 +1,28 @@
 #!/usr/bin/env bash
 # dinomem — uninstall script
 # Removes: cron jobs, AGENTS.md block, openclaw.json patches, TEI Docker container.
-# Does NOT delete memory data (memory/, logs/) unless --purge-data is passed.
+# Does NOT delete memory data unless --purge-data or --purge-memory is passed.
 #
 # Usage:
 #   bash scripts/uninstall.sh --workspace DIR --agent-id ID
-#   bash scripts/uninstall.sh --workspace DIR --agent-id ID --purge         # also remove scripts
-#   bash scripts/uninstall.sh --workspace DIR --agent-id ID --purge-data    # also remove memory data
+#   bash scripts/uninstall.sh --workspace DIR --agent-id ID --purge          # also remove scripts
+#   bash scripts/uninstall.sh --workspace DIR --agent-id ID --purge-data     # remove logs, snapshots (NOT memory)
+#   bash scripts/uninstall.sh --workspace DIR --agent-id ID --purge-memory   # ⚠️  WIPES memory/, MEMORY.md — irreversible
 set -euo pipefail
 
 WS="${OPENCLAW_WORKSPACE:-$HOME/.openclaw/workspace}"
 AGENT_ID=""
 PURGE=0
 PURGE_DATA=0
+PURGE_MEMORY=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --workspace)   WS="$2"; shift 2 ;;
-    --agent-id)    AGENT_ID="$2"; shift 2 ;;
-    --purge)       PURGE=1; shift ;;
-    --purge-data)  PURGE_DATA=1; shift ;;
+    --workspace)     WS="$2"; shift 2 ;;
+    --agent-id)      AGENT_ID="$2"; shift 2 ;;
+    --purge)         PURGE=1; shift ;;
+    --purge-data)    PURGE_DATA=1; shift ;;
+    --purge-memory)  PURGE_MEMORY=1; shift ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -184,26 +187,30 @@ except Exception as e:
     print(f"  \033[33m[warn]\033[0m Could not remove OpenClaw cron: {e}")
 PYEOF
 
-# ── Snapshots (optional) ──────────────────────────────────────────────────────
+# ── Purge data: logs + snapshots (safe, no memory) ───────────────────────────
 if [ "$PURGE_DATA" = 1 ]; then
+  hr "Purge data (logs + snapshots)"
+  [ -d "$WS/logs" ] && rm -rf "$WS/logs" && ok "removed logs/" || skip "logs/ not found"
   if [ -d "$WS/.backups/snapshots" ]; then
     rm -rf "$WS/.backups/snapshots" && ok "removed .backups/snapshots/"
   else
     skip ".backups/snapshots not found"
   fi
+  warn "memory/ and MEMORY.md preserved — use --purge-memory to wipe them"
 fi
 
-# ── Purge data (optional, explicit) ───────────────────────────────────────────
-if [ "$PURGE_DATA" = 1 ]; then
-  hr "Purge data"
-  warn "This will permanently delete memory data."
-  read -r -p "  Type 'yes' to confirm: " confirm
-  if [ "$confirm" = "yes" ]; then
-    [ -d "$WS/memory" ] && rm -rf "$WS/memory" && ok "removed memory/"
-    [ -d "$WS/logs" ]   && rm -rf "$WS/logs"   && ok "removed logs/"
-    [ -f "$WS/MEMORY.md" ] && rm "$WS/MEMORY.md" && ok "removed MEMORY.md"
+# ── Purge memory (explicit, irreversible) ───────────────────────────────────
+if [ "$PURGE_MEMORY" = 1 ]; then
+  hr "Purge memory"
+  printf '  \033[31m[warn]\033[0m ⚠️  This will PERMANENTLY DELETE all agent memory:\n'
+  printf '         memory/   MEMORY.md\n'
+  printf '         This cannot be undone.\n'
+  read -r -p "  Type 'wipe memory' to confirm: " confirm
+  if [ "$confirm" = "wipe memory" ]; then
+    [ -d "$WS/memory" ]    && rm -rf "$WS/memory"    && ok "removed memory/"
+    [ -f "$WS/MEMORY.md" ] && rm "$WS/MEMORY.md"     && ok "removed MEMORY.md"
   else
-    skip "purge-data cancelled"
+    skip "purge-memory cancelled"
   fi
 fi
 
