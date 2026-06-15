@@ -40,7 +40,9 @@
       // e.g. for 200k window: triggers at 150k active tokens
       compaction: {
         mode: "safeguard",
-        truncateAfterCompaction: false,
+        // Rotate session file after compaction — prevents unbounded file growth.
+        // Old file stays on disk for memory extraction; new file starts from summary + tail.
+        truncateAfterCompaction: true,
         memoryFlush: {
           enabled: false,
           softThresholdTokens: 10000,
