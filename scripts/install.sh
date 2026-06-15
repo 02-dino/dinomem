@@ -385,6 +385,7 @@ BLOCK="$BEGIN
           - user uses implicit reference (itu, yang itu, that, the one we)
           - user request is clearly a continuation (fix, update, lanjut, tambah, upgrade, extend)
       action:
+        - if query is implicit/ambiguous → rewrite to explicit before calling memory_search
         - memory_search MUST be the FIRST tool call — before filesystem checks, before exec, before any other tool
       enforcement:
         - NO exceptions
