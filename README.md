@@ -98,6 +98,18 @@ After a session is archived and extracted, you'll see new files in `memory/` and
 
 ---
 
+## Important: MEMORY.md injection and native Codex turns
+
+`MEMORY.md` is injected into every turn as a bootstrap file (bounded by `agents.defaults.bootstrapMaxChars`, default 20000 chars). This is how your agent remembers things across sessions.
+
+**⚠️ Warning:** If you activate the native Codex plugin (`plugins.entries.codex`) and memory tools are available, OpenClaw will **not** paste raw `MEMORY.md` into the turn — it uses a small memory pointer instead and relies on memory tools on demand. This breaks the always-injected guarantee that dinomem depends on.
+
+**Recommendation:** Do not activate the native Codex plugin if memory continuity across turns is important to you. There is no config to override this behavior — it is hardcoded in OpenClaw internals.
+
+`memory/*.md` daily files are never injected automatically — they are always on-demand via `memory_search`.
+
+---
+
 ## Using dinomem
 
 ### Memory pinning
