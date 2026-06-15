@@ -33,6 +33,11 @@ OpenClaw session (.jsonl)
 [extract_memory.py]
   LLM reads archived sessions → extracts facts, decisions, preferences, patterns, lessons
   Writes to memory/YYYY-MM-DD.md + updates MEMORY.md index
+
+Note: with truncateAfterCompaction: true, OpenClaw rotates the active session
+file after each compaction. The pre-compaction transcript stays on disk for
+session_reset.py to archive — the active session continues from a clean
+successor file (compaction summary + unsummarized tail only).
         │
         ▼
 [TEI embedding server]

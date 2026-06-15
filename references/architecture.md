@@ -18,9 +18,14 @@
         └─► [extract_memory.py]
                 • Reads archived .jsonl files
                 • Extracts key facts via LLM
-                • Writes to memory/<topic>.md files
+                • Writes to memory/YYYY-MM-DD.md files
                 • Indexes into MEMORY.md (searchable index)
                 • Ingests into vector DB via TEI
+
+With truncateAfterCompaction: true, OpenClaw also rotates the active session
+file after each compaction — the pre-compaction transcript is left on disk
+for session_reset.py to archive, while the active session continues from a
+clean successor file (summary + unsummarized tail only).
 ```
 
 ## Vector DB (TEI)
@@ -50,10 +55,11 @@ Grace period: sessions updated within the last 5 minutes are skipped to avoid in
 ```
 <workspace>/
 └── memory/
-    ├── market.md          # Market analysis memories
-    ├── preferences.md     # User preferences
-    ├── workflow.md        # Workflow patterns
-    └── ...                # Topic-based files
+    ├── 2026-06-01.md      # Daily memory file (auto-generated)
+    ├── 2026-06-02.md
+    ├── _pin_*.md          # Permanent user-pinned memories (never deleted)
+    ├── _note_*.md         # Transient todos/reminders (auto-deleted when resolved)
+    └── ...
 MEMORY.md                  # Searchable index (auto-generated)
 ```
 
@@ -74,10 +80,13 @@ See `references/openclaw-config-snippet.json5` for the full annotated reference.
 | `session.reset.idleMinutes` | `10080` (7 days) | Reset only after true inactivity |
 | `contextPruning.mode` | `off` | Disable TTL-based blunt pruning — let compaction summarize instead |
 | `compaction.mode` | `safeguard` | Smart summarization before dropping context |
-| `compaction.reserveTokens` | `50000` | Headroom for prompts + output |
-| `compaction.keepRecentTokens` | `32000` | Preserved after each compaction |
+| `compaction.truncateAfterCompaction` | `true` | Rotate session file after compaction — prevents unbounded file growth |
+| `compaction.memoryFlush.enabled` | `false` | Must stay disabled — clashes with `auto_session_reset.py` |
+| `agents.defaults.workspaceBootstrap` | `always` | Root files injected every turn, not skipped on continuation turns |
 | `memorySearch.provider` | `openai-compatible` | Use local TEI server |
 | `memorySearch.remote.baseUrl` | `http://localhost:8080/v1` | TEI Docker endpoint |
+
+> `reserveTokens` and `keepRecentTokens` are **not patched** — they are model-agnostic and vary by context window size. See `references/openclaw-config-snippet.json5` for recommended values per model type.
 
 ### Why contextPruning: off?
 
