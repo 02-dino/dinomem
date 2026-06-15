@@ -536,11 +536,11 @@ Rules:
 - [pattern] items MUST abstract beyond the specific case — state the transferable mechanism
 - [lesson] items MUST reflect a concrete takeaway from an outcome, mistake, or experiment
 - [source_scores] track reliability over time: which sources or tools have been right/wrong and why
-- [decision] items MUST capture what was chosen AND what was rejected — these are commitments to honor in future sessions
-- [correction] items MUST capture the exact mistake made AND the correct behavior — highest priority for recall
+- [decision] items MUST capture what was chosen AND what was rejected — these are commitments to honor in future sessions. Err on the side of extracting — a single decision from a short session is worth storing.
+- [correction] items MUST capture the exact mistake made AND the correct behavior — highest priority for recall. Err on the side of extracting — a single correction from a short session is worth storing.
 - [operational] items MUST be specific and actionable: exact names, paths, values — NOT vague descriptions
 - EVERY [operational], [decision], [correction] item MUST end with a [ctx:...] tag: one short phrase (max 5 words) describing the session context. Example: [ctx:github push session], [ctx:cron restore fix], [ctx:user correction]. Keep it minimal.
-- Return empty arrays if nothing is worth recalling
+- Return empty arrays if nothing is worth remembering
 - No markdown inside JSON values, plain text only
 - Focus on RECALLABLE knowledge, not operational logs
 - JSON only, no explanation outside the JSON"""
