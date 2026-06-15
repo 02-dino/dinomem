@@ -311,6 +311,7 @@ The installer patches `openclaw.json` and appends to `AGENTS.md`. It does not de
 Yes, if your model has a context window larger than 200k. Use this formula: `reserveTokens = contextWindow - 200000`. This fixes two things:
 1. **Context bloat** — compaction triggers early, before the session is too full to recover. Prevents the compaction-overflow death spiral.
 2. **Response speed** — inference slows non-linearly above ~200k active tokens. Keeping context lean = faster responses.
+3. **Memory quality** — leaner sessions produce tighter compaction summaries. Less noise = better signal extracted by `extract_memory.py` = sharper long-term memory.
 
 Examples: 200k model → `50000`, 1M model → `800000`, 128k model → skip (already under limit).
 

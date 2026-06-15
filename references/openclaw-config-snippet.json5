@@ -49,11 +49,14 @@
         },
         // reserveTokens: set this to keep active context below ~200k tokens.
         // Formula: reserveTokens = max(0, contextWindow - 200000)
-        // Why 200k? Two reasons:
+        // Why 200k? Three reasons:
         //   1. Context bloat — compaction triggers early, before the session is too
         //      full to recover. Prevents the compaction-overflow death spiral.
         //   2. Response speed — inference slows non-linearly above ~200k active tokens.
         //      Keeping context lean = faster TTFT regardless of model window size.
+        //   3. Memory quality — compaction summaries are tighter and higher-signal
+        //      when the session is lean. A session at 180k tokens produces a noisier
+        //      summary than one at 50k. Cleaner summaries = better extract_memory.py output.
         // Examples:
         //   200k model (Claude Sonnet, Gemini) → reserveTokens: 50000
         //   1M model (Gemini 1.5 Pro)          → reserveTokens: 800000
