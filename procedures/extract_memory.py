@@ -425,66 +425,189 @@ def call_llm(prompt, max_tokens=None, reasoning=False):
 # ARCHIVE CONTENT EXTRACTION
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def extract_archive_content(archive_files, max_chars=None):
-    """Extract content from archived JSONL files for LLM summarization."""
-    all_content = []
-    total_chars = 0
-    cap_enabled = max_chars is not None
-    for filename in archive_files:
-        filepath = SESSIONS_DIR / filename
-        if not filepath.exists():
-            continue
-        try:
-            entries = []
-            with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
-                for line in f:
-                    if not line.strip():
-                        continue
-                    try:
-                        entries.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        continue
-            compaction_indices = [i for i, e in enumerate(entries) if e.get('type') == 'compaction']
-            if compaction_indices:
-                last_idx = compaction_indices[-1]
-                entries = entries[last_idx:]
-            for data in entries:
-                entry_type = data.get('type', '')
-                if entry_type == 'compaction':
-                    summary = data.get('summary', '').strip()
-                    if summary:
-                        entry = f"[HISTORY - COMPACTED CONTEXT]:\n{summary}\n\n"
-                        if cap_enabled and total_chars + len(entry) > max_chars:
-                            all_content.append(f"\n... [content truncated at {max_chars} chars] ...")
-                            return "".join(all_content)
-                        all_content.append(entry)
-                        total_chars += len(entry)
+# Max chars per archive before splitting into chunks (split on session boundary)
+ARCHIVE_CHUNK_MAX_CHARS = 40000
+# Max archives to batch into a single LLM call
+BATCH_SIZE = 3
+# Max total chars across all archives in a batch
+BATCH_MAX_CHARS = 80000
+
+def extract_single_archive_content(filename):
+    """Extract content from one archive file. Returns list of session-boundary chunks."""
+    filepath = SESSIONS_DIR / filename
+    if not filepath.exists():
+        return []
+    try:
+        entries = []
+        with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+            for line in f:
+                if not line.strip():
                     continue
-                message = data.get('message', {})
-                role = message.get('role', 'unknown')
-                content = message.get('content', [])
-                text = ""
-                if isinstance(content, list):
-                    for item in content:
-                        if isinstance(item, dict) and item.get('type') == 'text':
-                            text += item.get('text', '')
-                elif isinstance(content, str):
-                    text = content
-                if text.strip():
-                    entry = f"[{role.upper()}]: {text.strip()}\n\n"
-                    if cap_enabled and total_chars + len(entry) > max_chars:
-                        all_content.append(f"\n... [content truncated at {max_chars} chars] ...")
-                        return "".join(all_content)
-                    all_content.append(entry)
-                    total_chars += len(entry)
-        except Exception as e:
-            log(f"   ⚠️  Error reading {filename}: {e}")
-    return "".join(all_content)
+                try:
+                    entries.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+        # Start from last compaction if present
+        compaction_indices = [i for i, e in enumerate(entries) if e.get('type') == 'compaction']
+        if compaction_indices:
+            entries = entries[compaction_indices[-1]:]
+        # Build content, split at session boundaries when chunk exceeds limit
+        chunks = []
+        current_chunk = []
+        current_chars = 0
+        for data in entries:
+            entry_type = data.get('type', '')
+            if entry_type == 'compaction':
+                summary = data.get('summary', '').strip()
+                if summary:
+                    entry = f"[HISTORY - COMPACTED CONTEXT]:\n{summary}\n\n"
+                    current_chunk.append(entry)
+                    current_chars += len(entry)
+                continue
+            # Session boundary marker — split chunk here if over limit
+            if entry_type == 'session_start' and current_chars >= ARCHIVE_CHUNK_MAX_CHARS:
+                if current_chunk:
+                    chunks.append("".join(current_chunk))
+                current_chunk = []
+                current_chars = 0
+            message = data.get('message', {})
+            role = message.get('role', 'unknown')
+            content = message.get('content', [])
+            text = ""
+            if isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict) and item.get('type') == 'text':
+                        text += item.get('text', '')
+            elif isinstance(content, str):
+                text = content
+            if text.strip():
+                entry = f"[{role.upper()}]: {text.strip()}\n\n"
+                current_chunk.append(entry)
+                current_chars += len(entry)
+        if current_chunk:
+            chunks.append("".join(current_chunk))
+        return chunks if chunks else []
+    except Exception as e:
+        log(f"   ⚠️  Error reading {filename}: {e}")
+        return []
+
+def extract_archive_content(archive_files, max_chars=None):
+    """Legacy single-pass extractor. Used for single-archive calls."""
+    chunks = []
+    for filename in archive_files:
+        chunks.extend(extract_single_archive_content(filename))
+    content = "".join(chunks)
+    if max_chars and len(content) > max_chars:
+        content = content[:max_chars] + f"\n... [truncated at {max_chars} chars] ..."
+    return content
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # MEMORY PROCESSING
 # ═══════════════════════════════════════════════════════════════════════════════
+
+def process_batch_archives(archive_filenames):
+    """Process multiple archives in a single LLM call. Returns list of summary dicts."""
+    if not LLM_ENABLED:
+        return []
+    # Build combined content with clear archive separators
+    sections = []
+    total_chars = 0
+    included = []
+    for filename in archive_filenames:
+        chunks = extract_single_archive_content(filename)
+        if not chunks:
+            continue
+        content = "".join(chunks)
+        if total_chars + len(content) > BATCH_MAX_CHARS:
+            break
+        sections.append(f"=== ARCHIVE: {filename} ===\n{content}\n=== END: {filename} ===\n")
+        total_chars += len(content)
+        included.append(filename)
+    if not sections:
+        return []
+    combined = "\n".join(sections)
+    archive_list = ", ".join(included)
+    prompt = f"""You are an AI agent writing your own memory notes.
+Read these {len(included)} conversation session archives and extract ONLY knowledge worth recalling later.
+Each archive is delimited by === ARCHIVE: filename === and === END: filename ===.
+
+Archives: {archive_list}
+
+{combined}
+
+Return a JSON ARRAY with one object per archive (in the same order as the archives above).
+If an archive contains nothing worth remembering, include it with all empty arrays.
+
+Each object in the array must have this structure:
+{{
+  "archive": "filename",
+  "context": "1-2 sentence overview, or empty string if nothing memorable",
+  "insights": ["[factual|pattern|lesson|uncertain|preference] ..."],
+  "source_scores": ["Source name + reliability assessment"],
+  "decisions": ["[decision] what was chosen, what rejected, why"],
+  "corrections": ["[correction] exact mistake + correct behavior"],
+  "operational": ["[operational] exact names/paths/values + behavioral default"],
+  "user_preferences": ["permanent user trait or boundary"],
+  "topics": ["#hashtag"]
+}}
+
+Rules:
+- EVERY insight MUST start with [factual], [pattern], [lesson], [uncertain], or [preference]
+- [factual] = structural truths, NOT transient events
+- [decision] and [correction] = err on side of extracting
+- [operational] = specific and actionable, end with [ctx:max 5 words]
+- [decision] and [correction] = end with [ctx:max 5 words]
+- Return empty arrays if nothing worth remembering for that archive
+- JSON array only, no explanation outside JSON"""
+    log(f"   🔄 Batch analyzing {len(included)} archives: {archive_list}...")
+    success, response = call_llm(prompt, max_tokens=2000 * len(included), reasoning=False)
+    if not success:
+        log(f"   ⚠️  Batch LLM failed: {response}")
+        return []
+    try:
+        clean = response.strip()
+        if clean.startswith('```json'): clean = clean[7:]
+        if clean.startswith('```'): clean = clean[3:]
+        if clean.endswith('```'): clean = clean[:-3]
+        results = json.loads(clean.strip())
+        if not isinstance(results, list):
+            log("   ⚠️  Batch response not a list, falling back to single processing")
+            return []
+        today = datetime.now().strftime("%Y-%m-%d")
+        summaries = []
+        for item in results:
+            has_content = (
+                item.get('context', '').strip() or
+                item.get('insights') or item.get('decisions') or
+                item.get('corrections') or item.get('operational') or
+                item.get('user_preferences')
+            )
+            summary = {
+                'archive': item.get('archive', ''),
+                'type': 'agent_memory',
+                'date': today,
+                'context': item.get('context', ''),
+                'insights': item.get('insights', []),
+                'source_scores': item.get('source_scores', []),
+                'decisions': item.get('decisions', []),
+                'corrections': item.get('corrections', []),
+                'operational': item.get('operational', []),
+                'user_preferences': item.get('user_preferences', []),
+                'topics': item.get('topics', [])
+            }
+            if has_content:
+                log(f"   ✅ {summary['archive']}: {len(summary['insights'])} insights, {len(summary['decisions'])} decisions, {len(summary['corrections'])} corrections, {len(summary['operational'])} operational")
+            else:
+                log(f"   ℹ️  {summary['archive']}: nothing memorable")
+            summaries.append((summary['archive'], summary if has_content else None))
+        return summaries
+    except json.JSONDecodeError as e:
+        log(f"   ⚠️  Batch JSON parse failed: {e}")
+        return []
+    except Exception as e:
+        log(f"   ⚠️  Batch processing error: {e}")
+        return []
 
 def process_single_archive(archive_filename):
     """Process one archive file through LLM. Returns summary dict or None."""
@@ -937,23 +1060,55 @@ def main():
         return
 
     log(f"")
-    log(f"🔄 Processing {len(new_archives)} new archive(s)...")
+    log(f"🔄 Processing {len(new_archives)} new archive(s) in batches of {BATCH_SIZE}...")
 
     stored_count = 0
     empty_count = 0
     failed_count = 0
 
-    for archive_name in new_archives:
-        summary = process_single_archive(archive_name)
-        mark_archives_processed([archive_name])
-        if summary:
-            success = write_memory_file(summary)
-            if success:
-                stored_count += 1
+    # Process in batches
+    for i in range(0, len(new_archives), BATCH_SIZE):
+        batch = new_archives[i:i + BATCH_SIZE]
+        if len(batch) == 1:
+            # Single archive — use single processor
+            summary = process_single_archive(batch[0])
+            mark_archives_processed([batch[0]])
+            if summary:
+                success = write_memory_file(summary)
+                stored_count += 1 if success else 0
+                failed_count += 0 if success else 1
             else:
-                failed_count += 1
+                empty_count += 1
         else:
-            empty_count += 1
+            # Multiple archives — batch LLM call
+            results = process_batch_archives(batch)
+            if not results:
+                # Batch failed — fallback to single processing
+                log(f"   ⚠️  Batch failed, falling back to single processing for {batch}")
+                for archive_name in batch:
+                    summary = process_single_archive(archive_name)
+                    mark_archives_processed([archive_name])
+                    if summary:
+                        success = write_memory_file(summary)
+                        stored_count += 1 if success else 0
+                        failed_count += 0 if success else 1
+                    else:
+                        empty_count += 1
+            else:
+                processed_names = [r[0] for r in results]
+                mark_archives_processed(processed_names)
+                for archive_name, summary in results:
+                    if summary:
+                        success = write_memory_file(summary)
+                        stored_count += 1 if success else 0
+                        failed_count += 0 if success else 1
+                    else:
+                        empty_count += 1
+                # Mark any archives not returned by batch as processed
+                for name in batch:
+                    if name not in processed_names:
+                        mark_archives_processed([name])
+                        empty_count += 1
 
     log(f"")
     log("=" * 60)

@@ -19,10 +19,13 @@ Logs:
 
 import subprocess
 import sys
+import os
+import fcntl
 from pathlib import Path
 from datetime import datetime
 
 LOG_FILE = Path(__file__).parent.parent / "logs" / "auto_reset.log"
+LOCK_FILE = Path("/tmp/dinomem_auto_reset.lock")
 LOG_FILE.parent.mkdir(exist_ok=True)
 
 
@@ -60,6 +63,32 @@ def run_script(script_name):
         return False
 
 
+def acquire_lock():
+    """Acquire exclusive lock. Returns lock file handle or None if already running."""
+    lock_fh = open(LOCK_FILE, 'w')
+    try:
+        fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock_fh.write(str(os.getpid()))
+        lock_fh.flush()
+        return lock_fh
+    except BlockingIOError:
+        lock_fh.close()
+        try:
+            pid = LOCK_FILE.read_text().strip()
+            log(f"⏭️  Another instance is running (PID {pid}), skipping")
+        except Exception:
+            log("⏭️  Another instance is running, skipping")
+        return None
+
+def release_lock(lock_fh):
+    """Release lock and remove lock file."""
+    try:
+        fcntl.flock(lock_fh, fcntl.LOCK_UN)
+        lock_fh.close()
+        LOCK_FILE.unlink(missing_ok=True)
+    except Exception:
+        pass
+
 def main():
     log("")
     log("=" * 60)
@@ -67,6 +96,16 @@ def main():
     log(f"⏰ Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     log("=" * 60)
 
+    lock_fh = acquire_lock()
+    if lock_fh is None:
+        sys.exit(0)
+
+    try:
+        _run_main()
+    finally:
+        release_lock(lock_fh)
+
+def _run_main():
     # Step 1: Session reset (critical — must not fail)
     session_ok = run_script("session_reset.py")
 
