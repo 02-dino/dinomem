@@ -80,7 +80,7 @@ See `references/openclaw-config-snippet.json5` for the full annotated reference.
 | `session.reset.idleMinutes` | `10080` (7 days) | Reset only after true inactivity |
 | `contextPruning.mode` | `off` | Disable TTL-based blunt pruning — let compaction summarize instead |
 | `compaction.mode` | `safeguard` | Smart summarization before dropping context |
-| `compaction.truncateAfterCompaction` | `true` | Rotate session file after compaction — prevents unbounded file growth |
+| `compaction.truncateAfterCompaction` | `false` | Keep disabled — rotating session files resets `compactionCount`, breaking `session_reset.py`'s compaction threshold trigger |
 | `compaction.memoryFlush.enabled` | `false` | Must stay disabled — clashes with `auto_session_reset.py` |
 | `agents.defaults.workspaceBootstrap` | `always` | Root files injected every turn, not skipped on continuation turns |
 | `memorySearch.provider` | `openai-compatible` | Use local TEI server |

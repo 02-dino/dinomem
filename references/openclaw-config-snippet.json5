@@ -42,7 +42,7 @@
         mode: "safeguard",
         // Rotate session file after compaction — prevents unbounded file growth.
         // Old file stays on disk for memory extraction; new file starts from summary + tail.
-        truncateAfterCompaction: true,
+        truncateAfterCompaction: false,
         memoryFlush: {
           enabled: false,
           softThresholdTokens: 10000,

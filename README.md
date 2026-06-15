@@ -45,7 +45,7 @@ OpenClaw session (.jsonl)
         │  every 15 min (cron)
         ▼
 [session_reset.py]
-  Archives sessions idle for 7 days or after 5 compactions; deletes archives older than 7 days
+  Archives sessions idle for 7 days or after 2 compactions; deletes archives older than 7 days
         │
         ▼
 [extract_memory.py]
@@ -71,7 +71,7 @@ The raw memories live in memory/*.md — MEMORY.md is rebuilt from them anytime.
 |-----------|---------|
 | Session age (chat) | > 7 days idle |
 | Session age (cron/isolated) | > 1 day |
-| Compaction count | > 5 |
+| Compaction count | > 2 |
 | Orphaned file age | > 48 hours |
 
 ---
@@ -256,13 +256,27 @@ The installer automatically patches `~/.openclaw/openclaw.json`:
 | `session.reset.idleMinutes` | `10080` | Reset only after 7 days of inactivity |
 | `contextPruning.mode` | `off` | Compaction summarizes — TTL pruning just drops |
 | `compaction.mode` | `safeguard` | Summarizes before dropping context |
-| `compaction.truncateAfterCompaction` | `true` | After compaction, rotates the session file so future turns load only the summary + recent tail. Prevents unbounded session file growth in long-running sessions. |
+| `compaction.truncateAfterCompaction` | `false` | Keep disabled — rotating session files resets `compactionCount`, breaking `session_reset.py`'s compaction threshold trigger. Session bloat is managed by the compaction threshold (2) instead. |
 | `compaction.memoryFlush.enabled` | `false` | **Must stay disabled** — memoryFlush triggers its own compaction + memory write which clashes with `auto_session_reset.py` |
 | `memorySearch.provider` | `openai-compatible` | Use local TEI server |
 | `memorySearch.remote.baseUrl` | `http://localhost:8080/v1` | TEI Docker endpoint |
 | `agents.defaults.workspaceBootstrap` | `always` | Root files (AGENTS.md, SOUL.md, etc) injected every turn — not skipped on continuation turns |
 
 See `references/openclaw-config-snippet.json5` for the full annotated config.
+
+### Compaction tuning (manual, strongly recommended)
+
+Not patched automatically — skipping these hurts performance, response speed, and memory quality. Set based on your model.
+
+**`reserveTokens`** — set to `contextWindow - 200000` (skip if your model is 200k or under). Keeps active context below 200k, which fixes three things: context bloat, response speed (inference slows non-linearly above 200k), and memory quality (leaner sessions = better compaction summaries).
+
+Examples: 200k model → `50000`, 1M model → `800000`, 128k model → skip.
+
+**`keepRecentTokens`** — set to 25% of `min(contextWindow, 200000)`. Minimum tokens preserved from the most recent window during compaction — protects immediate context continuity.
+
+Examples: 200k model → `50000`, 128k model → `32000`, 1M model → `50000`.
+
+Set both under `agents.defaults.compaction` in `openclaw.json`. See `references/openclaw-config-snippet.json5` for annotated examples.
 
 ---
 
@@ -320,15 +334,8 @@ Not natively. Use WSL2 with Ubuntu.
 **Will it affect my existing agent config?**
 The installer patches `openclaw.json` and appends to `AGENTS.md`. It does not delete anything. Use `--force` only to overwrite existing scripts.
 
-**Should I set `reserveTokens`?**
-Yes, if your model has a context window larger than 200k. Use this formula: `reserveTokens = contextWindow - 200000`. This fixes three things:
-1. **Context bloat** — compaction triggers early, before the session is too full to recover. Prevents the compaction-overflow death spiral.
-2. **Response speed** — inference slows non-linearly above ~200k active tokens. Keeping context lean = faster responses.
-3. **Memory quality** — leaner sessions produce tighter compaction summaries. Less noise = better signal extracted by `extract_memory.py` = sharper long-term memory.
-
-Examples: 200k model → `50000`, 1M model → `800000`, 128k model → skip (already under limit).
-
-Set it under `agents.defaults.compaction.reserveTokens` in `openclaw.json`. See `references/openclaw-config-snippet.json5` for the full annotated example.
+**Should I set `reserveTokens` and `keepRecentTokens`?**
+See "Compaction tuning" in the OpenClaw config patches section above.
 
 **What LLM does it use for memory extraction?**
 Your OpenClaw default model via the gateway. Falls back to OpenRouter (`google/gemini-2.5-flash`) if the gateway call fails.
