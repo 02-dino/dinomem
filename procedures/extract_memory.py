@@ -539,6 +539,7 @@ Rules:
 - [decision] items MUST capture what was chosen AND what was rejected — these are commitments to honor in future sessions
 - [correction] items MUST capture the exact mistake made AND the correct behavior — highest priority for recall
 - [operational] items MUST be specific and actionable: exact names, paths, values — NOT vague descriptions
+- EVERY [operational], [decision], [correction] item MUST end with a [ctx:...] tag: one short phrase (max 5 words) describing the session context. Example: [ctx:github push session], [ctx:cron restore fix], [ctx:user correction]. Keep it minimal.
 - Return empty arrays if nothing is worth recalling
 - No markdown inside JSON values, plain text only
 - Focus on RECALLABLE knowledge, not operational logs
@@ -593,6 +594,10 @@ Rules:
         return None
 
 
+def _strip_meta_tags(text):
+    """Strip [ctx:...] and [expires:...] tags for clean comparison/embedding."""
+    return re.sub(r'\s*\[(ctx|expires):[^\]]*\]', '', text).strip()
+
 def _get_tei_embedding(text):
     """Get single embedding from TEI. Returns vector or None."""
     try:
@@ -640,14 +645,16 @@ def _contradiction_check_items(new_items, memory_dir, threshold=0.85):
 
     kept_new = []
     for new_item in new_items:
-        new_vec = _get_tei_embedding(new_item)
+        new_clean = _strip_meta_tags(new_item)
+        new_vec = _get_tei_embedding(new_clean)
         if new_vec is None:
             kept_new.append(new_item)
             continue
 
         candidates = []
         for (md_file, line_idx, raw_line, item_text) in existing_items:
-            ex_vec = _get_tei_embedding(item_text)
+            ex_clean = _strip_meta_tags(item_text)
+            ex_vec = _get_tei_embedding(ex_clean)
             if ex_vec and _cosine_sim(new_vec, ex_vec) >= threshold:
                 candidates.append((md_file, line_idx, raw_line, item_text))
 
@@ -655,11 +662,11 @@ def _contradiction_check_items(new_items, memory_dir, threshold=0.85):
             kept_new.append(new_item)
             continue
 
-        candidate_texts = '\n'.join(f'- {c[3]}' for c in candidates)
+        candidate_texts = '\n'.join(f'- {_strip_meta_tags(c[3])}' for c in candidates)
         prompt = f"""You are a memory contradiction checker.
 
 New item to store:
-{new_item}
+{new_clean}
 
 Existing similar items in memory:
 {candidate_texts}
