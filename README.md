@@ -55,11 +55,6 @@ OpenClaw session (.jsonl)
 MEMORY.md is a machine-facing navigation index, not the memories themselves.
 Its purpose: help the agent decide which memory_search queries to run.
 The raw memories live in memory/*.md — MEMORY.md is rebuilt from them anytime.
-
-Note: with truncateAfterCompaction: true, OpenClaw rotates the active session
-file after each compaction. The pre-compaction transcript stays on disk for
-session_reset.py to archive — the active session continues from a clean
-successor file (compaction summary + unsummarized tail only).
         │
         ▼
 [TEI embedding server]
