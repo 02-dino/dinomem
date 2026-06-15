@@ -286,7 +286,7 @@ compaction = defaults.setdefault("compaction", {})
     # Hardcoding 50k would break small context window models (8k/32k).
     compaction_patch = {
         "mode": "safeguard",
-        "truncateAfterCompaction": False,
+        "truncateAfterCompaction": True,
         "memoryFlush": {"enabled": False, "softThresholdTokens": 10000},
     }
     needs_update = any(compaction.get(k) != v for k, v in compaction_patch.items())
