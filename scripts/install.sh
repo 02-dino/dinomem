@@ -396,6 +396,17 @@ BLOCK="$BEGIN
           use_for: user preferences, lessons learned, decisions, architecture choices
           format: "# Title\n\n<content>"
           slug: lowercase, hyphens, max 30 chars, descriptive
+          pin_writing_standard: |
+            Every _pin_ about a repo, tool, system, or entity MUST include:
+            1. What it IS (facts, scope, location)
+            2. ## Assumptions — what to default to without asking:
+               - access level (read/write/push)
+               - which script/tool to use
+               - what NOT to ask the user
+            3. Cross-references to related pins (e.g. "see _pin_github-credentials.md")
+            Bad pin: "dinomem-neuron is a private repo"
+            Good pin: "dinomem-neuron is a private repo. Push access confirmed via github-push.sh. Do not ask user for access confirmation."
+            Rule: if the pin doesn't tell you what to DO, it's incomplete.
       - transient:
           prefix: "_note_"
           location: "memory/"
