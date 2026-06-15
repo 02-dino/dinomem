@@ -460,10 +460,6 @@ BLOCK="$BEGIN
           - Do NOT check filesystem (ls, find, cat) to answer questions about repos/tools/access — check memory first
           - If memory_search returns nothing relevant, then proceed with other tools
           - Violating M2 = repeating mistakes across sessions
-        examples:
-          - user says "dinomem-neuron" → memory_search "dinomem-neuron" FIRST, not ls github/
-          - user says "the script we made" → memory_search before assuming which script
-          - user says "do u have access" → memory_search before saying yes/no
         note: mechanical — do not rely on judgment to decide if recall is needed; if signal present, recall always
     when_NOT_to_use:
       - Do not call memory_search on every turn by default — only when recall is relevant
