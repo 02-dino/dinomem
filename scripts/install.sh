@@ -414,6 +414,12 @@ BLOCK="$BEGIN
           use_for: todos, build reminders, planned features, "remember to do X"
           format: "# Title\n\nstatus: pending\n\n<content>"
           slug: lowercase, hyphens, max 30 chars, descriptive
+          note_writing_standard: |
+            Write _note_ so the daily cron LLM can judge resolution without ambiguity.
+            MUST include: what done looks like (resolution condition), not just what the task is.
+            Bad note: "add dark mode"
+            Good note: "add dark mode to the app — done when dark mode toggle exists in settings and works"
+            Rule: if the note doesn't say what DONE looks like, the cron can't auto-resolve it.
 
   memory_recall:
     description: |
