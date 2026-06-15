@@ -344,50 +344,39 @@ BLOCK="$BEGIN
 ## dinomem — memory system
   memory_index:
     file: MEMORY.md
-    instruction: |
-      If the query topic appears in MEMORY.md (Searchable — Active section),
-      call memory_search for the topic and then memory_get to retrieve the full details before responding.
+    instruction: if topic in MEMORY.md → memory_search then memory_get before responding
   constraints:
     - id: M0_no_assumptions
       when:
         context_unclear: true
       action:
-        - memory_search for relevant context and then memory_get to retrieve the full details
+        - memory_search then memory_get
         - fallback: ask_clarification
 
     - id: M1_pre_tool_call
       when:
         about_to_call_tool_or_script_with_side_effects: true
       action:
-        - memory_search for relevant context before executing
-      note: applies to any tool call or script execution that writes, deletes, pushes, modifies, or triggers external state
+        - memory_search before executing
 
     - id: M2_cross_session_signals
       when:
         any_of:
           - user mentions named entity (file path, repo name, tool name, config, pipeline, script)
-          - user uses temporal reference ("tadi", "sebelumnya", "kemarin", "yang lalu", "before", "last time")
-          - user uses implicit reference ("itu", "yang itu", "yang kita buat", "that", "the one we")
+          - user uses temporal reference (tadi, sebelumnya, kemarin, before, last time)
+          - user uses implicit reference (itu, yang itu, that, the one we)
           - user request is clearly a continuation (fix, update, lanjut, tambah, upgrade, extend)
       action:
-        - memory_search for relevant context before responding or acting
-      note: mechanical — do not rely on judgment to decide if recall is needed; if signal present, recall always
+        - memory_search MUST be the FIRST tool call — before filesystem checks, before exec, before any other tool
+      enforcement:
+        - NO exceptions
+        - Do NOT check filesystem to answer questions about repos/tools/access — check memory first
+        - If memory_search returns nothing relevant, then proceed with other tools
+        - Violating M2 = repeating mistakes across sessions
 
   memory_pin:
-    description: |
-      Manual memory pinning. When user says "remember this", "save this", "ingat ini",
-      or shares a short note/fact they want preserved:
-      1. Classify: permanent knowledge vs transient note/todo
-      2. Convert content to clean markdown
-      3. Save with correct prefix (see rules below)
-      4. Confirm to user: "Saved to memory as _pin_<slug>.md" or "_note_<slug>.md"
-      NOTE: Only for short content (facts, decisions, todos, short notes).
-      WARNING: Do NOT save long/verbatim docs (legal, UU, books, contracts) here.
-      memory/ files are indexed and injected into LLM context — large files will
-      pollute context, degrade behavior, and cause unpredictable responses.
-      For long docs: save to docs/<slug>.md, then ingest via:
-        python3 procedures/docs_ingest.py --file docs/<slug>.md
-      Searchable after ingestion via tools/docs_search.py (RAG).
+    trigger: user says remember this / ingat ini / save this
+    long_docs: save to docs/<slug>.md → ingest via procedures/docs_ingest.py (NOT memory/)
     rules:
       - permanent:
           prefix: "_pin_"
@@ -397,78 +386,31 @@ BLOCK="$BEGIN
           format: "# Title\n\n<content>"
           slug: lowercase, hyphens, max 30 chars, descriptive
           pin_writing_standard: |
-            Every _pin_ about a repo, tool, system, or entity MUST include:
+            Every _pin_ MUST include:
             1. What it IS (facts, scope, location)
-            2. ## Assumptions — what to default to without asking:
-               - access level (read/write/push)
-               - which script/tool to use
-               - what NOT to ask the user
-            3. Cross-references to related pins (e.g. "see _pin_github-credentials.md")
-            Bad pin: "dinomem-neuron is a private repo"
-            Good pin: "dinomem-neuron is a private repo. Push access confirmed via github-push.sh. Do not ask user for access confirmation."
+            2. Assumptions — what to default to without asking:
+               - access level, which script/tool to use, what NOT to ask the user
+            3. Cross-references to related pins
             Rule: if the pin doesn't tell you what to DO, it's incomplete.
       - transient:
           prefix: "_note_"
           location: "memory/"
           auto_delete_when: resolved/completed (via daily cron)
-          use_for: todos, build reminders, planned features, "remember to do X"
+          use_for: todos, build reminders, planned features
           format: "# Title\n\nstatus: pending\n\n<content>"
           slug: lowercase, hyphens, max 30 chars, descriptive
           note_writing_standard: |
-            Write _note_ so the daily cron LLM can judge resolution without ambiguity.
-            MUST include: what done looks like (resolution condition), not just what the task is.
-            Bad note: "add dark mode"
-            Good note: "add dark mode to the app — done when dark mode toggle exists in settings and works"
+            MUST include resolution condition (what DONE looks like).
             Rule: if the note doesn't say what DONE looks like, the cron can't auto-resolve it.
 
   memory_recall:
-    description: |
-      memory_search and memory_get are OpenClaw native tools that query memory/*.md files.
-      Memories are NOT injected into context automatically every turn — they must be recalled.
     when_to_use_memory_search:
-      - User asks about something they mentioned before
-      - Query topic appears in MEMORY.md index
-      - Context is unclear and prior decisions/preferences may be relevant
-      - User references a past conversation, decision, or preference
+      - topic in MEMORY.md index
+      - context unclear, prior decisions/preferences may be relevant
     when_to_use_memory_get:
-      - After memory_search returns a relevant result
-      - To retrieve full content of a specific memory file
-    constraints:
-      - id: M0_no_assumptions
-        when:
-          context_unclear: true
-        action:
-          - memory_search for relevant context and then memory_get to retrieve full details
-          - fallback: ask_clarification
-      - id: M1_pre_tool_call
-        when:
-          about_to_call_tool_or_script_with_side_effects: true
-        action:
-          - memory_search for relevant context before executing
-        note: applies to any tool call or script execution that writes, deletes, pushes, modifies, or triggers external state
-      - id: M2_cross_session_signals
-        when:
-          any_of:
-            - user mentions named entity (file path, repo name, tool name, config, pipeline, script)
-            - user uses temporal reference ("tadi", "sebelumnya", "kemarin", "yang lalu", "before", "last time")
-            - user uses implicit reference ("itu", "yang itu", "yang kita buat", "that", "the one we")
-            - user request is clearly a continuation (fix, update, lanjut, tambah, upgrade, extend)
-        action:
-          - memory_search MUST be the FIRST tool call — before filesystem checks, before exec, before any other tool
-        enforcement:
-          - NO exceptions — do not rationalize skipping because "I already know" or "it's obvious"
-          - Do NOT check filesystem (ls, find, cat) to answer questions about repos/tools/access — check memory first
-          - If memory_search returns nothing relevant, then proceed with other tools
-          - Violating M2 = repeating mistakes across sessions
-        note: mechanical — do not rely on judgment to decide if recall is needed; if signal present, recall always
+      - after memory_search returns a relevant result
     when_NOT_to_use:
-      - Do not call memory_search on every turn by default — only when recall is relevant
-      - Do not assume memory exists without searching first
-    workflow:
-      1. Check MEMORY.md index for relevant topic keywords
-      2. If match found: call memory_search with the topic
-      3. If memory_search returns results: call memory_get to retrieve full details
-      4. Use retrieved context to inform response
+      - do not call memory_search on every turn — only when recall is relevant
 
   self_config:
     tool: tools/config_tool.py
