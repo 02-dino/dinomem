@@ -238,6 +238,7 @@ The installer automatically patches `~/.openclaw/openclaw.json`:
 | `session.reset.idleMinutes` | `10080` | Reset only after 7 days of inactivity |
 | `contextPruning.mode` | `off` | Compaction summarizes — TTL pruning just drops |
 | `compaction.mode` | `safeguard` | Summarizes before dropping context |
+| `compaction.truncateAfterCompaction` | `true` | After compaction, rotates the session file so future turns load only the summary + recent tail. Prevents unbounded session file growth in long-running sessions. |
 | `compaction.memoryFlush.enabled` | `false` | **Must stay disabled** — memoryFlush triggers its own compaction + memory write which clashes with `auto_session_reset.py` |
 | `memorySearch.provider` | `openai-compatible` | Use local TEI server |
 | `memorySearch.remote.baseUrl` | `http://localhost:8080/v1` | TEI Docker endpoint |
