@@ -51,9 +51,13 @@
         // OpenClaw defaults (reserveTokens: 16384, floor: 20000) are model-agnostic.
         // Hardcoding these would break small context window models (8k/32k).
         // Only set these manually if you know your model's context window:
-        //   reserveTokens: 16384,    // headroom for prompts + output
-        //   keepRecentTokens: 20000, // preserved after compaction
+        //   reserveTokens: 50000,    // example for 200k context models (Claude, Gemini)
+        //   keepRecentTokens: 32000, // preserved after compaction
       },
+
+      // Root files (AGENTS.md, SOUL.md, TOOLS.md, etc) injected every turn.
+      // Without this, OpenClaw may skip injection on continuation turns.
+      workspaceBootstrap: "always",
 
       // Memory search via local TEI embedding server
       memorySearch: {
