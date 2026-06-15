@@ -163,17 +163,17 @@ dinomem includes a routing system that detects your intent and writes to the cor
 dinomem gives your agent memory.
 **dinomem-neuron turns those memories into long-term knowledge that changes behavior over time.**
 
-Every night, neuron analyzes relationships across memories, synthesizes recurring patterns, detects contradictions, and promotes durable insights into always-present knowledge. Your agent doesn't just remember experiences — it develops persistent understanding from them.
+Every night, neuron analyzes relationships across memories, synthesizes patterns, detects contradictions, and promotes durable insights into always-present knowledge. Your agent remembers experiences and develops persistent understanding from them.
 
 Advanced learning layer available separately:
 
-- **Behavioral learning** — recurring patterns are promoted into permanent knowledge that influences future responses on every turn
+- **Behavioral learning** — patterns that pass multi-signal evaluation (confidence, reinforcement, contradiction checks, insight lifecycle) are promoted into permanent knowledge that influences future responses on every turn, while ordinary memories are only recalled when needed.
 - **Memory graph + synthesis** — discovers connections and insights you never explicitly stated
 - **Contradiction detection** — prevents conflicting beliefs from being promoted into long-term knowledge
 - **Long-document RAG** — contracts, books, legal text, manuals; stored separately and never pollute memory
 - **Calendar integration** — `_note_` files linked to Google Calendar and automatically resolved when events pass
 
-The result: an agent that doesn't just remember what happened — it changes based on what it has learned.
+The result: an agent that changes based on what it has learned.
 
 Access granted after onboarding → [@dinotlgrm](https://t.me/dinotlgrm)
 
