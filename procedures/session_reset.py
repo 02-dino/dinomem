@@ -24,9 +24,8 @@ ORPHAN_MAX_AGE_HOURS = 48
 MIN_MESSAGE_LENGTH = 92
 MAX_SESSION_AGE_DAYS = 7
 MAX_SESSION_AGE_DAYS_CRON = 1
-COMPACTION_THRESHOLD = 2
-SESSIONS_DIR = Path("DINOMEM_AGENT_SESSIONS_PLACEHOLDER")
-AGENT_ID = "DINOMEM_AGENT_ID_PLACEHOLDER"
+COMPACTION_THRESHOLD = 3  # number of compaction generations (parentSession chain depth)
+SESSIONS_DIR = Path("/root/.openclaw/agents/analyst/sessions")
 SESSIONS_FILE = SESSIONS_DIR / "sessions.json"
 LOG_FILE = Path(__file__).parent.parent / "logs" / "session_reset.log"
 
@@ -93,7 +92,7 @@ def is_valid_message(data):
 
 
 def cleanup_jsonl_content(file_path):
-    """Read a JSONL file and return cleaned content."""
+    """Read a JSONL file and return cleaned content. Preserves session header (type=session)."""
     cleaned_lines = []
     stats = {'total': 0, 'kept': 0, 'removed': 0, 'reasons': {}}
     try:
@@ -105,6 +104,11 @@ def cleanup_jsonl_content(file_path):
                 stats['total'] += 1
                 try:
                     data = json.loads(line)
+                    # Always preserve session header (contains parentSession for chain traversal)
+                    if data.get('type') == 'session':
+                        cleaned_lines.append(json.dumps(data, ensure_ascii=False, separators=(',', ':')))
+                        stats['kept'] += 1
+                        continue
                     is_valid, reason = is_valid_message(data)
                     if is_valid:
                         cleaned_lines.append(json.dumps(data, ensure_ascii=False, separators=(',', ':')))
@@ -134,6 +138,76 @@ def write_cleaned_jsonl(file_path, lines):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# COMPACTION CHAIN TRACKING
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def get_session_header(file_path):
+    """Read the first non-empty line of a JSONL and return parsed header if type=session."""
+    try:
+        with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                data = json.loads(line)
+                if data.get('type') == 'session':
+                    return data
+                return None  # First non-empty line is not a session header
+    except Exception:
+        return None
+
+def get_compaction_depth(session_file):
+    """
+    Traverse parentSession chain to count compaction generations.
+    parentSession = full path to predecessor JSONL.
+    Returns depth (0 = no compaction history).
+    """
+    depth = 0
+    current = Path(session_file)
+    seen = set()
+    while True:
+        if not current.exists():
+            break
+        resolved = str(current.resolve())
+        if resolved in seen:
+            break
+        seen.add(resolved)
+        header = get_session_header(current)
+        if not header:
+            break
+        parent = header.get('parentSession')
+        if not parent:
+            break
+        depth += 1
+        current = Path(parent)
+    return depth
+
+def get_active_compaction_count(session_file):
+    """
+    Count compaction entries in JSONL (truncate=false mode).
+    Falls back to parentSession chain depth (truncate=true mode).
+    """
+    count = 0
+    try:
+        with open(session_file, 'r', encoding='utf-8', errors='replace') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                    if data.get('type') == 'compaction':
+                        count += 1
+                except json.JSONDecodeError:
+                    continue
+    except Exception:
+        pass
+    # If no inline compaction entries, check chain depth (truncate=true mode)
+    if count == 0:
+        count = get_compaction_depth(session_file)
+    return count
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # SESSION FUNCTIONS
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -146,7 +220,7 @@ def get_all_sessions():
         sessions = json.load(f)
     return {
         key: value for key, value in sessions.items()
-        if key.startswith(f"agent:{AGENT_ID}:")
+        if key.startswith("agent:analyst:")
     }
 
 
@@ -158,7 +232,7 @@ def get_tracked_files():
         sessions = json.load(f)
     tracked = set()
     for key, data in sessions.items():
-        if not key.startswith(f"agent:{AGENT_ID}:"):
+        if not key.startswith("agent:analyst:"):
             continue
         if "sessionFile" in data:
             tracked.add(Path(data["sessionFile"]).resolve())
@@ -281,8 +355,19 @@ def filter_sessions_to_reset(sessions):
                     age_trigger = True
             except Exception:
                 pass
-        compaction_count = session_data.get("compactionCount", 0)
-        if compaction_count > COMPACTION_THRESHOLD:
+        # Check compaction count from JSONL directly (works for both truncate=true and truncate=false)
+        session_id = session_data.get("sessionId", "")
+        session_file_str = session_data.get("sessionFile")
+        if session_file_str:
+            session_file = Path(session_file_str)
+        elif session_id:
+            session_file = SESSIONS_DIR / f"{session_id}.jsonl"
+        else:
+            session_file = None
+        compaction_count = 0
+        if session_file and session_file.exists():
+            compaction_count = get_active_compaction_count(session_file)
+        if compaction_count >= COMPACTION_THRESHOLD:
             compaction_trigger = True
         should_reset = age_trigger or compaction_trigger
         if should_reset and minutes_since_update is not None and minutes_since_update < GRACE_PERIOD_MINUTES:
@@ -294,10 +379,54 @@ def filter_sessions_to_reset(sessions):
             sessions_skipped[session_key] = {
                 'age_days': age_days,
                 'minutes_since_update': minutes_since_update,
-                'compactions': session_data.get("compactionCount", 0)
+                'compactions': compaction_count
             }
     return sessions_to_reset, sessions_skipped
 
+
+def archive_predecessor_chain(session_file, timestamp):
+    """
+    With truncateAfterCompaction=true, predecessor JSONLs are left in place (untracked).
+    Traverse the parentSession chain and archive each predecessor so
+    extract_memory.py can process them without delay.
+    """
+    current = session_file
+    archived_count = 0
+    seen = set()
+    while True:
+        header = get_session_header(current)
+        if not header:
+            break
+        parent_path_str = header.get('parentSession')
+        if not parent_path_str:
+            break
+        parent = Path(parent_path_str)
+        if not parent.exists():
+            break
+        resolved = str(parent.resolve())
+        if resolved in seen:
+            break
+        seen.add(resolved)
+        if '.archived.' not in parent.name:
+            archived_name = f"{parent.stem}.archived.reset.{timestamp}.jsonl"
+            archived = SESSIONS_DIR / archived_name
+            cleaned_lines, stats = cleanup_jsonl_content(parent)
+            if cleaned_lines:
+                if write_cleaned_jsonl(archived, cleaned_lines):
+                    parent.unlink()
+                    log(f"   ✅ Archived predecessor: {parent.name} → {archived_name}")
+                    log(f"      🧹 Cleaned: {stats['kept']} kept, {stats['removed']} removed")
+                    archived_count += 1
+                    current = archived
+                else:
+                    break
+            else:
+                parent.unlink()
+                log(f"   🗑️  Deleted empty predecessor: {parent.name}")
+                break
+        else:
+            current = parent
+    return archived_count
 
 def reset_session(session_key, session_data):
     """Reset session by archiving JSONL and deleting session mapping."""
@@ -309,8 +438,12 @@ def reset_session(session_key, session_data):
     else:
         session_file = SESSIONS_DIR / f"{session_id}.jsonl"
     archive_info = None
+    timestamp = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+    # Archive predecessor chain first (truncateAfterCompaction=true leaves predecessors untracked)
+    pred_count = archive_predecessor_chain(session_file, timestamp)
+    if pred_count > 0:
+        log(f"   📦 Archived {pred_count} predecessor(s) from compaction chain")
     if session_file.exists():
-        timestamp = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
         archived_name = f"{session_file.stem}.archived.reset.{timestamp}.jsonl"
         archived = SESSIONS_DIR / archived_name
         cleaned_lines, stats = cleanup_jsonl_content(session_file)
