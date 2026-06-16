@@ -226,7 +226,7 @@ job = {
     "schedule": {"kind": "cron", "expr": "0 6 * * *", "tz": "UTC"},
     "payload": {
         "kind": "agentTurn",
-        "message": "Scan all memory/_note_*.md files in $WS/memory/. For each file, check if the task/todo described is already completed based on workspace state (check if relevant files exist, features built, etc). If resolved: delete the _note_*.md file, and if the outcome is worth preserving permanently, create a _pin_*.md instead. If still pending: leave it.",
+        "message": "Scan all memory/_note_*.md files in $WS/memory/. For each file, check if the task/todo described is already completed based on workspace state (check if relevant files exist, features built, etc). If resolved: delete the _note_*.md file. If still pending: leave it.",
         "timeoutSeconds": 120
     },
     "sessionTarget": "isolated",
@@ -358,117 +358,57 @@ AGENTS="$WS/AGENTS.md"
 BEGIN="<!-- BEGIN:dinomem (managed — do not edit between markers) -->"
 END="<!-- END:dinomem -->"
 BLOCK="$BEGIN
-## dinomem — memory system
-  memory_index:
-    file: MEMORY.md
-    instruction: if topic in MEMORY.md → memory_search then memory_get before responding
+## dinomem
+  memory_index: {file: MEMORY.md, instruction: topic in MEMORY.md → memory_search then memory_get}
   constraints:
-    - id: M0_no_assumptions
-      when:
-        context_unclear: true
-      action:
-        - memory_search then memory_get
-        - fallback: ask_clarification
-
-    - id: M1_pre_tool_call
-      when:
-        about_to_call_tool_or_script_with_side_effects: true
-      action:
-        - memory_search before executing
-
-    - id: M2_cross_session_signals
-      when:
-        any_of:
-          - user mentions named entity (file path, repo name, tool name, config, pipeline, script)
-          - user uses temporal reference (tadi, sebelumnya, kemarin, before, last time)
-          - user uses implicit reference (itu, yang itu, that, the one we)
-          - user request is clearly a continuation (fix, update, lanjut, tambah, upgrade, extend)
-      action:
-        - if query is implicit/ambiguous → rewrite to explicit before calling memory_search
-        - memory_search MUST be the FIRST tool call — before filesystem checks, before exec, before any other tool
-      enforcement:
-        - NO exceptions
-        - Do NOT check filesystem to answer questions about repos/tools/access — check memory first
-        - If memory_search returns nothing relevant, then proceed with other tools
-        - Violating M2 = repeating mistakes across sessions
+    M0: context_unclear → memory_search + memory_get; fallback: ask
+    M1: before tool/script with side effects → memory_search first
+    M2:
+      when: named entity | temporal ref | implicit ref | continuation request
+      action: rewrite implicit query → memory_search FIRST (before fs/exec/any tool)
+      enforce: no exceptions; memory before filesystem; violating M2 = repeating mistakes
 
   memory_pin:
-    trigger: user says remember this / ingat ini / save this
-    long_docs: save to docs/<slug>.md → ingest via procedures/docs_ingest.py (NOT memory/)
-    rules:
-      - permanent:
-          prefix: "_pin_"
-          location: "memory/"
-          never_auto_delete: true
-          use_for: user preferences, lessons learned, decisions, architecture choices
-          format: "# Title\n\n<content>"
-          slug: lowercase, hyphens, max 30 chars, descriptive
-          pin_writing_standard: |
-            Every _pin_ MUST include:
-            1. What it IS (facts, scope, location)
-            2. Assumptions — what to default to without asking:
-               - access level, which script/tool to use, what NOT to ask the user
-            3. Cross-references to related pins
-            Rule: if the pin doesn't tell you what to DO, it's incomplete.
-      - transient:
-          prefix: "_note_"
-          location: "memory/"
-          auto_delete_when: resolved/completed (via daily cron)
-          use_for: todos, build reminders, planned features
-          format: "# Title\n\nstatus: pending\n\n<content>"
-          slug: lowercase, hyphens, max 30 chars, descriptive
-          note_writing_standard: |
-            MUST include resolution condition (what DONE looks like).
-            Rule: if the note doesn't say what DONE looks like, the cron can't auto-resolve it.
+    trigger: permanent_fact OR user emphasizes importance (any language)
+    uncertain: ask user before pinning
+    long_docs: docs/<slug>.md → docs_ingest.py
+    permanent: {prefix: _pin_, location: memory/, format: "# Title\n\n<content>", slug: "lowercase-hyphens-max30"}
+    transient:
+      trigger: todo/reminder/planned task/time-bound
+      uncertain: ask user before noting
+      prefix: _note_
+      location: memory/
+      format: '# Title\nstatus: pending\ndate: YYYY-MM-DD\ntime: HH:MM\n<content>'
+      slug: "lowercase-hyphens-max30"
 
   memory_recall:
-    when_to_use_memory_search:
-      - topic in MEMORY.md index
-      - context unclear, prior decisions/preferences may be relevant
-    when_to_use_memory_get:
-      - after memory_search returns a relevant result
-    when_NOT_to_use:
-      - do not call memory_search on every turn — only when recall is relevant
+    use: topic in MEMORY.md | context unclear | prior decisions/prefs relevant
+    after_search: memory_get on relevant result
+    skip: do not call memory_search every turn
 
   self_config:
     tool: tools/config_tool.py
-    trigger: user intent implies storing/changing agent behavior, persona, tools, preferences, or knowledge
-    rule: LLM classifies intent -> selects target -> generates content -> calls config_tool.py
+    trigger: user implies changing behavior/rules/workflows/persona/tools/preferences (SOUL/IDENTITY/AGENTS/TOOLS/USER)
+    rule: classify intent → select target → generate content → call config_tool.py
     routing:
-      SOUL.md: {when: [tone,verbosity,style,personality], op: append, format: "key: value"}
-      IDENTITY.md: {when: [name,role,persona], op: write, format: "key: value"}
-      AGENTS.md: {when: [sop,rule,workflow,constraint,when_to_use], op: append, format: "## section\n  key: value"}
-      TOOLS.md: {when: [new_tool,script_spec,capability], op: append, format: "## tool_name\n  path: ...\n  when_to_use: ..."}
-      USER.md: {when: [user_pref,user_context,user_info], op: append, format: "- key: value"}
-      memory/_pin_*.md: {when: [permanent_fact,decision,lesson], note: use memory_pin rule NOT config_tool}
-      memory/_note_*.md: {when: [todo,reminder,build_task], note: use memory_pin rule NOT config_tool}
-      docs/<slug>.md: {when: [long_doc,contract,book,legal], note: save to docs/ then run docs_ingest.py}
-    conflict_resolution:
-      when: user intent overrides existing setting (e.g. "be concise" when verbose already set)
-      action: use patch not append — replace existing section by key
-      hint: read file first, find conflicting key, call patch with section_key
-    dedup:
-      handled_by: config_tool.py append_to (auto-skip if duplicate or 85%+ similar)
-      llm_should: still prefer patch over append when overriding known existing key
-    removal:
-      when: user says "remove X", "stop doing Y", "delete that rule"
-      action: call remove with section_key
-      confirm: always show what will be removed before calling remove
-    ambiguous: ask one clarifying question then route
+      SOUL.md: [tone,verbosity,style,personality]
+      IDENTITY.md: [name,role,persona]
+      AGENTS.md: [sop,rule,workflow,constraint,when_to_use]
+      TOOLS.md: [new_tool,script_spec,capability]
+      USER.md: [user_pref,user_context,user_info]
+      docs/<slug>.md: [long_doc,contract,book,legal] → docs_ingest.py
+    removal: user says remove/stop/delete → call remove(section_key); confirm first
     confirm_before_write: [SOUL.md, IDENTITY.md, AGENTS.md]
     skip_confirm: [TOOLS.md, USER.md]
+    ambiguous: ask one question then route
 
 ## backup_restore
-  when:
-    - user asks to restore workspace, files, or memory
-    - user asks "what backups do I have"
-    - user asks to undo a change to a root file or memory file
+  when: restore request | "what backups" | undo file/memory change
   tool: procedures/workspace_backup.py
-  routing:
-    list: python3 procedures/workspace_backup.py --list
-    restore_all: python3 procedures/workspace_backup.py --restore [index|name] [--yes]
-    restore_file: python3 procedures/workspace_backup.py --restore [index|name] --file <path>
-  note: backup runs automatically via cron — LLM does not need to trigger it manually
+  list: python3 procedures/workspace_backup.py --list
+  restore: python3 procedures/workspace_backup.py --restore [index|name] [--yes]
+  restore_file: python3 procedures/workspace_backup.py --restore [index|name] --file <path>
+  note: auto-runs via cron
 $END"
 
 touch "$AGENTS"

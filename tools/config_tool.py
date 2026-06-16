@@ -3,7 +3,7 @@
 config_tool.py — Safe writer for agent root config files.
 
 LLM detects intent, generates content, calls this script.
-This script handles: backup, validation, dedup, conflict detection, append/patch/remove/write.
+This script handles: backup, validation, pre-write LLM review (dedup/conflict/grouping), append/patch/remove/write.
 
 Usage (CLI):
   python3 tools/config_tool.py append SOUL.md "tone: concise"
@@ -15,21 +15,10 @@ Usage (CLI):
 Usage (import):
   from tools.config_tool import append_to, patch_section, remove_section, write_file
 
-## CONTENT WRITING PRINCIPLES (for LLM generating content to pass to this script)
+## WRITING PRINCIPLES (for LLM generating content to pass to this script)
 Root files are injected into LLM context every turn. Every character costs tokens.
-Write content that is lean, precise, and machine-parseable.
 
-Rules:
-  - Machine-first: write for LLM parsing, not human reading. Key: value over prose.
-  - One rule = one line. Needs a paragraph = too verbose, compress it.
-  - No examples: if the rule is unambiguous, drop the example entirely.
-  - No redundant symbols: no decorative dashes, arrows, bullets unless structurally required.
-  - No aesthetic padding: no "---" dividers, no empty headers, no trailing whitespace.
-  - No preamble: never start with "This section describes..." or "The following rules...".
-  - No duplicate intent: two rules saying the same thing from different angles = merge to one.
-  - No dead rules: behavior already default or obvious = omit.
-  - Flatten nesting: max 2 levels of indent. Deeper = restructure.
-  - Shortest form that preserves full meaning and reliability. When in doubt, cut.
+Before writing: read the full target file. Use common sense — dedup, resolve contradictions, group related content. No examples. Shortest form that preserves meaning. Machine-readable over human-readable.
 
 ## WHAT BELONGS IN ROOT FILES vs OUTSIDE
 Root files = always-on behavioral config. Only put things here that the agent needs every single turn.
@@ -59,7 +48,6 @@ REMOVE from root files if:
 
 import argparse
 import subprocess
-from difflib import SequenceMatcher
 from pathlib import Path
 
 WORKSPACE = Path("DINOMEM_WORKSPACE_PLACEHOLDER")
@@ -67,7 +55,6 @@ BACKUP_SCRIPT = WORKSPACE.parent.parent / "scripts/file-backup.sh"
 
 ALLOWED_FILES = {"SOUL.md", "IDENTITY.md", "AGENTS.md", "TOOLS.md", "USER.md"}
 
-DEDUP_THRESHOLD = 0.85
 MAX_FILE_CHARS = 20000   # matches agents.defaults.maxBootstrapFileChars default
 MAX_TOTAL_CHARS = 60000  # matches agents.defaults.maxBootstrapTotalChars default
 WARN_FILE_CHARS = 15000  # warn at 75% of limit
@@ -130,21 +117,9 @@ def check_size(filename, new_content):
 def validate(content):
     return "\x00" not in content and len(content) <= 50_000
 
-def _similarity(a, b):
-    return SequenceMatcher(None, a.strip(), b.strip()).ratio()
-
 def _is_duplicate(content, existing):
-    """Check if content is already present or highly similar to any block in existing."""
-    content_clean = content.strip()
-    # Exact match
-    if content_clean in existing:
-        return True, "exact"
-    # Fuzzy match — split existing into paragraphs and compare
-    blocks = [b.strip() for b in existing.split("\n\n") if b.strip()]
-    for block in blocks:
-        if _similarity(content_clean, block) >= DEDUP_THRESHOLD:
-            return True, f"similar ({_similarity(content_clean, block):.0%} match)"
-    return False, None
+    """Exact-match only guard — semantic dedup/conflict handled by LLM pre-write review."""
+    return content.strip() in existing, "exact" 
 
 def _find_section(lines, section_key):
     """Find start/end line index of a top-level section by key."""
@@ -165,7 +140,7 @@ def _find_section(lines, section_key):
 def append_to(filename, content):
     """
     Append a block to a root config file.
-    Skips if content is duplicate or highly similar to existing content.
+    Skips on exact duplicate. Semantic dedup/conflict/grouping handled by LLM pre-write review.
     """
     if filename not in ALLOWED_FILES:
         return {"ok": False, "error": f"Not allowed: {filename}. Allowed: {sorted(ALLOWED_FILES)}"}
