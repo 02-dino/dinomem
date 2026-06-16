@@ -2,7 +2,7 @@
 
 > Your OpenClaw agent forgets things. dinomem fixes that.
 
-dinomem gives your agent a memory that persists: sessions are archived, facts, decisions, preferences, patterns, and lessons are extracted by an LLM, and everything is embedded locally for semantic search. Your agent picks up exactly where it left off.
+An LLM reads each archived session and distills what matters into structured memory files — automatically reviewed weekly, deduplicated daily, and updated when things change. Memory quality improves over time.
 
 ---
 
@@ -65,13 +65,13 @@ The raw memories live in memory/*.md — MEMORY.md is rebuilt from them anytime.
   Agent queries past memories semantically on every relevant request
 ```
 
-**Session reset triggers** (any one condition):
+**New session triggers** (any one condition):
 
 | Condition | Default |
 |-----------|---------|
 | Session age (chat) | > 7 days idle |
 | Session age (cron/isolated) | > 1 day |
-| Compaction count | > 2 |
+| Compaction generations | ≥ 2 (parentSession chain depth) |
 | Orphaned file age | > 48 hours |
 
 ---
