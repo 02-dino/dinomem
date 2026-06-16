@@ -162,48 +162,46 @@ if [ "$DO_DOCKER" = 1 ]; then
 fi
 
 # ── 4) Register cron jobs ─────────────────────────────────────────────────────
+# upsert_cron: add or update a cron entry by script keyword
+# Usage: upsert_cron <keyword> <comment> <cron_line> <label>
+upsert_cron() {
+  local keyword="$1" comment="$2" cron_line="$3" label="$4"
+  local existing
+  existing=$(crontab -l 2>/dev/null | grep "$keyword" || true)
+  if [ "$existing" = "$cron_line" ]; then
+    skip "$label (exists, up to date)"
+  elif [ -n "$existing" ]; then
+    # Content differs — replace
+    { crontab -l 2>/dev/null | grep -v "$keyword"; echo "# $comment"; echo "$cron_line"; } | crontab -
+    ok "$label (updated)"
+  else
+    { crontab -l 2>/dev/null; echo "# $comment"; echo "$cron_line"; } | crontab -
+    ok "$label (registered)"
+  fi
+}
+
 if [ "$DO_CRON" = 1 ]; then
   hr "Cron jobs"
 
   # auto_session_reset — every 15 min (orchestrates session archive + memory extraction)
   RESET_CRON="*/15 * * * * cd $WS && python3 procedures/auto_session_reset.py >> logs/auto_reset.log 2>&1"
-  if crontab -l 2>/dev/null | grep -qF "auto_session_reset.py"; then
-    skip "auto_session_reset cron (exists)"
-  else
-    (crontab -l 2>/dev/null; echo "# dinomem: auto session reset + memory extraction"; echo "$RESET_CRON") | crontab -
-    ok "auto_session_reset cron (every 15 min)"
-  fi
+  upsert_cron "auto_session_reset.py" "dinomem: auto session reset + memory extraction" "$RESET_CRON" "auto_session_reset cron (every 15 min)"
 
   # workspace_backup — weekly Sunday at 2:00 UTC (snapshot of memory + config files)
   if [ "$DO_BACKUP_CRON" = 1 ]; then
     BACKUP_CRON="0 2 * * 0 cd $WS && python3 procedures/workspace_backup.py >> logs/workspace_backup.log 2>&1"
-    if crontab -l 2>/dev/null | grep -qF "workspace_backup.py"; then
-      skip "workspace_backup cron (exists)"
-    else
-      (crontab -l 2>/dev/null; echo "# dinomem: weekly workspace snapshot (keep 3)"; echo "$BACKUP_CRON") | crontab -
-      ok "workspace_backup cron (weekly Sunday 2:00 UTC)"
-    fi
+    upsert_cron "workspace_backup.py" "dinomem: weekly workspace snapshot (keep 3)" "$BACKUP_CRON" "workspace_backup cron (weekly Sunday 2:00 UTC)"
   else
     skip "workspace_backup cron (--no-backup-cron)"
   fi
 
   # memory_cleanup — daily at 5:00 UTC
   CLEANUP_CRON="0 5 * * * cd $WS && python3 procedures/memory_cleanup.py >> logs/memory_cleanup.log 2>&1"
-  if crontab -l 2>/dev/null | grep -qF "memory_cleanup.py"; then
-    skip "memory_cleanup cron (exists)"
-  else
-    (crontab -l 2>/dev/null; echo "# dinomem: daily memory deduplication"; echo "$CLEANUP_CRON") | crontab -
-    ok "memory_cleanup cron (daily 5:00 UTC)"
-  fi
+  upsert_cron "memory_cleanup.py" "dinomem: daily memory deduplication" "$CLEANUP_CRON" "memory_cleanup cron (daily 5:00 UTC)"
 
-  # memory_review — weekly Sunday at 5:30 UTC
-  REVIEW_CRON="30 5 * * 0 cd $WS && python3 procedures/memory_review.py >> logs/memory_review.log 2>&1"
-  if crontab -l 2>/dev/null | grep -qF "memory_review.py"; then
-    skip "memory_review cron (exists)"
-  else
-    (crontab -l 2>/dev/null; echo "# dinomem: weekly memory review (LLM)"; echo "$REVIEW_CRON") | crontab -
-    ok "memory_review cron (weekly Sunday 5:30 UTC)"
-  fi
+  # memory_review — daily at 5:30 UTC (batched, full cycle ~7 days)
+  REVIEW_CRON="30 5 * * * cd $WS && python3 procedures/memory_review.py >> logs/memory_review.log 2>&1"
+  upsert_cron "memory_review.py" "dinomem: daily batched memory review (LLM)" "$REVIEW_CRON" "memory_review cron (daily 5:30 UTC, batched)"
 
   # note_review — daily via OpenClaw cron (LLM judges resolved _note_*.md and deletes them)
   # Registered via OpenClaw cron API, not crontab
@@ -250,12 +248,7 @@ PYEOF
     TEI_CRON="@reboot sleep 30 && docker start tei-embed >> /tmp/tei-startup.log 2>&1"
   fi
   TEI_CRON="$TEI_CRON" # assigned above
-    if crontab -l 2>/dev/null | grep -qF "docker-compose.tei.yml"; then
-      skip "TEI @reboot cron (exists)"
-    else
-      (crontab -l 2>/dev/null; echo "# dinomem: TEI auto-start on reboot"; echo "$TEI_CRON") | crontab -
-      ok "TEI @reboot cron registered"
-    fi
+    upsert_cron "docker-compose.tei.yml" "dinomem: TEI auto-start on reboot" "$TEI_CRON" "TEI @reboot cron"
   fi
 fi
 

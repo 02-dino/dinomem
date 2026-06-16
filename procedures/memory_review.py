@@ -35,7 +35,9 @@ BATCH_SIZE is adaptive: scales with total file count so full cycle stays ~7 days
 """
 
 import json
+import math
 import subprocess
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -195,6 +197,77 @@ Instructions:
     return call_llm(prompt, max_tokens=4000)
 
 
+# ── Embedding pre-filter ─────────────────────────────────────────────────────
+TEI_URL = "http://localhost:8080/v1/embeddings"
+# Cosine similarity threshold — files above this are "similar enough" to need conflict check
+PREFILTER_SIM_THRESHOLD = 0.82
+
+def get_embeddings_for_files(filepaths):
+    """
+    Get TEI embeddings for a list of files.
+    Returns dict {filepath: vector} or None if TEI unavailable.
+    """
+    if not filepaths:
+        return {}
+    texts = []
+    valid_paths = []
+    for fp in filepaths:
+        try:
+            content = fp.read_text(encoding="utf-8", errors="replace").strip()
+            if content:
+                texts.append(content[:1000])  # cap per-file to avoid huge payloads
+                valid_paths.append(fp)
+        except Exception:
+            continue
+    if not texts:
+        return {}
+    try:
+        payload = json.dumps({"input": texts, "model": ""}).encode()
+        req = urllib.request.Request(
+            TEI_URL, data=payload,
+            headers={"Content-Type": "application/json"}, method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read())
+        vectors = [item["embedding"] for item in data["data"]]
+        return dict(zip(valid_paths, vectors))
+    except Exception:
+        return None  # TEI unavailable
+
+def cosine(a, b):
+    dot = sum(x * y for x, y in zip(a, b))
+    na = sum(x * x for x in a) ** 0.5
+    nb = sum(x * x for x in b) ** 0.5
+    return dot / (na * nb) if na and nb else 0.0
+
+def prefilter_batch(filepaths):
+    """
+    Given a batch of files, return two lists:
+    - priority: files that have at least one similar neighbor (need conflict/redundancy check)
+    - isolated: files with no similar neighbors (safe to review without pre-check)
+
+    If TEI unavailable, returns (filepaths, []) — all files treated as priority.
+    """
+    embeddings = get_embeddings_for_files(filepaths)
+    if embeddings is None:
+        # TEI unavailable — skip pre-filter, treat all as priority
+        return list(filepaths), []
+
+    paths = list(embeddings.keys())
+    vectors = [embeddings[p] for p in paths]
+    has_neighbor = [False] * len(paths)
+
+    for i in range(len(paths)):
+        for j in range(i + 1, len(paths)):
+            if cosine(vectors[i], vectors[j]) >= PREFILTER_SIM_THRESHOLD:
+                has_neighbor[i] = True
+                has_neighbor[j] = True
+
+    priority = [paths[i] for i in range(len(paths)) if has_neighbor[i]]
+    isolated = [paths[i] for i in range(len(paths)) if not has_neighbor[i]]
+    return priority, isolated
+
+
 def review():
     today_display = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
     tracker = load_tracker()
@@ -221,12 +294,23 @@ def review():
 
     print(f"Batched review: {len(md_files)}/{total} files (offset {offset}, batch_size {batch_size}, cycle {cursor['cycle']})")
 
+    # Embedding pre-filter: prioritize files with similar neighbors
+    priority_files, isolated_files = prefilter_batch(md_files)
+    tei_active = not (priority_files == md_files and not isolated_files)
+    if tei_active:
+        print(f"Pre-filter: {len(priority_files)} priority (similar neighbors), {len(isolated_files)} isolated")
+    else:
+        print("Pre-filter: TEI unavailable, reviewing all files")
+
+    # Review priority files first (conflict/redundancy candidates), then isolated
+    ordered_files = priority_files + isolated_files
+
     files_reviewed = 0
     files_redundant = 0
     files_failed = 0
     all_changes = []
 
-    for filepath in md_files:
+    for filepath in ordered_files:
         age = get_file_age(filepath)
         if age is None:
             continue

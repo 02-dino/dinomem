@@ -2,7 +2,7 @@
 
 > Your OpenClaw agent forgets things. dinomem fixes that.
 
-An LLM reads each archived session and distills what matters into structured memory files — automatically reviewed weekly, deduplicated daily, and updated when things change. The agent is behaviorally wired to search memory before acting, so recall actually happens. Memory quality improves over time.
+An LLM reads each archived session and distills what matters into structured memory files — automatically reviewed daily in batches, deduplicated daily, and updated when things change. The agent is behaviorally wired to search memory before acting, so recall actually happens. Memory quality improves over time.
 
 ---
 
@@ -13,7 +13,7 @@ An LLM reads each archived session and distills what matters into structured mem
 - **Navigation index** — `MEMORY.md` is injected every turn as a machine-readable map of what the agent knows. The agent scans it to decide what to search — nothing is force-injected into context.
 - **Semantic search** — memories are embedded locally (no API calls, no cloud) and searchable via `memory_search`
 - **Memory pinning** — tell your agent "remember this" and it saves a permanent `_pin_*.md`, protected from all cleanup. For todos and reminders, `_note_*.md` — auto-deleted once resolved.
-- **Memory cleanup** — daily dedup + weekly LLM review keeps memory lean. Noise removed, contradictions flagged.
+- **Memory cleanup** — daily dedup + daily batched LLM review keeps memory lean. Noise removed, contradictions flagged.
 - **Agent self-configuration** — tell your agent to change its tone, add a tool, or set a rule — it writes to the right file automatically
 - **Weekly snapshot backup** — memory, config, and root files backed up automatically. Keep-3 rotation, never clutters disk. Restore anytime via `workspace_backup.py`.
 - **Zero-config install** — one script handles Docker, cron, and OpenClaw config patches
@@ -204,7 +204,7 @@ Access granted after onboarding → [@dinotlgrm](https://t.me/dinotlgrm)
 │   ├── session_reset.py        # Archives old/compacted sessions
 │   ├── extract_memory.py       # Extracts memories from archives via LLM
 │   ├── memory_cleanup.py       # Daily dedup of memory files
-│   ├── memory_review.py        # Weekly LLM review (valid/invalidated/noise)
+│   ├── memory_review.py        # Daily batched LLM review (valid/invalidated/noise)
 │   └── workspace_backup.py     # Weekly snapshot backup (keep 3, auto-rotate)
 ├── tools/
 │   └── config_tool.py          # Safe writer for root config files (agent self-config)
@@ -225,7 +225,7 @@ MEMORY.md                       # Searchable index (auto-generated, do not edit)
 | Every 15 min | `auto_session_reset.py` | Session archive + memory extraction |
 | Daily 5:00 UTC | `memory_cleanup.py` | Dedup memory files |
 | Weekly Sun 2:00 UTC | `workspace_backup.py` | Snapshot backup (keep 3) |
-| Weekly Sun 5:30 UTC | `memory_review.py` | LLM review — valid/invalidated/noise |
+| Daily 5:30 UTC | `memory_review.py` | LLM review — batched, full cycle ~7 days |
 
 ---
 
@@ -344,6 +344,11 @@ See "Compaction tuning" in the OpenClaw config patches section above.
 **What LLM does it use for memory extraction?**
 Your OpenClaw default model via the gateway. Falls back to OpenRouter (`google/gemini-2.5-flash`) if the gateway call fails.
 
+**What happens at 100k memories? Does review scale?**
+Memory stays bounded by design, not just by deletion. dinomem is not append-only — items expire via TTL, get deleted by daily batched review, and get merged by daily dedup. In practice, 5,000 sessions rarely produces 5,000 memories because redundant and stale items are continuously removed.
+
+For large collections, `memory_review.py` uses batched review (adaptive N files per run, full cycle ~7 days) and an embedding pre-filter (TEI clusters similar files, conflict candidates reviewed first). Review never loads all memories at once — it scales with collection size, not against it.
+
 **How is this different from OpenClaw's built-in memory?**
 See "Why dinomem is different" above.
 
@@ -356,13 +361,13 @@ Short version: OpenClaw retrieves memories. dinomem creates and maintains them.
 One file per item, not one file per session. A session with 10 distinct facts produces 10 files. Daily dedup in `memory_cleanup.py` merges near-duplicates via semantic similarity, so the total stays lean over time.
 
 **How does it avoid hallucinated facts?**
-Two layers: (1) the extraction prompt instructs the LLM to tag uncertain items as `[uncertain]` rather than assert them as facts, and (2) `memory_review.py` runs weekly and flags or deletes items that can't be validated against subsequent context.
+Two layers: (1) the extraction prompt instructs the LLM to tag uncertain items as `[uncertain]` rather than assert them as facts, and (2) `memory_review.py` runs daily in batches and flags or deletes items that can't be validated against subsequent context.
 
 **How does it handle uncertainty?**
-`[uncertain]` items are stored separately and treated differently from `[factual]`. Weekly review promotes them if later evidence confirms, or deletes them if not. Uncertainty doesn't block storage — it gates promotion.
+`[uncertain]` items are stored separately and treated differently from `[factual]`. They are not auto-deleted — they stay until the daily batched review processes their file. When reviewed, the LLM promotes them to `[valid]` if subsequent context confirms, keeps them as `[uncertain]` if still unresolved, or removes them if classified as noise. Uncertainty doesn't block storage — it gates promotion.
 
 **How are conflicting memories resolved?**
-`contradiction_check.py` runs before every write and checks new items against existing memory. Conflicts are flagged. Weekly `memory_review.py` resolves them — keeping the more recent or better-evidenced item.
+`contradiction_check.py` runs before every write and checks new items against existing memory. Conflicts are flagged. Daily batched `memory_review.py` resolves them — keeping the more recent or better-evidenced item.
 
 ---
 
