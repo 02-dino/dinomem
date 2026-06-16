@@ -20,16 +20,16 @@ Root files are injected into LLM context every turn. Every character costs token
 Write content that is lean, precise, and machine-parseable.
 
 Rules:
-  - One rule = one line. If it needs a paragraph, it's too verbose — compress it.
-  - No redundant symbols: no decorative dashes, arrows, bullets unless structurally needed.
-  - No aesthetic padding: no "---" dividers, no empty section headers, no trailing whitespace.
-  - No self-evident examples: if the rule is clear, drop the example.
-  - No redundant preamble: never start with "This section describes..." or "The following rules...".
-  - No duplicate intent: if two rules say the same thing from different angles, merge into one.
-  - No dead rules: if the behavior is already default or obvious, omit it.
-  - Flatten nesting: max 2-3 levels of YAML/indent. Deeper = restructure.
-  - No prose in config: use key: value or bullet points, not sentences.
-  - Human readable: concise does not mean cryptic. A user should still understand it.
+  - Machine-first: write for LLM parsing, not human reading. Key: value over prose.
+  - One rule = one line. Needs a paragraph = too verbose, compress it.
+  - No examples: if the rule is unambiguous, drop the example entirely.
+  - No redundant symbols: no decorative dashes, arrows, bullets unless structurally required.
+  - No aesthetic padding: no "---" dividers, no empty headers, no trailing whitespace.
+  - No preamble: never start with "This section describes..." or "The following rules...".
+  - No duplicate intent: two rules saying the same thing from different angles = merge to one.
+  - No dead rules: behavior already default or obvious = omit.
+  - Flatten nesting: max 2 levels of indent. Deeper = restructure.
+  - Shortest form that preserves full meaning and reliability. When in doubt, cut.
 
 ## WHAT BELONGS IN ROOT FILES vs OUTSIDE
 Root files = always-on behavioral config. Only put things here that the agent needs every single turn.
