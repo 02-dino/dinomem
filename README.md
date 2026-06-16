@@ -45,7 +45,7 @@ OpenClaw session (.jsonl)
         │  every 15 min (cron)
         ▼
 [session_reset.py]
-  Archives sessions idle for 7 days or after 2 compactions; deletes archives older than 7 days
+  Archives sessions idle for 7 days or after 3 compaction generations; deletes archives older than 7 days
         │
         ▼
 [extract_memory.py]
@@ -256,7 +256,7 @@ The installer automatically patches `~/.openclaw/openclaw.json`:
 | `session.reset.idleMinutes` | `10080` | Reset only after 7 days of inactivity |
 | `contextPruning.mode` | `off` | Compaction summarizes — TTL pruning just drops |
 | `compaction.mode` | `safeguard` | Summarizes before dropping context |
-| `compaction.truncateAfterCompaction` | `false` | Keep disabled — rotating session files resets `compactionCount`, breaking `session_reset.py`'s compaction threshold trigger. Session bloat is managed by the compaction threshold (2) instead. |
+| `compaction.truncateAfterCompaction` | `true` | Enabled — successor transcript prevents unbounded JSONL growth. `session_reset.py` now tracks compaction depth via `parentSession` chain traversal instead of `compactionCount`, so this is safe. Predecessor JSONLs are archived immediately on reset (no 48h orphan delay). |
 | `compaction.memoryFlush.enabled` | `false` | **Must stay disabled** — memoryFlush triggers its own compaction + memory write which clashes with `auto_session_reset.py` |
 | `memorySearch.provider` | `openai-compatible` | Use local TEI server |
 | `memorySearch.remote.baseUrl` | `http://localhost:8080/v1` | TEI Docker endpoint |
