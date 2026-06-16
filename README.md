@@ -2,7 +2,7 @@
 
 > Your OpenClaw agent forgets things. dinomem fixes that.
 
-An LLM reads each archived session and distills what matters into structured memory files — automatically reviewed weekly, deduplicated daily, and updated when things change. Memory quality improves over time.
+An LLM reads each archived session and distills what matters into structured memory files — automatically reviewed weekly, deduplicated daily, and updated when things change. The agent is behaviorally wired to search memory before acting, so recall actually happens. Memory quality improves over time.
 
 ---
 
@@ -10,6 +10,7 @@ An LLM reads each archived session and distills what matters into structured mem
 
 - **Auto session archiving** — old sessions are archived automatically before they're lost. Nothing gets dropped silently.
 - **Memory extraction** — an LLM reads archived sessions and distills key facts, decisions, preferences, patterns, and lessons into `memory/*.md`
+- **Navigation index** — `MEMORY.md` is injected every turn as a machine-readable map of what the agent knows. The agent scans it to decide what to search — nothing is force-injected into context.
 - **Semantic search** — memories are embedded locally (no API calls, no cloud) and searchable via `memory_search`
 - **Memory pinning** — tell your agent "remember this" and it saves a permanent `_pin_*.md`, protected from all cleanup. For todos and reminders, `_note_*.md` — auto-deleted once resolved.
 - **Memory cleanup** — daily dedup + weekly LLM review keeps memory lean. Noise removed, contradictions flagged.
@@ -34,6 +35,8 @@ Session → Archive → Extract → Structure → Search → Review → Cleanup
 ```
 
 The difference: memory quality improves over time instead of accumulating noise forever. The pipeline is the product — not the embedding layer.
+
+Most systems inject everything into context, or retrieve blindly. dinomem gives the agent a navigation index — `MEMORY.md` is injected every turn as a compact map of what exists in memory. The agent decides what to search based on that map. Recall is active, not passive.
 
 ---
 
@@ -345,6 +348,21 @@ Your OpenClaw default model via the gateway. Falls back to OpenRouter (`google/g
 See "Why dinomem is different" above.
 
 Short version: OpenClaw retrieves memories. dinomem creates and maintains them.
+
+**How are prompts designed for extraction?**
+`extract_memory.py` uses structured prompts with explicit output format and per-item tagging: `[factual]`, `[pattern]`, `[decision]`, `[uncertain]`, `[preference]`, `[lesson]`, etc. Each item is extracted independently with a confidence signal. Not freeform — the LLM is constrained to produce structured, typed output.
+
+**How many memories are extracted per session?**
+One file per item, not one file per session. A session with 10 distinct facts produces 10 files. Daily dedup in `memory_cleanup.py` merges near-duplicates via semantic similarity, so the total stays lean over time.
+
+**How does it avoid hallucinated facts?**
+Two layers: (1) the extraction prompt instructs the LLM to tag uncertain items as `[uncertain]` rather than assert them as facts, and (2) `memory_review.py` runs weekly and flags or deletes items that can't be validated against subsequent context.
+
+**How does it handle uncertainty?**
+`[uncertain]` items are stored separately and treated differently from `[factual]`. Weekly review promotes them if later evidence confirms, or deletes them if not. Uncertainty doesn't block storage — it gates promotion.
+
+**How are conflicting memories resolved?**
+`contradiction_check.py` runs before every write and checks new items against existing memory. Conflicts are flagged. Weekly `memory_review.py` resolves them — keeping the more recent or better-evidenced item.
 
 ---
 
