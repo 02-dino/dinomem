@@ -26,6 +26,12 @@ Age buckets (full review triggers):
 Deletion at 180 days is handled by cleanup_old_data.py — NOT this script.
 
 Deduplication: .review_tracker.json prevents re-reviewing at same bucket.
+
+BATCHED REVIEW (scale guard):
+To handle large memory collections without overwhelming LLM context, review runs
+in daily batches. Each run processes BATCH_SIZE files, rotating via cursor in
+.review_cursor.json. Full cycle = ceil(total_files / BATCH_SIZE) days.
+BATCH_SIZE is adaptive: scales with total file count so full cycle stays ~7 days.
 """
 
 import json
@@ -36,7 +42,15 @@ from pathlib import Path
 WORKSPACE = Path("DINOMEM_WORKSPACE_PLACEHOLDER")
 MEMORY_DIR = WORKSPACE / "memory"
 REVIEW_TRACKER = MEMORY_DIR / ".review_tracker.json"
+REVIEW_CURSOR = MEMORY_DIR / ".review_cursor.json"
 REPORT_LOG = MEMORY_DIR / ".review_reports.log"
+
+# Batched review config
+# Adaptive batch size: ceil(total_files / 7) so full cycle ~= 7 days
+# Minimum 5, maximum 50 per run to bound LLM calls
+BATCH_MIN = 5
+BATCH_MAX = 50
+CYCLE_DAYS = 7
 
 AGE_BUCKETS = [
     (7, "review"),
@@ -57,6 +71,27 @@ def load_tracker():
 def save_tracker(tracker):
     with open(REVIEW_TRACKER, "w", encoding="utf-8") as f:
         json.dump(tracker, f, indent=2)
+
+def load_cursor():
+    if REVIEW_CURSOR.exists():
+        try:
+            with open(REVIEW_CURSOR, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {"offset": 0, "total": 0, "cycle": 0}
+
+def save_cursor(cursor):
+    with open(REVIEW_CURSOR, "w", encoding="utf-8") as f:
+        json.dump(cursor, f, indent=2)
+
+def get_batch_size(total_files):
+    """Adaptive batch size: ceil(total / CYCLE_DAYS), clamped to [BATCH_MIN, BATCH_MAX]."""
+    import math
+    if total_files == 0:
+        return BATCH_MIN
+    size = math.ceil(total_files / CYCLE_DAYS)
+    return max(BATCH_MIN, min(BATCH_MAX, size))
 
 
 def get_file_age(filepath):
@@ -163,8 +198,29 @@ Instructions:
 def review():
     today_display = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
     tracker = load_tracker()
+    cursor = load_cursor()
 
-    md_files = [f for f in MEMORY_DIR.glob("*.md") if f.name != "MEMORY.md" and not f.name.startswith("_")]
+    all_md_files = sorted([f for f in MEMORY_DIR.glob("*.md") if f.name != "MEMORY.md" and not f.name.startswith("_")])
+    total = len(all_md_files)
+    batch_size = get_batch_size(total)
+
+    # Rotate cursor: if total changed significantly, reset offset
+    if cursor["total"] != total:
+        cursor["offset"] = 0
+        cursor["total"] = total
+
+    offset = cursor["offset"]
+    # Wrap around if offset exceeds total
+    if offset >= total:
+        offset = 0
+        cursor["cycle"] = cursor.get("cycle", 0) + 1
+
+    md_files = all_md_files[offset:offset + batch_size]
+    cursor["offset"] = offset + len(md_files)
+    save_cursor(cursor)
+
+    print(f"Batched review: {len(md_files)}/{total} files (offset {offset}, batch_size {batch_size}, cycle {cursor['cycle']})")
+
     files_reviewed = 0
     files_redundant = 0
     files_failed = 0
