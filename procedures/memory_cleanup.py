@@ -32,6 +32,13 @@ MEMORY_DIR = WORKSPACE / "memory"
 ARCHIVE_DIR = WORKSPACE / ".memory_archive"
 MEMORY_INDEX = WORKSPACE / "MEMORY.md"
 
+# Sessions dir for recency section
+OPENCLAW_ROOT = WORKSPACE.parent
+AGENT_ID = "DINOMEM_AGENT_ID_PLACEHOLDER"
+SESSIONS_DIR = OPENCLAW_ROOT / "agents" / AGENT_ID / "sessions"
+RECENCY_MARKER_START = "<!-- dinomem:recency-start -->"
+RECENCY_MARKER_END = "<!-- dinomem:recency-end -->"
+
 SIM_THRESHOLD = 0.80          # string similarity fallback
 SEMANTIC_THRESHOLD = 0.88     # cosine similarity for semantic dedup
 MAX_INDEX_CHARS = 18000       # 90% of default maxBootstrapFileChars (20000)
@@ -217,7 +224,135 @@ def cleanup():
     print(f"Bootcheck cleanup: {bootcheck_removed} files removed.")
 
     trim_memory_index()
+    update_recency_section()
 
+
+def get_previous_session_topics():
+    """
+    Find the most recently archived session JSONL and extract topic hints.
+    Returns formatted section string or None.
+    """
+    if not SESSIONS_DIR.exists():
+        return None
+    try:
+        archived = sorted(
+            SESSIONS_DIR.glob('*.archived.reset.*.jsonl'),
+            key=lambda f: f.stat().st_mtime,
+            reverse=True
+        )
+        if not archived:
+            return None
+
+        latest = archived[0]
+        try:
+            ts_part = latest.stem.split('.archived.reset.')[-1]
+            session_date = ts_part[:10]
+        except Exception:
+            session_date = datetime.fromtimestamp(latest.stat().st_mtime).strftime('%Y-%m-%d')
+
+        topics = []
+
+        # Pull slugs from memory files dated on session_date
+        for md_file in MEMORY_DIR.glob('*.md'):
+            if md_file.name.startswith('_') or md_file.name == 'MEMORY.md':
+                continue
+            if session_date in md_file.name:
+                parts = md_file.stem.split('_', 2)
+                if len(parts) >= 3:
+                    slug = parts[2].replace('-', ' ')
+                    if slug not in topics:
+                        topics.append(slug)
+
+        # Fallback: extract keywords from user messages in archived JSONL
+        if not topics:
+            user_messages = []
+            try:
+                with open(latest, 'r', encoding='utf-8', errors='replace') as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            entry = json.loads(line)
+                            msg = entry.get('message', entry)
+                            role = msg.get('role') or entry.get('role')
+                            if role == 'user':
+                                content = msg.get('content', '')
+                                if isinstance(content, list):
+                                    content = ' '.join(b.get('text', '') for b in content if isinstance(b, dict))
+                                if isinstance(content, str) and len(content) > 10:
+                                    user_messages.append(content[:200])
+                                if len(user_messages) >= 30:
+                                    break
+                        except Exception:
+                            continue
+            except Exception:
+                pass
+
+            if user_messages:
+                stopwords = {'the','a','an','is','are','was','were','be','been','being',
+                             'have','has','had','do','does','did','will','would','could',
+                             'should','may','might','shall','can','to','of','in','for',
+                             'on','with','at','by','from','up','about','this','that',
+                             'these','those','i','you','he','she','it','we','they',
+                             'what','which','who','how','why','when','where','and','or',
+                             'but','if','then','than','so','not','no','just','very',
+                             'also','too','only','even','already','still','now','here',
+                             'kita','yang','di','ke','dari','dan','atau','ini','itu',
+                             'ya','ga','gak','aja','juga','bisa','ada','mau','udah','kalau'}
+                word_freq = {}
+                for msg in user_messages:
+                    words = re.findall(r'[a-zA-Z][a-zA-Z0-9_]{2,}', msg.lower())
+                    for w in words:
+                        if w not in stopwords and len(w) > 3:
+                            word_freq[w] = word_freq.get(w, 0) + 1
+                top_words = sorted(word_freq.items(), key=lambda x: x[1], reverse=True)[:8]
+                topics = [w for w, _ in top_words]
+
+        if not topics:
+            return None
+
+        topics_str = ', '.join(topics)
+        return f'{RECENCY_MARKER_START}\n## Previous Session ({session_date}) — search if relevant\n{topics_str}\n{RECENCY_MARKER_END}'
+
+    except Exception as e:
+        print(f'⚠️  get_previous_session_topics error: {e}')
+        return None
+
+def update_recency_section():
+    """
+    Inject or update the recency section in MEMORY.md.
+    Uses markers to replace existing section cleanly.
+    """
+    if not MEMORY_INDEX.exists():
+        return
+
+    recency = get_previous_session_topics()
+    content = MEMORY_INDEX.read_text(encoding='utf-8')
+
+    # Remove existing recency block if present
+    if RECENCY_MARKER_START in content:
+        start = content.index(RECENCY_MARKER_START)
+        end = content.index(RECENCY_MARKER_END) + len(RECENCY_MARKER_END)
+        content = content[:start].rstrip() + '\n' + content[end:].lstrip()
+
+    if not recency:
+        MEMORY_INDEX.write_text(content, encoding='utf-8')
+        return
+
+    # Inject after first header line (## Searchable or first ## section)
+    lines = content.splitlines()
+    insert_at = len(lines)  # default: append
+    for i, line in enumerate(lines):
+        if line.startswith('## Searchable') or (line.startswith('## ') and i > 0):
+            insert_at = i
+            break
+
+    lines.insert(insert_at, '')
+    lines.insert(insert_at + 1, recency)
+    lines.insert(insert_at + 2, '')
+    MEMORY_INDEX.write_text('\n'.join(lines), encoding='utf-8')
+    print(f'Recency section updated in MEMORY.md ({session_date if recency else "none"}).')
 
 def trim_memory_index():
     """
