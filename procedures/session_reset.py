@@ -25,7 +25,7 @@ MIN_MESSAGE_LENGTH = 15
 MAX_SESSION_AGE_DAYS = 7
 MAX_SESSION_AGE_DAYS_CRON = 1
 COMPACTION_THRESHOLD = 2  # number of compaction generations (parentSession chain depth)
-SESSIONS_DIR = Path("/root/.openclaw/agents/analyst/sessions")
+SESSIONS_DIR = Path("DINOMEM_AGENT_SESSIONS_PLACEHOLDER")
 SESSIONS_FILE = SESSIONS_DIR / "sessions.json"
 LOG_FILE = Path(__file__).parent.parent / "logs" / "session_reset.log"
 
