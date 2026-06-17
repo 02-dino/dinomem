@@ -58,6 +58,34 @@ hr "dinomem -> $WS (agent: $AGENT_ID)"
 
 # ── 0) Pre-flight compatibility checks ───────────────────────────────────────────
 hr "Pre-flight checks"
+# Python version check
+PY_VERSION=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "0.0")
+PY_MAJOR=$(echo "$PY_VERSION" | cut -d. -f1)
+PY_MINOR=$(echo "$PY_VERSION" | cut -d. -f2)
+if [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 8 ]; }; then
+  warn "Python $PY_VERSION detected — dinomem requires Python 3.8+. Upgrade before continuing."
+else
+  ok "Python $PY_VERSION"
+fi
+# OpenClaw running check
+if command -v openclaw >/dev/null 2>&1 && openclaw status >/dev/null 2>&1; then
+  ok "OpenClaw running"
+else
+  warn "OpenClaw not running or not found — config patches will be skipped. Start OpenClaw and re-run."
+fi
+# openclaw.json exists
+OPENCLAW_JSON="${OPENCLAW_CONFIG:-$HOME/.openclaw/openclaw.json}"
+if [ -f "$OPENCLAW_JSON" ]; then
+  ok "openclaw.json found ($OPENCLAW_JSON)"
+else
+  warn "openclaw.json not found at $OPENCLAW_JSON — config patches will be skipped. Set OPENCLAW_CONFIG or ensure OpenClaw is initialized."
+fi
+# Port 8080 conflict
+if lsof -i :8080 >/dev/null 2>&1; then
+  warn "Port 8080 already in use — TEI embedding server may not start. Check: lsof -i :8080"
+else
+  ok "Port 8080 free"
+fi
 # Existing vector DB
 if [ -d "$WS/kb/vector_db" ] && [ "$(ls -A "$WS/kb/vector_db" 2>/dev/null)" ]; then
   warn "kb/vector_db/ already exists and is not empty — dinomem will write to this path."
@@ -256,6 +284,9 @@ fi
 hr "OpenClaw config"
 OPENCLAW_JSON="${OPENCLAW_JSON:-$HOME/.openclaw/openclaw.json}"
 [ -f "$OPENCLAW_JSON" ] || OPENCLAW_JSON="$OPENCLAW_DIR/openclaw.json"
+if [ -f "$OPENCLAW_JSON" ]; then
+  bash "$SKILL_DIR/scripts/file-backup.sh" "$OPENCLAW_JSON" >/dev/null 2>&1 && ok "openclaw.json backed up" || warn "openclaw.json backup failed — continuing"
+fi
 if [ ! -f "$OPENCLAW_JSON" ]; then
   warn "openclaw.json not found at $OPENCLAW_JSON — skipping config patch"
 else
@@ -355,6 +386,9 @@ fi
 # ── 6) Wire AGENTS.md ─────────────────────────────────────────────────────────
 hr "AGENTS.md"
 AGENTS="$WS/AGENTS.md"
+if [ -f "$AGENTS" ]; then
+  bash "$SKILL_DIR/scripts/file-backup.sh" "$AGENTS" >/dev/null 2>&1 && ok "AGENTS.md backed up" || warn "AGENTS.md backup failed — continuing"
+fi
 BEGIN="<!-- BEGIN:dinomem (managed — do not edit between markers) -->"
 END="<!-- END:dinomem -->"
 BLOCK="$BEGIN
@@ -497,4 +531,8 @@ echo "  Skipping this hurts memory quality and response performance."
 echo "  Takes 2 minutes — do this before restarting OpenClaw."
 echo "  Guide: https://github.com/02-dino/dinomem#compaction-tuning-manual-strongly-recommended"
 echo ""
+echo "  ✨ Want your agent to learn, not just remember?"
+echo "  https://github.com/02-dino/dinomem#want-more--dinomem-neuron-private-repo"
+echo ""
+echo "  License: MIT — https://github.com/02-dino/dinomem/blob/main/LICENSE"
 echo "  Undo: bash $SKILL_DIR/scripts/uninstall.sh --workspace $WS --agent-id $AGENT_ID"

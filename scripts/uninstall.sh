@@ -8,6 +8,7 @@
 #   bash scripts/uninstall.sh --workspace DIR --agent-id ID --purge          # also remove scripts
 #   bash scripts/uninstall.sh --workspace DIR --agent-id ID --purge-data     # remove logs, snapshots (NOT memory)
 #   bash scripts/uninstall.sh --workspace DIR --agent-id ID --purge-memory   # ⚠️  WIPES memory/, MEMORY.md — irreversible
+#   bash scripts/uninstall.sh --workspace DIR --agent-id ID --force          # skip all confirmation prompts (for AI agent use)
 set -euo pipefail
 
 WS="${OPENCLAW_WORKSPACE:-$HOME/.openclaw/workspace}"
@@ -15,6 +16,7 @@ AGENT_ID=""
 PURGE=0
 PURGE_DATA=0
 PURGE_MEMORY=0
+FORCE=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -23,6 +25,7 @@ while [ $# -gt 0 ]; do
     --purge)         PURGE=1; shift ;;
     --purge-data)    PURGE_DATA=1; shift ;;
     --purge-memory)  PURGE_MEMORY=1; shift ;;
+    --force)         FORCE=1; shift ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -205,7 +208,11 @@ if [ "$PURGE_MEMORY" = 1 ]; then
   printf '  \033[31m[warn]\033[0m ⚠️  This will PERMANENTLY DELETE all agent memory:\n'
   printf '         memory/   MEMORY.md\n'
   printf '         This cannot be undone.\n'
-  read -r -p "  Type 'wipe memory' to confirm: " confirm
+  if [ "$FORCE" = 1 ]; then
+    confirm="wipe memory"
+  else
+    read -r -p "  Type 'wipe memory' to confirm: " confirm
+  fi
   if [ "$confirm" = "wipe memory" ]; then
     [ -d "$WS/memory" ]    && rm -rf "$WS/memory"    && ok "removed memory/"
     [ -f "$WS/MEMORY.md" ] && rm "$WS/MEMORY.md"     && ok "removed MEMORY.md"

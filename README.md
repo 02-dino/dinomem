@@ -1,22 +1,8 @@
 # 🦕 dinomem — Dino Agent Memory
 
-> Your OpenClaw agent forgets things. dinomem fixes that.
+> Most agent memory systems accumulate noise. dinomem maintains quality over time.
 
 An LLM reads each archived session and distills what matters into structured memory files — automatically reviewed daily in batches, deduplicated daily, and updated when things change. The agent is behaviorally wired to search memory before acting, so recall actually happens. Memory quality improves over time.
-
----
-
-## What it does
-
-- **Auto session archiving** — old sessions are archived automatically before they're lost. Nothing gets dropped silently.
-- **Memory extraction** — an LLM reads archived sessions and distills key facts, decisions, preferences, patterns, and lessons into `memory/*.md`
-- **Navigation index** — `MEMORY.md` is injected every turn as a machine-readable map of what the agent knows. The agent scans it to decide what to search — nothing is force-injected into context.
-- **Semantic search** — memories are embedded locally (no API calls, no cloud) and searchable via `memory_search`
-- **Memory pinning** — tell your agent "remember this" and it saves a permanent `_pin_*.md`, protected from all cleanup. For todos and reminders, `_note_*.md` — auto-deleted once resolved.
-- **Memory cleanup** — daily dedup + daily batched LLM review keeps memory lean. Noise removed, contradictions flagged.
-- **Agent self-configuration** — tell your agent to change its tone, add a tool, or set a rule — it writes to the right file automatically
-- **Weekly snapshot backup** — memory, config, and root files backed up automatically. Keep-3 rotation, never clutters disk. Restore anytime via `workspace_backup.py`.
-- **Zero-config install** — one script handles Docker, cron, and OpenClaw config patches
 
 ---
 
@@ -40,6 +26,28 @@ Most systems inject everything into context, or retrieve blindly. dinomem gives 
 
 ---
 
+> Want your agent to not just remember, but learn?
+> dinomem-neuron is a separate private repo — not included here. Nightly pattern synthesis, contradiction detection, and behavioral promotion.
+> [↓ dinomem-neuron](#want-more--dinomem-neuron-private-repo)
+
+---
+
+## What it does
+
+- **Auto session archiving** — old sessions are archived automatically before they're lost. Nothing gets dropped silently.
+- **Memory extraction** — an LLM reads archived sessions and distills key facts, decisions, preferences, patterns, and lessons into `memory/*.md`
+- **Navigation index** — `MEMORY.md` is injected every turn as a machine-readable map of what the agent knows. The agent scans it to decide what to search — nothing is force-injected into context.
+- **Semantic search** — memories are embedded locally (no API calls, no cloud) and searchable via `memory_search`
+- **Memory pinning** — tell your agent "remember this" and it saves a permanent `_pin_*.md`, protected from all cleanup. For todos and reminders, `_note_*.md` — auto-deleted once resolved.
+- **Memory cleanup** — daily dedup + daily batched LLM review keeps memory lean. Noise removed, contradictions flagged.
+- **Agent self-configuration** — tell your agent to change its tone, add a tool, or set a rule — it writes to the right file automatically
+- **Weekly snapshot backup** — memory, config, and root files backed up automatically. Keep-3 rotation, never clutters disk. Restore anytime via `workspace_backup.py`.
+- **Zero-config install** — one script handles Docker, cron, and OpenClaw config patches
+
+
+
+---
+
 ## How memory works
 
 ```
@@ -48,7 +56,7 @@ OpenClaw session (.jsonl)
         │  every 15 min (cron)
         ▼
 [session_reset.py]
-  Archives sessions idle for 7 days or after 3 compaction generations; deletes archives older than 7 days
+  Archives sessions idle for 7 days or after 2 compaction generations; deletes archives older than 7 days
         │
         ▼
 [extract_memory.py]
@@ -76,6 +84,39 @@ The raw memories live in memory/*.md — MEMORY.md is rebuilt from them anytime.
 | Session age (cron/isolated) | > 1 day |
 | Compaction generations | ≥ 2 (parentSession chain depth) |
 | Orphaned file age | > 48 hours |
+
+---
+
+## Using dinomem
+
+### Memory pinning
+
+Tell your agent to remember something permanently:
+
+> "Remember this: my wife's birthday is June 23"
+
+The agent saves it as `memory/_pin_<slug>.md` — protected from all cleanup scripts, never auto-deleted. Only recalled when relevant — e.g. when you ask "when is my wife's birthday?" or "what's coming up in June?". Not injected every turn.
+
+For things you want to build or do:
+
+> "Remember to add dark mode to the app"
+
+Saved as `memory/_note_<slug>.md`. Recalled when you ask "what's on my build list?". Auto-deleted by daily cron once the agent detects it's been done.
+
+> **Note:** Memory is recall-based, not always-on. The agent searches for relevant memories when needed — nothing is automatically injected into every turn.
+
+
+
+### Agent self-configuration
+
+Not sure where to put something? Just tell your agent:
+
+> "Be more concise"
+> "Your name is Aria"
+> "Always check X before doing Y"
+> "I built a script that does Z, add it as a tool"
+
+dinomem includes a routing system that detects your intent and writes to the correct file automatically — `SOUL.md` for tone, `IDENTITY.md` for persona, `AGENTS.md` for rules and workflows, `TOOLS.md` for tools, `USER.md` for your preferences. Backs up before every write — auto-rotated, keeps last 3 per file, never clutters disk.
 
 ---
 
@@ -123,66 +164,8 @@ After a session is archived and extracted, you'll see new files in `memory/` and
 
 ---
 
-## Using dinomem
 
-### Memory pinning
-
-Tell your agent to remember something permanently:
-
-> "Remember this: my wife's birthday is June 23"
-
-The agent saves it as `memory/_pin_<slug>.md` — protected from all cleanup scripts, never auto-deleted. Only recalled when relevant — e.g. when you ask "when is my wife's birthday?" or "what's coming up in June?". Not injected every turn.
-
-For things you want to build or do:
-
-> "Remember to add dark mode to the app"
-
-Saved as `memory/_note_<slug>.md`. Recalled when you ask "what's on my build list?". Auto-deleted by daily cron once the agent detects it's been done.
-
-> **Note:** Memory is recall-based, not always-on. The agent searches for relevant memories when needed — nothing is automatically injected into every turn.
-
-> ⚠️ Memory is for **short, recallable knowledge** — facts, decisions, preferences, patterns, lessons, and user traits. Do not save long documents (contracts, books, legal text) to memory — large files pollute LLM context and degrade agent behavior.
->
-> An upgrade is available in a private repo (dinomem-neuron) that adds full RAG support for long documents — contracts, books, legal text — stored separately and searchable without polluting memory.
-
-> The same upgrade also takes `_note_` further — if your note implies a date or deadline, it automatically creates a Google Calendar event and deletes the note when the date passes.
-
-
-### Agent self-configuration
-
-Not sure where to put something? Just tell your agent:
-
-> "Be more concise"
-> "Your name is Aria"
-> "Always check X before doing Y"
-> "I built a script that does Z, add it as a tool"
-
-dinomem includes a routing system that detects your intent and writes to the correct file automatically — `SOUL.md` for tone, `IDENTITY.md` for persona, `AGENTS.md` for rules and workflows, `TOOLS.md` for tools, `USER.md` for your preferences. Backs up before every write — auto-rotated, keeps last 3 per file, never clutters disk.
-
----
-
-## Want more? → dinomem-neuron (private repo)
-
-dinomem gives your agent memory.
-**dinomem-neuron turns those memories into long-term knowledge that changes behavior over time.**
-
-Every night, neuron analyzes relationships across memories, synthesizes patterns, detects contradictions, and promotes durable insights into always-present knowledge. Your agent remembers experiences and develops persistent understanding from them.
-
-Advanced learning layer available separately:
-
-- **Behavioral learning** — patterns that pass multi-signal evaluation (confidence, reinforcement, contradiction checks, insight lifecycle) are promoted into permanent knowledge that influences future responses on every turn, while ordinary memories are only recalled when needed.
-- **Memory graph + synthesis** — discovers connections and insights you never explicitly stated
-- **Contradiction detection** — prevents conflicting beliefs from being promoted into long-term knowledge
-- **Long-document RAG** — contracts, books, legal text, manuals; stored separately and never pollute memory
-- **Calendar integration** — `_note_` files linked to Google Calendar and automatically resolved when events pass
-
-The result: an agent that changes based on what it has learned.
-
-Access granted after onboarding → [@dinotlgrm](https://t.me/dinotlgrm)
-
----
-
-## Install options
+## Installing dinomem
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -242,8 +225,6 @@ dinomem is designed for a default OpenClaw setup. If your agent is already custo
 | Existing `memory_recall` in AGENTS.md | install.sh warns — block will be appended | Remove duplicate manually after install |
 | Existing backup system | Weekly backup cron may be redundant | Use `--no-backup-cron` to skip |
 | Native Codex plugin active | OpenClaw skips raw `MEMORY.md` injection and uses a memory pointer instead — breaks dinomem's always-injected guarantee | Do not activate `plugins.entries.codex` when using dinomem. No config override exists — this is hardcoded in OpenClaw internals. |
-
-> `memory/*.md` daily files are never injected automatically regardless — always on-demand via `memory_search`.
 
 > If your agent has heavy customization, run `bash scripts/install.sh --no-docker --no-cron` first to inspect what would change, then apply cron and Docker manually.
 
@@ -324,50 +305,10 @@ which openclaw || find /usr /home -name openclaw 2>/dev/null
 
 ---
 
+
 ## FAQ
 
-**Does it work without Docker?**
-TEI requires Docker. Without it, `memory_search` falls back to OpenClaw's built-in search (less accurate). Use `--no-docker` to skip TEI setup and configure a remote embedding server manually.
-
-**How much disk space does it use?**
-TEI model: ~80MB. Memory files: minimal (text only). Vector DB grows with usage — roughly 1–2MB per 1000 memory entries.
-
-**Does it work on Windows?**
-Not natively. Use WSL2 with Ubuntu.
-
-**Will it affect my existing agent config?**
-The installer patches `openclaw.json` and appends to `AGENTS.md`. It does not delete anything. Use `--force` only to overwrite existing scripts.
-
-**Should I set `reserveTokens` and `keepRecentTokens`?**
-See "Compaction tuning" in the OpenClaw config patches section above.
-
-**What LLM does it use for memory extraction?**
-Your OpenClaw default model via the gateway. Falls back to OpenRouter (`google/gemini-2.5-flash`) if the gateway call fails.
-
-**What happens at 100k memories? Does review scale?**
-Memory stays bounded by design, not just by deletion. dinomem is not append-only — items expire via TTL, get deleted by daily batched review, and get merged by daily dedup. In practice, 5,000 sessions rarely produces 5,000 memories because redundant and stale items are continuously removed.
-
-For large collections, `memory_review.py` uses batched review (adaptive N files per run, full cycle ~7 days) and an embedding pre-filter (TEI clusters similar files, conflict candidates reviewed first). Review never loads all memories at once — it scales with collection size, not against it.
-
-**How is this different from OpenClaw's built-in memory?**
-See "Why dinomem is different" above.
-
-Short version: OpenClaw retrieves memories. dinomem creates and maintains them.
-
-**How are prompts designed for extraction?**
-`extract_memory.py` uses structured prompts with explicit output format and per-item tagging: `[factual]`, `[pattern]`, `[decision]`, `[uncertain]`, `[preference]`, `[lesson]`, etc. Each item is extracted independently with a confidence signal. Not freeform — the LLM is constrained to produce structured, typed output.
-
-**How many memories are extracted per session?**
-One file per item, not one file per session. A session with 10 distinct facts produces 10 files. Daily dedup in `memory_cleanup.py` merges near-duplicates via semantic similarity, so the total stays lean over time.
-
-**How does it avoid hallucinated facts?**
-Two layers: (1) the extraction prompt instructs the LLM to tag uncertain items as `[uncertain]` rather than assert them as facts, and (2) `memory_review.py` runs daily in batches and flags or deletes items that can't be validated against subsequent context.
-
-**How does it handle uncertainty?**
-`[uncertain]` items are stored separately and treated differently from `[factual]`. They are not auto-deleted — they stay until the daily batched review processes their file. When reviewed, the LLM promotes them to `[valid]` if subsequent context confirms, keeps them as `[uncertain]` if still unresolved, or removes them if classified as noise. Uncertainty doesn't block storage — it gates promotion.
-
-**How are conflicting memories resolved?**
-`contradiction_check.py` runs before every write and checks new items against existing memory. Conflicts are flagged. Daily batched `memory_review.py` resolves them — keeping the more recent or better-evidenced item.
+See [docs/FAQ.md](docs/FAQ.md)
 
 ---
 
@@ -394,10 +335,128 @@ Run `openclaw gateway restart` after uninstall to apply config changes.
 
 ---
 
+---
+
+## Want more? → dinomem-neuron (private repo)
+
+dinomem remembers.
+**dinomem-neuron learns.**
+
+dinomem gives your agent memory. Neuron turns those memories into behavioral knowledge that persists across every future conversation — without you writing a single config line.
+
+---
+
+### What that actually means
+
+With dinomem alone:
+
+```
+Session → Archive → Extract → memory/*.md
+                                    ↓
+                              MEMORY.md index
+                              (injected every turn — navigation map)
+                                    ↓
+                         Agent searches memory on demand
+```
+
+With neuron:
+
+```
+Session → Archive → Extract → memory/*.md
+                                    ↓
+                              MEMORY.md index
+                              (injected every turn — navigation map)
+                                    ↓
+                         Agent searches memory on demand
+                                    +
+                            Relationship graph
+                                    ↓
+                            Pattern synthesis
+                                    ↓
+                            Contradiction check
+                                    ↓
+                        Promoted to permanent knowledge
+                                    ↓
+                        Injected every turn → Behavior change
+```
+
+dinomem's `MEMORY.md` tells the agent **what exists** in memory — a navigation map, injected every turn. Neuron extends it: promoted insights are also injected every turn, but as **behavioral knowledge**, not just a map. Same file, different content.
+
+
+
+
+
+---
+
+### Before / After
+
+These are real memory entries extracted from separate sessions over several weeks:
+
+```
+2026-05-26: "The 'full_analysis_workflow' for analytical queries mandates
+             calling ALL workspace tools, regardless of perceived necessity."
+
+2026-05-27: "Framework validation: The rule for mandatory tool usage in
+             analytical queries was confirmed and explicitly stated as
+             'Always use all available tools, regardless of necessity.'"
+
+2026-05-28: "Informational queries use only relevant tools. Analytical
+             queries trigger full_analysis_workflow that mandates ALL
+             available workspace tools."
+
+2026-05-31: "Analytical path (full_analysis_workflow) mandates the use
+             of all available tools."
+```
+
+**Neuron's L3 synthesis output:**
+
+```
+insight:          "Agent consistently enforces a strict tool-usage rule:
+                   analytical queries must call ALL workspace tools without
+                   exception. This rule has been validated across 4+
+                   independent sessions."
+confidence:       0.94
+convergence:      4 clusters
+first_seen:       2026-05-26
+reinforcement:    4 independent runs
+contradictions:   none
+lifecycle:        stable
+status:           provisional → trusted
+```
+
+**After L4 promotion** — this insight is written into `MEMORY.md` and injected every turn. The agent no longer needs to be reminded of the rule. It's baseline behavior. No prompting. No configuration. No manually written rule. The agent learned it.
+
+
+
+
+
+---
+
+### What neuron adds
+
+| Layer | What it does |
+|-------|--------------|
+| **Relationship Discovery** | Identifies relationships between memories — even across different conversations and time periods |
+| **Pattern Synthesis** | Analyzes groups of related memories and generates candidate insights. Skeptical by design — a pattern must emerge independently more than once. |
+| **Contradiction Resolution** | Prevents conflicting beliefs from becoming permanent knowledge. Conflicts are held back until resolved. |
+| **Knowledge Promotion** | Insights that demonstrate stability over time become persistent knowledge. A single observation is never enough. |
+| **Long-document RAG** | Contracts, books, legal text — stored separately, never pollute memory, searchable via `docs_search` |
+| **Calendar integration** | `_note_` reminders linked to Google Calendar, auto-deleted when the event passes |
+| **Session deep recall** | When memory summary is thin, searches raw archived sessions (7-day window) for the exact exchange — sharper, more detailed recall for recent context |
+
+---
+
+Access granted after onboarding → [@dinotlgrm](https://t.me/dinotlgrm)
+
+> dinomem-neuron install instructions are in the private repo after access is granted.
+
+
+---
+
 ## License
 
 MIT
 
 ---
 
-Made with 🦖 by [@02-dino](https://github.com/02-dino) | [komunitech.com](https://komunitech.com)
+Made with 🦖 by [@02-dino](https://github.com/02-dino)
