@@ -23,7 +23,6 @@ from datetime import datetime, timedelta
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
-MIN_MESSAGE_LENGTH = 92
 SESSIONS_DIR = Path("DINOMEM_AGENT_SESSIONS_PLACEHOLDER")
 MEMORY_DIR = Path(__file__).parent.parent / "memory"
 PROCESSED_LOG = MEMORY_DIR / ".processed_archives.json"
@@ -207,50 +206,6 @@ def extract_message_content(message):
     elif isinstance(content, str):
         text = content
     return sanitize_text(text).strip()
-
-
-def is_valid_message(data):
-    if data.get('type') == 'compaction':
-        return True, "compaction summary"
-    if data.get('type') != 'message':
-        return False, "not a message"
-    message = data.get('message', {})
-    role = message.get('role')
-    if role not in ['user', 'assistant']:
-        return False, f"role={role}"
-    text = extract_message_content(message)
-    if len(text) <= MIN_MESSAGE_LENGTH:
-        return False, f"too short ({len(text)} chars)"
-    if not has_meaningful_content(text):
-        return False, "no meaningful content"
-    return True, "valid"
-
-
-def cleanup_jsonl_content(file_path):
-    cleaned_lines = []
-    stats = {'total': 0, 'kept': 0, 'removed': 0, 'reasons': {}}
-    try:
-        with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                stats['total'] += 1
-                try:
-                    data = json.loads(line)
-                    is_valid, reason = is_valid_message(data)
-                    if is_valid:
-                        cleaned_lines.append(json.dumps(data, ensure_ascii=False, separators=(',', ':')))
-                        stats['kept'] += 1
-                    else:
-                        stats['removed'] += 1
-                        stats['reasons'][reason] = stats['reasons'].get(reason, 0) + 1
-                except json.JSONDecodeError:
-                    stats['removed'] += 1
-                    stats['reasons']['json_error'] = stats['reasons'].get('json_error', 0) + 1
-    except Exception as e:
-        log(f"   ⚠️  Error reading {file_path.name}: {e}")
-    return cleaned_lines, stats
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

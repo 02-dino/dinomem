@@ -21,7 +21,7 @@ from datetime import datetime, timedelta
 
 ARCHIVE_MAX_AGE_DAYS = 7
 ORPHAN_MAX_AGE_HOURS = 48
-MIN_MESSAGE_LENGTH = 92
+MIN_MESSAGE_LENGTH = 15
 MAX_SESSION_AGE_DAYS = 7
 MAX_SESSION_AGE_DAYS_CRON = 1
 COMPACTION_THRESHOLD = 2  # number of compaction generations (parentSession chain depth)
