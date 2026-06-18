@@ -104,11 +104,10 @@ for rf in $ROOT_FILES; do
   if [ -f "$WS/$rf" ]; then
     RF_SIZE=$(wc -c < "$WS/$rf")
     TOTAL_CHARS=$((TOTAL_CHARS + RF_SIZE))
-    if [ "$RF_SIZE" -gt 20000 ]; then
-      warn "$rf is ${RF_SIZE} chars — exceeds maxBootstrapFileChars (20000). Content beyond limit won't be injected."
-      warn "  Trim $rf: remove outdated or redundant sections to keep it lightweight."
-    elif [ "$RF_SIZE" -gt 15000 ]; then
-      warn "$rf is ${RF_SIZE} chars — approaching maxBootstrapFileChars (20000). Consider trimming soon."
+    if [ "$RF_SIZE" -gt 15000 ]; then
+      warn "$rf is ${RF_SIZE} chars — exceeds 15k. Trim now: remove outdated or redundant sections."
+    elif [ "$RF_SIZE" -gt 10000 ]; then
+      warn "$rf is ${RF_SIZE} chars — approaching 15k limit. Consider trimming soon."
     fi
   fi
 done
