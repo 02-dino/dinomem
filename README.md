@@ -225,6 +225,7 @@ dinomem is designed for a default OpenClaw setup. If your agent is already custo
 | Existing `memory_recall` in AGENTS.md | install.sh warns — block will be appended | Remove duplicate manually after install |
 | Existing backup system | Weekly backup cron may be redundant | Use `--no-backup-cron` to skip |
 | Native Codex plugin active | OpenClaw skips raw `MEMORY.md` injection and uses a memory pointer instead — breaks dinomem's always-injected guarantee | Do not activate `plugins.entries.codex` when using dinomem. No config override exists — this is hardcoded in OpenClaw internals. |
+| OpenClaw Dreaming enabled | Dreaming writes its own memory extractions to `memory/` — conflicts with dinomem's `extract_memory.py` which writes to the same folder. Both may overwrite each other. | Disable Dreaming manually before installing dinomem. install.sh cannot force this off. Set `compaction.memoryFlush.enabled: false` (already enforced by install.sh) — but Dreaming is a separate feature and must be disabled independently in your OpenClaw config. |
 
 > If your agent has heavy customization, run `bash scripts/install.sh --no-docker --no-cron` first to inspect what would change, then apply cron and Docker manually.
 
