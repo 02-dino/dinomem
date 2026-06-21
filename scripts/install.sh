@@ -432,6 +432,11 @@ BLOCK="$BEGIN
       when: named entity | temporal ref | implicit ref | continuation request
       action: rewrite implicit query → memory_search FIRST (before fs/exec/any tool)
       enforce: no exceptions; memory before filesystem; violating M2 = repeating mistakes
+    M3_query_style:
+      applies_to: memory_search | session_search
+      prefer: natural_language
+      avoid: technical_identifiers | code_terms | exact_strings | variable_names
+      enforce: rewrite query to natural language before calling any memory tool
 
   memory_pin:
     trigger: permanent_fact OR user emphasizes importance (any language)
