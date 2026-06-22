@@ -355,7 +355,12 @@ def filter_sessions_to_reset(sessions):
                     age_trigger = True
             except Exception:
                 pass
-        # Check compaction count from JSONL directly (works for both truncate=true and truncate=false)
+        # Check compaction count from THREE sources, take the max (OR logic):
+        #   1. JSONL inline type="compaction" entries (truncate=false mode)
+        #   2. parentSession chain depth fallback (truncate=true mode) — both via get_active_compaction_count
+        #   3. sessions.json "compactionCount" field — OpenClaw's authoritative runtime counter,
+        #      survives JSONL cleanup/truncation/chain breaks. Defensive belt-and-suspenders:
+        #      catches the case where (1)+(2) read 0 but OpenClaw knows compactions happened.
         session_id = session_data.get("sessionId", "")
         session_file_str = session_data.get("sessionFile")
         if session_file_str:
@@ -364,9 +369,11 @@ def filter_sessions_to_reset(sessions):
             session_file = SESSIONS_DIR / f"{session_id}.jsonl"
         else:
             session_file = None
-        compaction_count = 0
+        jsonl_compaction_count = 0
         if session_file and session_file.exists():
-            compaction_count = get_active_compaction_count(session_file)
+            jsonl_compaction_count = get_active_compaction_count(session_file)
+        sessions_json_compaction_count = session_data.get("compactionCount", 0) or 0
+        compaction_count = max(jsonl_compaction_count, sessions_json_compaction_count)
         if compaction_count >= COMPACTION_THRESHOLD:
             compaction_trigger = True
         should_reset = age_trigger or compaction_trigger
