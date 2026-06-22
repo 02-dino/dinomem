@@ -44,6 +44,12 @@ SEMANTIC_THRESHOLD = 0.88     # cosine similarity for semantic dedup
 MAX_INDEX_CHARS = 18000       # 90% of default maxBootstrapFileChars (20000)
 TEI_URL = "http://localhost:8080/v1/embeddings"
 ALL_ITEM_TAGS = r'\[factual\]|\[pattern\]|\[operational\]|\[decision\]|\[correction\]|\[preference\]|\[uncertain\]|\[lesson\]|\[prediction\]'
+# Bare daily files (memory/YYYY-MM-DD.md) are written by OpenClaw memoryFlush
+# solely to feed startupContext. They are flush-owned, untagged prose, and
+# pruned by cleanup_startup_daily.py. dinomem's dedup/TTL/bootcheck passes must
+# NOT touch them (bootcheck especially would delete an untagged file that
+# happens to mention a framework keyword). Skip them everywhere.
+BARE_DAILY_RE = re.compile(r'^\d{4}-\d{2}-\d{2}\.md$')
 
 KNOWN_FRAMEWORK_FACTS = [
     "framework validation: The AI successfully recalled",
@@ -157,7 +163,10 @@ def cleanup():
     today_display = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
     ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
 
-    md_files = sorted([f for f in MEMORY_DIR.glob("*.md") if f.name != "MEMORY.md" and not f.name.startswith("_")])
+    md_files = sorted([f for f in MEMORY_DIR.glob("*.md")
+                       if f.name != "MEMORY.md"
+                       and not f.name.startswith("_")
+                       and not BARE_DAILY_RE.match(f.name)])
     removed_count = 0
     bootcheck_removed = 0
 

@@ -225,7 +225,7 @@ dinomem is designed for a default OpenClaw setup. If your agent is already custo
 | Existing `memory_recall` in AGENTS.md | install.sh warns — block will be appended | Remove duplicate manually after install |
 | Existing backup system | Weekly backup cron may be redundant | Use `--no-backup-cron` to skip |
 | Native Codex plugin active | OpenClaw skips raw `MEMORY.md` injection and uses a memory pointer instead — breaks dinomem's always-injected guarantee | Do not activate `plugins.entries.codex` when using dinomem. No config override exists — this is hardcoded in OpenClaw internals. |
-| OpenClaw Dreaming enabled | Dreaming writes its own memory extractions to `memory/` — conflicts with dinomem's `extract_memory.py` which writes to the same folder. Both may overwrite each other. | Disable Dreaming manually before installing dinomem. install.sh cannot force this off. Set `compaction.memoryFlush.enabled: false` (already enforced by install.sh) — but Dreaming is a separate feature and must be disabled independently in your OpenClaw config. |
+| OpenClaw Dreaming enabled | Dreaming writes its own memory extractions to `memory/` — conflicts with dinomem's `extract_memory.py` which writes to the same folder. Both may overwrite each other. | Disable Dreaming manually before installing dinomem. install.sh cannot force this off — Dreaming is a separate feature and must be disabled independently in your OpenClaw config. (Note: dinomem's `memoryFlush` is the guarded bare-daily writer for startupContext and is unrelated to Dreaming.) |
 
 > If your agent has heavy customization, run `bash scripts/install.sh --no-docker --no-cron` first to inspect what would change, then apply cron and Docker manually.
 
@@ -242,11 +242,11 @@ The installer automatically patches `~/.openclaw/openclaw.json`:
 | `contextPruning.mode` | `off` | Compaction summarizes — TTL pruning just drops |
 | `compaction.mode` | `safeguard` | Summarizes before dropping context |
 | `compaction.truncateAfterCompaction` | `true` | Enabled — successor transcript prevents unbounded JSONL growth. `session_reset.py` now tracks compaction depth via `parentSession` chain traversal instead of `compactionCount`, so this is safe. Predecessor JSONLs are archived immediately on reset (no 48h orphan delay). |
-| `compaction.memoryFlush.enabled` | `false` | **Must stay disabled** — memoryFlush triggers its own compaction + memory write which clashes with `auto_session_reset.py` |
+| `compaction.memoryFlush.enabled` | `true` | Enabled as a guarded writer of the bare daily file `memory/YYYY-MM-DD.md` that feeds `startupContext`. A prompt override confines it to that file and forbids touching `MEMORY.md`. See [startupContext + daily flush](#startupcontext--daily-flush). |
 | `memorySearch.provider` | `openai-compatible` | Use local TEI server |
 | `memorySearch.remote.baseUrl` | `http://localhost:8080/v1` | TEI Docker endpoint |
 | `agents.defaults.workspaceBootstrap` | `always` | Root files (AGENTS.md, SOUL.md, etc) injected every turn — not skipped on continuation turns |
-| `startupContext.enabled` | `false` | Disable startup push-injection of recent memory files — dinomem uses `memory_search` pull instead, which is more precise and scales better |
+| `startupContext.enabled` | `true` (`dailyMemoryDays: 2`) | Injects the last 2 days of bare daily memory on `/new` and `/reset`. `memory_search` pull still handles deep recall; this adds recent raw context on reset. See [startupContext + daily flush](#startupcontext--daily-flush). |
 
 See `references/openclaw-config-snippet.json5` for the full annotated config.
 
@@ -263,6 +263,66 @@ Examples: 200k model → `50000`, 1M model → `800000`, 128k model → skip.
 Examples: 200k model → `50000`, 128k model → `32000`, 1M model → `50000`.
 
 Set both under `agents.defaults.compaction` in `openclaw.json`. See `references/openclaw-config-snippet.json5` for annotated examples.
+
+---
+
+## startupContext + daily flush
+
+dinomem injects the last 2 days of raw daily memory on `/new` and `/reset` (via OpenClaw's `startupContext`), on top of its always-injected `MEMORY.md` navigation index. Deep recall still runs through `memory_search` pull; this just adds recent raw context at session start.
+
+This is wired automatically by `install.sh` — no manual steps. The section below explains how it works and why it doesn't clash with the extraction pipeline.
+
+**The naming catch it solves:** `startupContext` only loads `memory/YYYY-MM-DD.md` (bare dated file) or `memory/YYYY-MM-DD-<slug>.md` (hyphen). dinomem's extraction writes per-item files as `memory/YYYY-MM-DD_<type>_<slug>.md` (**underscore**), which `startupContext` does **not** match. So `startupContext` alone would inject nothing.
+
+**How dinomem fills it:** OpenClaw's `memoryFlush` runs before compaction and writes the bare daily file `memory/YYYY-MM-DD.md` — exactly the format `startupContext` reads. That file is then pruned once it ages out of the injection window. dinomem never reads bare daily files, so they stay fully separate from the extraction pipeline.
+
+```
+memoryFlush  --writes-->  memory/YYYY-MM-DD.md   (bare; startupContext's format)
+                                  |
+                  startupContext reads last N days on /new, /reset
+                                  |
+              cleanup_startup_daily.py deletes bare files older than N days
+
+dinomem extract  --writes-->  memory/YYYY-MM-DD_<type>_<slug>.md  (untouched, 180d retention)
+```
+
+### What install.sh wires
+
+1. **`startupContext`** (`agents.defaults`): `enabled: true`, `dailyMemoryDays: 2`.
+
+2. **`memoryFlush`** with a guard prompt so it writes ONLY the bare daily file and never touches `MEMORY.md` (which dinomem owns and overwrites daily):
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "compaction": {
+        "memoryFlush": {
+          "enabled": true,
+          "prompt": "Write any lasting notes ONLY to memory/YYYY-MM-DD.md (today's bare dated file). Never create, edit, or append MEMORY.md or any other memory/*.md file — MEMORY.md is auto-generated by dinomem and will overwrite your edits. Reply with the exact silent token NO_REPLY if nothing to store."
+        }
+      }
+    }
+  }
+}
+```
+
+> Without the guard, the flush turn may write directly to `MEMORY.md`, and dinomem's nightly index regen (`generate_topic_index.py`) would silently overwrite it. The guard keeps flush confined to the bare daily file.
+
+3. **Cleanup cron** (`procedures/cleanup_startup_daily.py`, 02:05 UTC) so bare daily files don't accumulate. It deletes ONLY bare `YYYY-MM-DD.md` files older than `--days` (default 2). It never touches per-item `_`-files, `_pin_*`, `_note_*`, or `MEMORY.md`.
+
+```bash
+# 02:05 daily — after dinomem's own cleanup
+5 2 * * * cd ~/.openclaw/workspace-myagent && python3 procedures/cleanup_startup_daily.py >> logs/cleanup.log 2>&1
+```
+
+Keep `--days` in sync with `dailyMemoryDays` so cleanup retention equals the injection window.
+
+### Why this is clash-free
+
+- **Separate namespaces** — flush writes bare `YYYY-MM-DD.md`; dinomem writes `YYYY-MM-DD_<type>_<slug>.md`. No filename collision.
+- **`MEMORY.md` guarded** — the flush prompt forbids editing it, so dinomem's index regen stays authoritative.
+- **Disposable by design** — bare daily files exist only for `startupContext`; deleting them past the window loses nothing dinomem needs.
 
 ---
 

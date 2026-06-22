@@ -81,7 +81,7 @@ See `references/openclaw-config-snippet.json5` for the full annotated reference.
 | `contextPruning.mode` | `off` | Disable TTL-based blunt pruning — let compaction summarize instead |
 | `compaction.mode` | `safeguard` | Smart summarization before dropping context |
 | `compaction.truncateAfterCompaction` | `false` | Keep disabled — rotating session files resets `compactionCount`, breaking `session_reset.py`'s compaction threshold trigger |
-| `compaction.memoryFlush.enabled` | `false` | Must stay disabled — clashes with `auto_session_reset.py` |
+| `compaction.memoryFlush.enabled` | `true` | Guarded bare-daily-file writer for `startupContext` (prompt confines it to `memory/YYYY-MM-DD.md`, forbids `MEMORY.md`). See README. |
 | `agents.defaults.workspaceBootstrap` | `always` | Root files injected every turn, not skipped on continuation turns |
 | `memorySearch.provider` | `openai-compatible` | Use local TEI server |
 | `memorySearch.remote.baseUrl` | `http://localhost:8080/v1` | TEI Docker endpoint |
