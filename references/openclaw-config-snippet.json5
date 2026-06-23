@@ -68,7 +68,10 @@
 
       // Root files (AGENTS.md, SOUL.md, TOOLS.md, etc) injected every turn.
       // Without this, OpenClaw may skip injection on continuation turns.
-      workspaceBootstrap: "always",
+      // NOTE: the valid key is `contextInjection` (already defaults to "always").
+      // Do NOT use `workspaceBootstrap` — it is not a valid OpenClaw config key and
+      // will crash the gateway (agents.defaults is additionalProperties:false).
+      contextInjection: "always",
 
       // Memory search via local TEI embedding server
       memorySearch: {

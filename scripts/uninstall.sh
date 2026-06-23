@@ -121,10 +121,13 @@ if "tei-embed" in providers:
     del providers["tei-embed"]
     changed.append("models.providers.tei-embed")
 
-# Revert workspaceBootstrap
+# Revert contextInjection (and strip any legacy invalid workspaceBootstrap key)
 if "workspaceBootstrap" in defaults:
     defaults.pop("workspaceBootstrap")
-    changed.append("workspaceBootstrap")
+    changed.append("workspaceBootstrap (legacy invalid key)")
+if "contextInjection" in defaults:
+    defaults.pop("contextInjection")
+    changed.append("contextInjection")
 
 # Revert memorySearch
 ms = defaults.get("memorySearch", {})

@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.1.1
+
+### Fixed
+- **Gateway crash on install (invalid config key).** `install.sh` wrote
+  `agents.defaults.workspaceBootstrap = "always"`, but `workspaceBootstrap` is not
+  a valid OpenClaw config key (it does not exist in the schema on any version).
+  Because `agents.defaults` is `additionalProperties: false`, the unknown key made
+  the gateway reject `openclaw.json` and crash on load (reported on OpenClaw 2026.6.1).
+  - The valid key is `contextInjection`. `install.sh` now sets
+    `agents.defaults.contextInjection = "always"` (already the OpenClaw default;
+    set explicitly to document intent) and strips any legacy `workspaceBootstrap`
+    key left by older installs so the config validates.
+  - `uninstall.sh` now reverts `contextInjection` and also removes the legacy
+    `workspaceBootstrap` key if present.
+  - Affected users can self-fix without reinstalling: delete `workspaceBootstrap`
+    from `agents.defaults` in `~/.openclaw/openclaw.json` and restart the gateway.
+
+### Changed
+- README: Prerequisites now state the minimum OpenClaw version (>= 2026.1.0) for the
+  `memorySearch` / `compaction` / `contextInjection` config keys. Config-patch table
+  row updated from `workspaceBootstrap` to `contextInjection` with the crash rationale.
+
 ## 1.1.0
 
 ### Added

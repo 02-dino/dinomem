@@ -387,10 +387,20 @@ if needs_update:
     compaction.update(compaction_patch)
     changed.append("compaction -> safeguard mode + memoryFlush ON (guarded bare-daily writer for startupContext)")
 
-# workspaceBootstrap -> always (root files injected every turn, not skipped on continuation)
-if defaults.get("workspaceBootstrap") not in (None, "always"):
-    defaults["workspaceBootstrap"] = "always"
-    changed.append("workspaceBootstrap -> always (root files injected every turn)")
+# contextInjection -> always (root files injected every turn, not skipped on continuation).
+# NOTE: the valid OpenClaw config key is `contextInjection`, NOT `workspaceBootstrap`.
+# `workspaceBootstrap` is not in the OpenClaw schema; writing it under agents.defaults
+# (additionalProperties:false) makes the gateway reject the config and crash on load.
+# `always` is already the OpenClaw default; we set it explicitly so intent is documented.
+# Also strip any legacy `workspaceBootstrap` left by older installs so the config validates.
+if defaults.pop("workspaceBootstrap", None) is not None:
+    changed.append("removed legacy invalid key workspaceBootstrap (caused gateway crash)")
+if defaults.get("contextInjection") not in (None, "always"):
+    defaults["contextInjection"] = "always"
+    changed.append("contextInjection -> always (root files injected every turn)")
+elif "contextInjection" not in defaults:
+    defaults["contextInjection"] = "always"
+    changed.append("contextInjection -> always (root files injected every turn)")
 
 # startupContext ON -> inject last 2 days of bare daily memory on /new and /reset.
 # Pairs with the guarded memoryFlush writer above + cleanup_startup_daily.py.
