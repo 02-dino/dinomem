@@ -612,6 +612,8 @@ echo "  catalog, pick the cheapest model with enough context (~80k+), and set BO
 echo "  DINOMEM_CHEAP_MODEL and compaction.model to it (or recommend it to your human)."
 echo "  Keep model.primary on the default (neuron's reasoning scripts, if installed,"
 echo "  stay there too). Never auto-pick a low-context model. Unsure = leave unset."
+echo "  (If you later add dinomem-neuron, its installer re-surfaces this with the"
+echo "  reasoning tier included — you don't need to remember it now.)"
 echo "  Guide: https://github.com/02-dino/dinomem#model-selection"
 echo ""
 echo "  ✨ Want your agent to learn, not just remember?"

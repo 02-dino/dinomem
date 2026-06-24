@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.2.5
+
+### Changed
+- **Base post-install hint sets expectation that neuron re-surfaces this later.**
+  Added one line so a base-only installer knows the model-selection picture
+  completes at neuron install (when the reasoning tier appears) — they don't need
+  to remember it now. Pairs with neuron 1.2.2, which repeats the recommendation
+  at the moment it becomes relevant. Fixes the timing gap where the advice landed
+  too early at base install and was never repeated.
+
 ## 1.2.4
 
 ### Docs
