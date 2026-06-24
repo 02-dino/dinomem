@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.2.3
+
+### Changed
+- **Post-install `MODEL_HINT` is now agent-actionable and covers compaction.**
+  Extended the install.sh hint so an autonomous installer parsing stdout sees the
+  full same-tier picture in one block: set **both** `DINOMEM_CHEAP_MODEL` **and**
+  `agents.defaults.compaction.model` to the same cheap high-context model (read
+  the user's `openclaw.json` catalog, pick one with enough context, or recommend
+  to the human). Reasoning scripts + `model.primary` stay on the default; never
+  auto-pick a low-context model; leave unset if unsure (default-safe). README
+  “For autonomous installers” note updated to match — so the v1.2.2 compaction
+  guidance is reachable by a headless agent, not just a human reading the README.
+
 ## 1.2.2
 
 ### Docs
