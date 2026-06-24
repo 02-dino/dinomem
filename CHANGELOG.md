@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.2.2
+
+### Docs
+- **Compaction model guidance aligned with `DINOMEM_CHEAP_MODEL`.** OpenClaw's
+  compaction (summarizing session context) is a no-reasoning bulk task — the same
+  tier as `extract_memory` / `memory_review`. README “Compaction tuning” now
+  recommends setting `agents.defaults.compaction.model` to the **same** cheap,
+  high-context model used for `DINOMEM_CHEAP_MODEL`; the “Model selection” table
+  lists compaction in the no-reasoning tier; and `openclaw-config-snippet.json5`
+  carries a commented `model:` example. Documentation only — dinomem does **not**
+  auto-set `compaction.model` (no model auto-guessing, no clobbering OpenClaw
+  config). The right model depends on what the user has.
+
 ## 1.2.1
 
 ### Fixed

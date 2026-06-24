@@ -64,6 +64,13 @@
         // Not patched by install.sh — set manually based on your model.
         //   reserveTokens: 50000,
         //   keepRecentTokens: 32000, // tokens preserved after each compaction
+        //
+        // model: compaction is a NO-REASONING bulk task (summarizing context) —
+        // same tier as dinomem's extract_memory / memory_review. Use the SAME
+        // cheap, high-context model you set for DINOMEM_CHEAP_MODEL. Unset = your
+        // default model is used (works, just costs more). Not auto-set — the right
+        // model depends entirely on what you have.
+        //   model: "your-provider/your-cheap-high-context-model",
       },
 
       // Root files (AGENTS.md, SOUL.md, TOOLS.md, etc) injected every turn.

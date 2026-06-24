@@ -273,7 +273,9 @@ Examples: 200k model → `50000`, 1M model → `800000`, 128k model → skip.
 
 Examples: 200k model → `50000`, 128k model → `32000`, 1M model → `50000`.
 
-Set both under `agents.defaults.compaction` in `openclaw.json`. See `references/openclaw-config-snippet.json5` for annotated examples.
+**`model`** — compaction (summarizing session context) is a **no-reasoning bulk task**, the same tier as dinomem's `extract_memory` / `memory_review`. Set `agents.defaults.compaction.model` to the **same cheap, high-context model** you'd use for [`DINOMEM_CHEAP_MODEL`](#model-selection). One model, both jobs: cheap where it's bulk, default where it's reasoning. If unset, OpenClaw uses your default model for compaction too (works, just costs more). dinomem does not set this for you — you (or your install agent) pick it, since the right model depends entirely on what you have.
+
+Set these under `agents.defaults.compaction` in `openclaw.json`. See `references/openclaw-config-snippet.json5` for annotated examples.
 
 ### Model selection
 
@@ -281,7 +283,7 @@ Memory scripts call an LLM. They split into two tiers by task:
 
 | Tier | Scripts | Recommended model | Why |
 |------|---------|-------------------|-----|
-| No-reasoning (bulk) | `extract_memory`, `memory_review` | Cheapest model with the **highest context window** you have | High-volume text ops (extraction, summarization). Context window matters more than reasoning depth. |
+| No-reasoning (bulk) | `extract_memory`, `memory_review`, **+ OpenClaw compaction** | Cheapest model with the **highest context window** you have | High-volume text ops (extraction, summarization, context compaction). Context window matters more than reasoning depth. Use the **same** model for `DINOMEM_CHEAP_MODEL` and `compaction.model`. |
 | Reasoning | (neuron) `memory_synthesis`, `contradiction_check`, `memory_promote` | Your **default** model (usually your strongest reasoning tier) | Emergent insight, contradiction logic, and permanent-promotion validity checks need quality judgment. |
 
 **Default behavior:** every script uses your OpenClaw default model (`agents.defaults.model.primary`). Nothing to configure.
