@@ -279,16 +279,18 @@ Set these under `agents.defaults.compaction` in `openclaw.json`. See `references
 
 ### Model selection
 
-Memory scripts call an LLM. They split into two tiers by task:
+**Base dinomem is all no-reasoning bulk work.** `extract_memory` and
+`memory_review` are high-volume text ops (extraction, summarization) — the same
+tier as OpenClaw compaction. None of base dinomem's own scripts need a reasoning
+model.
 
 | Tier | Scripts | Recommended model | Why |
 |------|---------|-------------------|-----|
 | No-reasoning (bulk) | `extract_memory`, `memory_review`, **+ OpenClaw compaction** | Cheapest model with the **highest context window** you have | High-volume text ops (extraction, summarization, context compaction). Context window matters more than reasoning depth. Use the **same** model for `DINOMEM_CHEAP_MODEL` and `compaction.model`. |
-| Reasoning | (neuron) `memory_synthesis`, `contradiction_check`, `memory_promote` | Your **default** model (usually your strongest reasoning tier) | Emergent insight, contradiction logic, and permanent-promotion validity checks need quality judgment. |
 
 **Default behavior:** every script uses your OpenClaw default model (`agents.defaults.model.primary`). Nothing to configure.
 
-**To cut cost (opt-in):** set `DINOMEM_CHEAP_MODEL` to your cheapest high-context model. Only the no-reasoning bulk scripts use it; reasoning scripts always stay on the default.
+**To cut cost (opt-in):** set `DINOMEM_CHEAP_MODEL` to your cheapest high-context model. All of base dinomem's scripts are no-reasoning, so they all honor it.
 
 ```bash
 # example: route bulk scripts to a cheap 1M-context model
@@ -296,12 +298,20 @@ export DINOMEM_CHEAP_MODEL="your-provider/your-cheap-high-context-model"
 ```
 
 - Unset = no change (default-safe). One model runs everything, exactly as before.
-- Reasoning calls additionally request thinking via `DINOMEM_REASONING_THINKING` (default `high`).
 - dinomem never auto-swaps models. It only routes when you set the var.
+
+> **Reasoning tier (only if you add [dinomem-neuron](#want-more--dinomem-neuron-private-repo)):**
+> neuron adds scripts that *do* need a reasoning model — `memory_synthesis`,
+> `contradiction_check`, `memory_promote` (emergent insight, contradiction logic,
+> permanent-promotion validity). Those always run on your **default** model and
+> ignore `DINOMEM_CHEAP_MODEL` on purpose, additionally requesting thinking via
+> `DINOMEM_REASONING_THINKING` (default `high`). If you only have base dinomem,
+> this tier doesn't apply — you have no reasoning scripts to route. See
+> [neuron → Model selection](https://github.com/02-dino/dinomem-neuron#model-selection).
 
 **Provider requirements:** scripts call the LLM through the OpenClaw gateway, so they use whatever providers you already have configured — no extra account needed. If the gateway is ever unreachable, dinomem falls back to a direct API call using your **own default model's provider**. **OpenRouter is optional** — it is only used as a fallback target if it happens to be the provider you have. A gateway-only setup with no direct-API key still works (the fallback is simply skipped).
 
-**For autonomous installers (AI agents):** this is opt-in and default-safe — skip it and everything works. If you are cost-optimizing, read the user's `openclaw.json` model catalog, pick the cheapest model whose context window is large enough for `extract_memory` batches (~80k input), and set **both** of the same-tier no-reasoning levers to it: `export DINOMEM_CHEAP_MODEL=<that model>` **and** `agents.defaults.compaction.model = <that model>` (OpenClaw compaction is the same bulk tier). Do not pick a low-context model — it will truncate extraction batches. Leave reasoning scripts and `model.primary` on the default. If you cannot confidently rank the catalog, leave everything unset (default-safe) or recommend the choice to your human instead of guessing.
+**For autonomous installers (AI agents):** this is opt-in and default-safe — skip it and everything works. If you are cost-optimizing, read the user's `openclaw.json` model catalog, pick the cheapest model whose context window is large enough for `extract_memory` batches (~80k input), and set **both** of the same-tier no-reasoning levers to it: `export DINOMEM_CHEAP_MODEL=<that model>` **and** `agents.defaults.compaction.model = <that model>` (OpenClaw compaction is the same bulk tier). Do not pick a low-context model — it will truncate extraction batches. Leave `model.primary` on the default (and, if dinomem-neuron is also installed, its reasoning scripts stay on the default automatically). If you cannot confidently rank the catalog, leave everything unset (default-safe) or recommend the choice to your human instead of guessing.
 
 ---
 

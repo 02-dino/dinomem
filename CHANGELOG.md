@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.2.4
+
+### Docs
+- **Model-selection docs no longer imply base dinomem has reasoning scripts.**
+  The previous table listed the reasoning tier (`memory_synthesis`,
+  `contradiction_check`, `memory_promote`) inline — but those ship with
+  **dinomem-neuron**, not base. Since most people install base first (often
+  without neuron), that was confusing. Now: the table shows only base's actual
+  no-reasoning scripts; the reasoning tier is moved to a clearly-labeled
+  “only if you add neuron” callout. The post-install hint and “For autonomous
+  installers” note were reworded the same way — base dinomem is all no-reasoning;
+  reasoning routing is neuron-only and dormant until neuron is installed.
+
 ## 1.2.3
 
 ### Changed
