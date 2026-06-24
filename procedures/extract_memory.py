@@ -170,15 +170,6 @@ LLM_API_BASE = os.environ.get("LLM_API_BASE") or get_api_base_from_model(LLM_MOD
 LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "3000"))
 LLM_ENABLED = bool(LLM_MODEL)
 
-# Cost split: no-reasoning tasks (extraction, dedup-review, topic index, HyDE)
-# run on a cheap model; reasoning tasks (synthesis, contradiction, promotion)
-# pass model=None to call_llm so the gateway uses the agent's default chain.
-# Default is Haiku because gemini-flash 404s through `capability model run`
-# (the gateway misroutes gemini ids to a gemini-cli runtime). Override via env.
-NO_REASONING_MODEL = os.environ.get(
-    "DINOMEM_NO_REASONING_MODEL", "ninerouter/cc/claude-haiku-4-5-20251001"
-)
-
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # LOGGING & UTILITIES
@@ -340,28 +331,20 @@ def _make_llm_request(model, api_key, api_base, prompt, max_tokens, reasoning=Fa
         return False, str(e)
 
 
-def call_llm(prompt, max_tokens=None, reasoning=False, model=None):
-    """Call LLM via OpenClaw gateway. Falls back to OpenRouter.
-
-    model: explicit model id for no-reasoning tasks. When None, the gateway
-    uses the agent's default chain (used by the reasoning scripts that import
-    this function).
-    """
+def call_llm(prompt, max_tokens=None, reasoning=False):
+    """Call LLM via OpenClaw gateway. Falls back to OpenRouter."""
     max_tokens = max_tokens or LLM_MAX_TOKENS
     full_prompt = prompt
     if max_tokens and max_tokens < 3000:
         full_prompt = f"[Respond in {max_tokens} tokens or less]\n\n{prompt}"
     # Try OpenClaw gateway first
     try:
-        log(f"   🔄 Calling OpenClaw gateway ({model or LLM_MODEL or 'default-chain'})...")
+        log(f"   🔄 Calling OpenClaw gateway ({LLM_MODEL})...")
         import shutil as _shutil
         _oc = _shutil.which("openclaw") or "/home/linuxbrew/.linuxbrew/bin/openclaw"
-        _cmd = [_oc, "capability", "model", "run",
-                "--prompt", full_prompt, "--gateway", "--json"]
-        if model:
-            _cmd += ["--model", model]
         result = subprocess.run(
-            _cmd,
+            [_oc, "capability", "model", "run",
+             "--prompt", full_prompt, "--gateway", "--json"],
             capture_output=True, text=True, timeout=120
         )
         if result.returncode == 0:
@@ -533,7 +516,7 @@ Rules:
 - Return empty arrays if nothing worth remembering for that archive
 - JSON array only, no explanation outside JSON"""
     log(f"   🔄 Batch analyzing {len(included)} archives: {archive_list}...")
-    success, response = call_llm(prompt, max_tokens=2000 * len(included), reasoning=False, model=NO_REASONING_MODEL)
+    success, response = call_llm(prompt, max_tokens=2000 * len(included), reasoning=False)
     if not success:
         log(f"   ⚠️  Batch LLM failed: {response}")
         return []
@@ -640,7 +623,7 @@ Rules:
 - Focus on RECALLABLE knowledge, not operational logs
 - JSON only, no explanation outside the JSON"""
     log(f"   🔄 Analyzing {archive_filename}...")
-    success, response = call_llm(prompt, max_tokens=1500, reasoning=False, model=NO_REASONING_MODEL)
+    success, response = call_llm(prompt, max_tokens=1500, reasoning=False)
     if not success:
         log(f"   ⚠️  LLM failed for {archive_filename}: {response}")
         return None
@@ -774,7 +757,7 @@ Classify the relationship. Reply with JSON only:
 - contradiction: new item conflicts with existing (delete old, keep new)
 - unrelated: different enough to coexist (keep both)"""
 
-        success, response = call_llm(prompt, max_tokens=100, reasoning=False, model=NO_REASONING_MODEL)
+        success, response = call_llm(prompt, max_tokens=100, reasoning=False)
         if not success:
             kept_new.append(new_item)
             continue
@@ -936,7 +919,7 @@ Rules:
 - Keep the most recent phrasing if two items conflict
 - If a prediction has an outcome, note it as [factual]
 - JSON only, no markdown outside JSON"""
-    success, response = call_llm(prompt, max_tokens=2000, reasoning=False, model=NO_REASONING_MODEL)
+    success, response = call_llm(prompt, max_tokens=2000, reasoning=False)
     if not success:
         return None
     try:
