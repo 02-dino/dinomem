@@ -36,12 +36,21 @@ BATCH_SIZE is adaptive: scales with total file count so full cycle stays ~7 days
 
 import json
 import math
+import os
 import subprocess
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-WORKSPACE = Path("DINOMEM_WORKSPACE_PLACEHOLDER")
+# Workspace resolution (priority): DINOMEM_WORKSPACE env var > install-time sed
+# substitution of DINOMEM_WORKSPACE_PLACEHOLDER > self-locate from this file's
+# location (procedures/ is one level under the workspace root). The self-locate
+# fallback keeps the script working if the install-time sed was skipped/failed
+# (manual copy, partial install, moved workspace dir).
+_WS_DEFAULT = "DINOMEM_WORKSPACE_PLACEHOLDER"
+if _WS_DEFAULT.startswith("DINOMEM_"):  # sed did not run
+    _WS_DEFAULT = str(Path(__file__).resolve().parent.parent)
+WORKSPACE = Path(os.environ.get("DINOMEM_WORKSPACE", _WS_DEFAULT))
 MEMORY_DIR = WORKSPACE / "memory"
 REVIEW_TRACKER = MEMORY_DIR / ".review_tracker.json"
 REVIEW_CURSOR = MEMORY_DIR / ".review_cursor.json"

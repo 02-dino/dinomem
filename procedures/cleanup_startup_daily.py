@@ -26,11 +26,19 @@ Usage:
 """
 
 import argparse
+import os
 import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
-WORKSPACE = Path("DINOMEM_WORKSPACE_PLACEHOLDER")
+# Workspace resolution (priority): DINOMEM_WORKSPACE env var > install-time sed
+# substitution of DINOMEM_WORKSPACE_PLACEHOLDER > self-locate from this file's
+# location. Self-locate fallback keeps the script working if install-time sed
+# was skipped/failed (manual copy, partial install, moved workspace dir).
+_WS_DEFAULT = "DINOMEM_WORKSPACE_PLACEHOLDER"
+if _WS_DEFAULT.startswith("DINOMEM_"):  # sed did not run
+    _WS_DEFAULT = str(Path(__file__).resolve().parent.parent)
+WORKSPACE = Path(os.environ.get("DINOMEM_WORKSPACE", _WS_DEFAULT))
 MEMORY_DIR = WORKSPACE / "memory"
 RETENTION_DAYS = 2  # keep in sync with startupContext.dailyMemoryDays
 

@@ -47,10 +47,18 @@ REMOVE from root files if:
 """
 
 import argparse
+import os
 import subprocess
 from pathlib import Path
 
-WORKSPACE = Path("DINOMEM_WORKSPACE_PLACEHOLDER")
+# Workspace resolution (priority): DINOMEM_WORKSPACE env var > install-time sed
+# substitution of DINOMEM_WORKSPACE_PLACEHOLDER > self-locate from this file's
+# location (tools/ is one level under the workspace root). Self-locate fallback
+# keeps the script working if install-time sed was skipped/failed.
+_WS_DEFAULT = "DINOMEM_WORKSPACE_PLACEHOLDER"
+if _WS_DEFAULT.startswith("DINOMEM_"):  # sed did not run
+    _WS_DEFAULT = str(Path(__file__).resolve().parent.parent)
+WORKSPACE = Path(os.environ.get("DINOMEM_WORKSPACE", _WS_DEFAULT))
 BACKUP_SCRIPT = WORKSPACE.parent.parent / "scripts/file-backup.sh"
 
 ALLOWED_FILES = {"SOUL.md", "IDENTITY.md", "AGENTS.md", "TOOLS.md", "USER.md"}

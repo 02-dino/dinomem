@@ -21,13 +21,21 @@ Run: python3 procedures/memory_cleanup.py
 """
 
 import json
+import os
 import re
 import urllib.request
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
 
-WORKSPACE = Path("DINOMEM_WORKSPACE_PLACEHOLDER")
+# Workspace resolution (priority): DINOMEM_WORKSPACE env var > install-time sed
+# substitution of DINOMEM_WORKSPACE_PLACEHOLDER > self-locate from this file's
+# location. Self-locate fallback keeps the script working if install-time sed
+# was skipped/failed (manual copy, partial install, moved workspace dir).
+_WS_DEFAULT = "DINOMEM_WORKSPACE_PLACEHOLDER"
+if _WS_DEFAULT.startswith("DINOMEM_"):  # sed did not run
+    _WS_DEFAULT = str(Path(__file__).resolve().parent.parent)
+WORKSPACE = Path(os.environ.get("DINOMEM_WORKSPACE", _WS_DEFAULT))
 MEMORY_DIR = WORKSPACE / "memory"
 ARCHIVE_DIR = WORKSPACE / ".memory_archive"
 MEMORY_INDEX = WORKSPACE / "MEMORY.md"
