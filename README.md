@@ -275,6 +275,30 @@ Examples: 200k model → `50000`, 128k model → `32000`, 1M model → `50000`.
 
 Set both under `agents.defaults.compaction` in `openclaw.json`. See `references/openclaw-config-snippet.json5` for annotated examples.
 
+### Model selection
+
+Memory scripts call an LLM. They split into two tiers by task:
+
+| Tier | Scripts | Recommended model | Why |
+|------|---------|-------------------|-----|
+| No-reasoning (bulk) | `extract_memory`, `memory_review` | Cheapest model with the **highest context window** you have | High-volume text ops (extraction, summarization). Context window matters more than reasoning depth. |
+| Reasoning | (neuron) `memory_synthesis`, `contradiction_check`, `memory_promote` | Your **default** model (usually your strongest reasoning tier) | Emergent insight, contradiction logic, and permanent-promotion validity checks need quality judgment. |
+
+**Default behavior:** every script uses your OpenClaw default model (`agents.defaults.model.primary`). Nothing to configure.
+
+**To cut cost (opt-in):** set `DINOMEM_CHEAP_MODEL` to your cheapest high-context model. Only the no-reasoning bulk scripts use it; reasoning scripts always stay on the default.
+
+```bash
+# example: route bulk scripts to a cheap 1M-context model
+export DINOMEM_CHEAP_MODEL="your-provider/your-cheap-high-context-model"
+```
+
+- Unset = no change (default-safe). One model runs everything, exactly as before.
+- Reasoning calls additionally request thinking via `DINOMEM_REASONING_THINKING` (default `high`).
+- dinomem never auto-swaps models. It only routes when you set the var.
+
+**For autonomous installers (AI agents):** this is opt-in and default-safe — skip it and everything works. If you are cost-optimizing, read the user's `openclaw.json` model catalog, pick the cheapest model whose context window is large enough for `extract_memory` batches (~80k input), and `export DINOMEM_CHEAP_MODEL=<that model>`. Do not pick a low-context model — it will truncate extraction batches. Leave reasoning scripts on the default.
+
 ---
 
 ## Troubleshooting

@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.2.0
+
+### Added
+- **`DINOMEM_CHEAP_MODEL` cost lever (opt-in).** No-reasoning bulk scripts
+  (`extract_memory`, `memory_review`) route to this model when set; reasoning
+  scripts always use the OpenClaw default. Unset = no change (default-safe).
+  Implemented in `call_llm`: passes `--model` to the gateway for no-reasoning
+  calls when the var is set, and falls through to it on the OpenRouter fallback.
+- **`DINOMEM_REASONING_THINKING` (default `high`).** Reasoning calls now pass a
+  `--thinking` level to the gateway, so `reasoning=True` actually engages the
+  model's thinking budget (previously the flag only affected the unused fallback
+  field).
+- **README “Model selection” section** (under Compaction tuning): two-tier table,
+  the env var, and a “For autonomous installers” note (opt-in, default-safe,
+  agent-actionable).
+- **Post-install `MODEL_HINT:` line** — machine-greppable, dual human/agent.
+
+### Fixed
+- **Gateway stdout JSON hardening.** `call_llm` now slices from the first `{`
+  before `json.loads`, so non-JSON noise prepended to stdout (e.g.
+  `[state-migrations]` warnings) no longer corrupts a successful gateway response
+  and trigger a false OpenRouter fallback.
+
 ## 1.1.4
 
 ### Changed

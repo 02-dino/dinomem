@@ -169,6 +169,11 @@ LLM_API_KEY = os.environ.get("LLM_API_KEY") or get_api_key_from_openclaw(LLM_MOD
 LLM_API_BASE = os.environ.get("LLM_API_BASE") or get_api_base_from_model(LLM_MODEL)
 LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "3000"))
 LLM_ENABLED = bool(LLM_MODEL)
+# Optional cost lever (opt-in): no-reasoning (reasoning=False) calls route to this
+# model if set. Reasoning calls always use the OpenClaw default. Unset = no change.
+CHEAP_MODEL = os.environ.get("DINOMEM_CHEAP_MODEL", "").strip() or None
+# Thinking level passed to the gateway for reasoning=True calls.
+REASONING_THINKING = os.environ.get("DINOMEM_REASONING_THINKING", "high").strip() or "high"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -337,18 +342,35 @@ def call_llm(prompt, max_tokens=None, reasoning=False):
     full_prompt = prompt
     if max_tokens and max_tokens < 3000:
         full_prompt = f"[Respond in {max_tokens} tokens or less]\n\n{prompt}"
+    # Route model by task type (opt-in, default = no change):
+    #   reasoning=True  -> OpenClaw default model + thinking level (quality path)
+    #   reasoning=False -> DINOMEM_CHEAP_MODEL if set, else OpenClaw default
+    _gw_cmd = ["capability", "model", "run",
+               "--prompt", full_prompt, "--gateway", "--json"]
+    if reasoning:
+        _gw_cmd += ["--thinking", REASONING_THINKING]
+        _route = f"default+thinking={REASONING_THINKING}"
+    elif CHEAP_MODEL:
+        _gw_cmd += ["--model", CHEAP_MODEL]
+        _route = f"cheap={CHEAP_MODEL}"
+    else:
+        _route = "default"
     # Try OpenClaw gateway first
     try:
-        log(f"   🔄 Calling OpenClaw gateway ({LLM_MODEL})...")
+        log(f"   🔄 Calling OpenClaw gateway ({_route})...")
         import shutil as _shutil
         _oc = _shutil.which("openclaw") or "/home/linuxbrew/.linuxbrew/bin/openclaw"
         result = subprocess.run(
-            [_oc, "capability", "model", "run",
-             "--prompt", full_prompt, "--gateway", "--json"],
+            [_oc] + _gw_cmd,
             capture_output=True, text=True, timeout=120
         )
         if result.returncode == 0:
-            output = json.loads(result.stdout)
+            # Gateway may prepend non-JSON noise (e.g. [state-migrations] warnings)
+            # to stdout. Slice from the first '{' so json.loads doesn't choke and
+            # trigger a false fallback on an otherwise successful call.
+            _raw = result.stdout
+            _start = _raw.find("{")
+            output = json.loads(_raw[_start:] if _start != -1 else _raw)
             if output.get("ok") and output.get("outputs"):
                 text = output["outputs"][0].get("text", "")
                 if text:
@@ -363,10 +385,19 @@ def call_llm(prompt, max_tokens=None, reasoning=False):
     # Fallback to OpenRouter
     log(f"   🔄 Falling back to OpenRouter...")
     fallback_model, fallback_key, fallback_base = get_fallback_config()
+    # No-reasoning + cheap model set: prefer cheap model on the fallback too.
+    if (not reasoning) and CHEAP_MODEL:
+        fallback_model = CHEAP_MODEL
+        _ck = get_api_key_from_openclaw(CHEAP_MODEL)
+        _cb = get_api_base_from_model(CHEAP_MODEL)
+        if _ck:
+            fallback_key = _ck
+        if _cb:
+            fallback_base = _cb
     if fallback_key and fallback_model:
         success, result = _make_llm_request(
             fallback_model, fallback_key, fallback_base,
-            full_prompt, max_tokens, False, "openai"
+            full_prompt, max_tokens, reasoning, "openai"
         )
         if success:
             log(f"   ✅ OpenRouter fallback successful")
