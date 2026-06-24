@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.1.3
+
+### Changed
+- **README repositioned.** New title “The Memory Layer That Gets Sharper Over Time”
+  (cool/memorable, pain-contrast vs. systems that bloat) replacing the generic
+  “Dino Agent Memory”. SEO-loaded subtitle merges the keyword phrase (self-curating
+  long-term memory for AI agents) with the noise/bloat contrast and the concrete
+  differentiator (distill / dedup / recall-before-act).
+- Brand language aligned across products: dinotrust = self-enforcing,
+  dinomem = self-curating.
+
 ## 1.1.2
 
 ### Changed

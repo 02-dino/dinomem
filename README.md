@@ -1,6 +1,6 @@
-# 🦕 dinomem — Dino Agent Memory
+# 🦕 dinomem — The Memory Layer That Gets Sharper Over Time
 
-> Most agent memory systems accumulate noise. dinomem maintains quality over time.
+> Self-curating long-term memory for AI agents. Most memory systems bloat with noise — dinomem distills each session, dedupes daily, and recalls before it acts.
 
 An LLM reads each archived session and distills what matters into structured memory files — automatically reviewed daily in batches, deduplicated daily, and updated when things change. The agent is behaviorally wired to search memory before acting, so recall actually happens. Memory quality improves over time.
 
