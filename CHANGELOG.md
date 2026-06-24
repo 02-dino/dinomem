@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.2
+
+### Changed
+- README: added an explicit warning in the "Memory pinning" section that `memory/`
+  is cron-managed. Only `_`-prefixed files (e.g. `_pin_*.md`) are protected from
+  cleanup; hand-dropped untagged `.md` files may be deduped, TTL-expired, bootcheck-
+  removed, or daily-flush pruned. Documents the per-pattern retention rules
+  (`_pin_`, `_note_`, bare `YYYY-MM-DD.md`, extraction files, `MEMORY.md`).
+
 ## 1.1.1
 
 ### Fixed

@@ -105,6 +105,15 @@ Saved as `memory/_note_<slug>.md`. Recalled when you ask "what's on my build lis
 
 > **Note:** Memory is recall-based, not always-on. The agent searches for relevant memories when needed — nothing is automatically injected into every turn.
 
+> **⚠️ Don't hand-drop untagged files into `memory/`.** The daily cleanup cron (`memory_cleanup.py` + `cleanup_startup_daily.py`) actively manages this folder. Only files prefixed with `_` (e.g. `_pin_*.md`) are protected from all cleanup. Anything else is fair game for automated dedup, TTL expiry, bootcheck removal (empty/framework-only files), or daily-flush pruning. Specifically:
+> - `_pin_*.md` → **permanent**, never touched.
+> - `_note_*.md` → auto-deleted once the agent marks the task resolved.
+> - Bare `YYYY-MM-DD.md` (startupContext daily-flush files) → pruned after `dailyMemoryDays` (default 2) by `cleanup_startup_daily.py`.
+> - dinomem extraction files (`YYYY-MM-DD_type_slug.md`) → individual lines may be deduped/TTL-expired; whole files are removed only if they contain no tagged facts.
+> - `MEMORY.md` → regenerated; never hand-edit (your edits get overwritten).
+>
+> If you want a file to survive untouched, give it a `_` prefix or pin it. If you put a raw `.md` in `memory/` without `_` and without dinomem tags, **assume the daily cron may rewrite or delete it.**
+
 
 
 ### Agent self-configuration
