@@ -86,10 +86,26 @@ def get_api_key_from_openclaw(model):
             if provider.get('apiKey'):
                 return provider['apiKey']
             return env.get('GEMINI_API_KEY')
-        if model.startswith("openrouter") or "/" in model:
+        if model.startswith("openrouter"):
             provider = providers.get('openrouter', {})
             if provider.get('apiKey'):
                 return provider['apiKey']
+            return env.get('OPENROUTER_API_KEY')
+        # Generic provider/model form (e.g. ninerouter/..., anthropic/...):
+        # resolve the real provider from the first path segment instead of
+        # assuming OpenRouter. Falls back to OpenRouter only if that provider
+        # has no key but OpenRouter does.
+        if "/" in model:
+            prefix = model.split("/", 1)[0]
+            provider = providers.get(prefix, {})
+            if provider.get('apiKey'):
+                return provider['apiKey']
+            env_key = env.get(f"{prefix.upper().replace('-', '_')}_API_KEY")
+            if env_key:
+                return env_key
+            or_provider = providers.get('openrouter', {})
+            if or_provider.get('apiKey'):
+                return or_provider['apiKey']
             return env.get('OPENROUTER_API_KEY')
     except Exception:
         pass
@@ -113,9 +129,15 @@ def get_api_base_from_model(model):
         if model.startswith("gemini") or "/gemini" in model or model.startswith("google"):
             provider = providers.get('google', {})
             return provider.get('baseUrl')
-        if model.startswith("openrouter") or "/" in model:
+        if model.startswith("openrouter"):
             provider = providers.get('openrouter', {})
             return provider.get('baseUrl')
+        if "/" in model:
+            prefix = model.split("/", 1)[0]
+            provider = providers.get(prefix, {})
+            if provider.get('baseUrl'):
+                return provider['baseUrl']
+            return providers.get('openrouter', {}).get('baseUrl')
     except Exception:
         pass
     return None
@@ -138,28 +160,49 @@ def get_api_format_from_model(model):
         if model.startswith("gemini") or "/gemini" in model or model.startswith("google"):
             provider = providers.get('google', {})
             return provider.get('api', 'google')
-        if model.startswith("openrouter") or "/" in model:
+        if model.startswith("openrouter"):
             provider = providers.get('openrouter', {})
             return provider.get('api', 'openai')
+        if "/" in model:
+            prefix = model.split("/", 1)[0]
+            provider = providers.get(prefix, {})
+            if provider:
+                return provider.get('api', 'openai')
+            return providers.get('openrouter', {}).get('api', 'openai')
     except Exception:
         pass
     return "openai"
 
 
 def get_fallback_config():
-    """Get OpenRouter fallback configuration."""
-    fallback_model = "google/gemini-2.5-flash"
-    fallback_base = "https://openrouter.ai/api/v1"
-    fallback_key = None
+    """Direct-API fallback when the OpenClaw gateway is unreachable.
+
+    Uses whatever the user already has — no hardcoded provider dependency:
+      1. The user's own default model + its provider key/base (works for
+         Anthropic, Kimi, Gemini, xAI, OpenRouter, ninerouter, etc.).
+      2. OpenRouter only if a key for it happens to be configured.
+    Returns (model, key, base) — key is None when nothing is resolvable, in
+    which case the caller skips the fallback gracefully.
+    """
+    # 1) Prefer the user's own default model on its native provider.
+    if LLM_MODEL:
+        key = get_api_key_from_openclaw(LLM_MODEL)
+        base = get_api_base_from_model(LLM_MODEL)
+        if key and base:
+            return LLM_MODEL, key, base
+    # 2) Last resort: OpenRouter, only if the user actually has a key for it.
     openclaw_config = Path.home() / ".openclaw" / "openclaw.json"
     if openclaw_config.exists():
         try:
             with open(openclaw_config, 'r') as f:
                 config = json.load(f)
-            fallback_key = config.get('models', {}).get('providers', {}).get('openrouter', {}).get('apiKey')
+            or_key = config.get('models', {}).get('providers', {}).get('openrouter', {}).get('apiKey')
+            if or_key:
+                return "google/gemini-2.5-flash", or_key, "https://openrouter.ai/api/v1"
         except Exception:
             pass
-    return fallback_model, fallback_key, fallback_base
+    # Nothing resolvable — caller skips fallback (gateway-only).
+    return LLM_MODEL, None, None
 
 
 # ─── LLM Configuration ───────────────────────────────────────────────────────
@@ -306,11 +349,21 @@ def _make_llm_request(model, api_key, api_base, prompt, max_tokens, reasoning=Fa
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {api_key}"
             }
+            # OpenAI-compatible proxies (ninerouter, openrouter, etc.) expect the
+            # model id WITHOUT the leading routing-provider segment. Strip the
+            # first segment when the base looks like a routed proxy, but keep
+            # multi-segment ids (e.g. cc/claude-... , xai/grok-...) intact.
+            _model_id = model
+            _parts = model.split('/')
+            if len(_parts) >= 3:
+                # provider/group/name -> drop only the provider routing prefix
+                _model_id = '/'.join(_parts[1:])
             data = {
-                "model": model,
+                "model": _model_id,
                 "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": max_tokens,
                 "temperature": 0.1,
+                "stream": False,
                 "reasoning": {"enabled": reasoning}
             }
             endpoint = f"{api_base}/chat/completions"
@@ -321,7 +374,34 @@ def _make_llm_request(model, api_key, api_base, prompt, max_tokens, reasoning=Fa
             method='POST'
         )
         with urllib.request.urlopen(req, timeout=120) as response:
-            result = json.loads(response.read().decode('utf-8'))
+            raw = response.read().decode('utf-8')
+            # Some OpenAI-compatible proxies stream SSE (`data: {...}` chunks)
+            # even for non-stream requests. Reassemble those before parsing.
+            if raw.lstrip().startswith('data:'):
+                parts = []
+                for line in raw.splitlines():
+                    line = line.strip()
+                    if not line.startswith('data:'):
+                        continue
+                    payload = line[len('data:'):].strip()
+                    if not payload or payload == '[DONE]':
+                        continue
+                    try:
+                        chunk = json.loads(payload)
+                        delta = chunk.get('choices', [{}])[0].get('delta', {})
+                        piece = delta.get('content') or ''
+                        if not piece:
+                            msg = chunk.get('choices', [{}])[0].get('message', {})
+                            piece = msg.get('content') or ''
+                        parts.append(piece)
+                    except Exception:
+                        continue
+                content = ''.join(parts)
+                if content:
+                    return True, content
+                # fall through to error if nothing assembled
+                return False, "streamed response had no content"
+            result = json.loads(raw)
             if api_format == "google":
                 content = result['candidates'][0]['content']['parts'][0]['text']
             elif api_format == "anthropic-messages":
@@ -382,28 +462,31 @@ def call_llm(prompt, max_tokens=None, reasoning=False):
         log(f"   ⚠️  Gateway call timed out")
     except Exception as e:
         log(f"   ⚠️  Gateway call error: {e}")
-    # Fallback to OpenRouter
-    log(f"   🔄 Falling back to OpenRouter...")
+    # Fallback to direct provider API (user's own default model, no OpenRouter
+    # dependency). Only fires if the gateway is unreachable.
+    log(f"   🔄 Falling back to direct provider API...")
     fallback_model, fallback_key, fallback_base = get_fallback_config()
     # No-reasoning + cheap model set: prefer cheap model on the fallback too.
     if (not reasoning) and CHEAP_MODEL:
-        fallback_model = CHEAP_MODEL
         _ck = get_api_key_from_openclaw(CHEAP_MODEL)
         _cb = get_api_base_from_model(CHEAP_MODEL)
-        if _ck:
+        if _ck and _cb:
+            fallback_model = CHEAP_MODEL
             fallback_key = _ck
-        if _cb:
             fallback_base = _cb
-    if fallback_key and fallback_model:
+    if fallback_key and fallback_model and fallback_base:
+        _fmt = get_api_format_from_model(fallback_model)
         success, result = _make_llm_request(
             fallback_model, fallback_key, fallback_base,
-            full_prompt, max_tokens, reasoning, "openai"
+            full_prompt, max_tokens, reasoning, _fmt
         )
         if success:
-            log(f"   ✅ OpenRouter fallback successful")
+            log(f"   ✅ Direct fallback successful ({fallback_model})")
             return True, result
         else:
-            log(f"   ⚠️  OpenRouter fallback failed: {result}")
+            log(f"   ⚠️  Direct fallback failed: {result}")
+    else:
+        log(f"   ⚠️  No direct fallback available (gateway-only setup)")
     return False, "All LLM calls failed"
 
 

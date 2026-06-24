@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.2.1
+
+### Fixed
+- **Direct-API fallback no longer assumes OpenRouter.** When the OpenClaw gateway
+  is unreachable, `call_llm` now falls back to the user's **own default model on
+  its native provider** (Anthropic, Kimi, Gemini, xAI, ninerouter, OpenRouter,
+  etc.), instead of a hardcoded OpenRouter endpoint. OpenRouter is now optional —
+  used only if that is the provider the user actually has. If nothing is
+  resolvable, the fallback is skipped gracefully (gateway-only setup) with no
+  crash.
+- **Provider resolution is now prefix-aware.** `get_api_key_from_openclaw`,
+  `get_api_base_from_model`, and `get_api_format_from_model` previously treated
+  any `provider/model` id as OpenRouter. They now resolve the real provider from
+  the leading routing segment (e.g. `ninerouter/`), falling back to OpenRouter
+  only when that provider has no key.
+- **Direct fallback request hardening.** Strips the routing-provider prefix from
+  the model id for OpenAI-compatible proxies, sends `stream: false`, and the
+  response parser now reassembles SSE (`data:` chunk) responses from proxies that
+  stream regardless. Uses the provider's real API format instead of hardcoded
+  `openai`.
+
 ## 1.2.0
 
 ### Added

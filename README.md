@@ -297,6 +297,8 @@ export DINOMEM_CHEAP_MODEL="your-provider/your-cheap-high-context-model"
 - Reasoning calls additionally request thinking via `DINOMEM_REASONING_THINKING` (default `high`).
 - dinomem never auto-swaps models. It only routes when you set the var.
 
+**Provider requirements:** scripts call the LLM through the OpenClaw gateway, so they use whatever providers you already have configured — no extra account needed. If the gateway is ever unreachable, dinomem falls back to a direct API call using your **own default model's provider**. **OpenRouter is optional** — it is only used as a fallback target if it happens to be the provider you have. A gateway-only setup with no direct-API key still works (the fallback is simply skipped).
+
 **For autonomous installers (AI agents):** this is opt-in and default-safe — skip it and everything works. If you are cost-optimizing, read the user's `openclaw.json` model catalog, pick the cheapest model whose context window is large enough for `extract_memory` batches (~80k input), and `export DINOMEM_CHEAP_MODEL=<that model>`. Do not pick a low-context model — it will truncate extraction batches. Leave reasoning scripts on the default.
 
 ---
