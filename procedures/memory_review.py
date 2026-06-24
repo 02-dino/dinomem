@@ -132,8 +132,15 @@ def _find_openclaw_bin():
             return c
     return "openclaw"  # fallback, let subprocess raise if missing
 
+# memory_review is a no-reasoning task (dedup/cleanup judgment) — cheap tier.
+# Default Haiku: gemini-flash 404s through `capability model run` (gemini-cli
+# misroute). Override via env once that routing is fixed.
+NO_REASONING_MODEL = os.environ.get(
+    "DINOMEM_NO_REASONING_MODEL", "ninerouter/cc/claude-haiku-4-5-20251001"
+)
+
 def call_llm(prompt, max_tokens=4000):
-    """Call LLM via OpenClaw gateway."""
+    """Call LLM via OpenClaw gateway (cheap no-reasoning model)."""
     try:
         result = subprocess.run(
             [
@@ -142,6 +149,7 @@ def call_llm(prompt, max_tokens=4000):
                 "--prompt", prompt,
                 "--gateway",
                 "--json",
+                "--model", NO_REASONING_MODEL,
             ],
             capture_output=True,
             text=True,
