@@ -51,7 +51,7 @@ REPORT_LOG = MEMORY_DIR / ".review_reports.log"
 # Adaptive batch size: ceil(total_files / 7) so full cycle ~= 7 days
 # Minimum 5, maximum 50 per run to bound LLM calls
 BATCH_MIN = 5
-BATCH_MAX = 50
+BATCH_MAX = 150
 CYCLE_DAYS = 7
 
 AGE_BUCKETS = [
@@ -221,15 +221,24 @@ def get_embeddings_for_files(filepaths):
             continue
     if not texts:
         return {}
+    # TEI has a per-request payload/batch limit; sending all files at once can
+    # return HTTP 413. Chunk into small batches and merge. If any batch fails,
+    # treat TEI as unavailable (return None) so the caller falls back cleanly.
+    EMBED_BATCH = 8
+    vectors = []
     try:
-        payload = json.dumps({"input": texts, "model": ""}).encode()
-        req = urllib.request.Request(
-            TEI_URL, data=payload,
-            headers={"Content-Type": "application/json"}, method="POST"
-        )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read())
-        vectors = [item["embedding"] for item in data["data"]]
+        for i in range(0, len(texts), EMBED_BATCH):
+            chunk = texts[i:i + EMBED_BATCH]
+            payload = json.dumps({"input": chunk, "model": ""}).encode()
+            req = urllib.request.Request(
+                TEI_URL, data=payload,
+                headers={"Content-Type": "application/json"}, method="POST"
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read())
+            vectors.extend(item["embedding"] for item in data["data"])
+        if len(vectors) != len(valid_paths):
+            return None  # mismatch — treat as unavailable
         return dict(zip(valid_paths, vectors))
     except Exception:
         return None  # TEI unavailable
