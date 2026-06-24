@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.4
+
+### Changed
+- README “Why dinomem is different”: added a closing thesis paragraph — because
+  extraction/dedup/review are done by an LLM (not a fixed embedding algorithm),
+  dinomem’s judgment compounds with model quality and gets sharper every time the
+  underlying model improves, with no retraining or rewrite. Embedding-bottlenecked
+  systems stay flat; dinomem rides the model-capability curve.
+
 ## 1.1.3
 
 ### Changed

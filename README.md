@@ -22,6 +22,8 @@ Session → Archive → Extract → Structure → Search → Review → Cleanup
 
 The difference: memory quality improves over time instead of accumulating noise forever. The pipeline is the product — not the embedding layer.
 
+**This compounds with model quality.** The extraction, dedup, and review are done by an LLM reading your sessions — not a fixed embedding algorithm. Every time the underlying model gets smarter, dinomem's judgment of what matters gets sharper too — no retraining, no rewrite. Most memory systems are bottlenecked at the embedding layer and stay flat as models improve; dinomem rides the curve.
+
 Most systems inject everything into context, or retrieve blindly. dinomem gives the agent a navigation index — `MEMORY.md` is injected every turn as a compact map of what exists in memory. The agent decides what to search based on that map. Recall is active, not passive.
 
 ---
