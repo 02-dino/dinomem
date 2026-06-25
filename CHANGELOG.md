@@ -12,9 +12,12 @@
   `agents.defaults.compaction.memoryFlush.model` to the **same** cheap,
   high-context model as `compaction.model` / `DINOMEM_CHEAP_MODEL`. Override is
   exact (does not inherit the session fallback chain). Default-safe: unset = prior
-  behavior. The config table, Compaction tuning section, Model-selection table,
-  and the autonomous-installer note were all updated to treat memoryFlush as a
-  third same-tier lever alongside `compaction.model` and `DINOMEM_CHEAP_MODEL`.
+  behavior. Documented in the Compaction tuning section (alongside its sibling
+  manual lever `compaction.model`), the Model-selection table, and the
+  autonomous-installer note — treated as a third same-tier lever alongside
+  `compaction.model` and `DINOMEM_CHEAP_MODEL`. Kept out of the auto-patch config
+  table since, like `compaction.model`, it is manual/opt-in (the table lists only
+  what install.sh writes).
 
 ## 1.2.5
 
