@@ -550,7 +550,51 @@ TOOLS_BLOCK="$TOOLS_MARKER
     output:
       type: text
     constraints:
-      mode: read_write"
+      mode: read_write
+
+  config_tool:
+    path: tools/config_tool.py
+    type: exec
+    capabilities:
+      - safe_write_agent_root_config
+      - append_section
+      - overwrite_file
+      - patch_section_by_key
+      - remove_section_by_key
+    when_to_use: |
+      Safe writer for agent root config files (SOUL.md, IDENTITY.md, AGENTS.md,
+      TOOLS.md, USER.md). See AGENTS.md self-edit policy for the WHEN/trigger
+      (user implies changing behavior/rules/workflows/persona/tools/prefs) and
+      the confirm-before-write rules. This is the HOW/capability spec.
+    subcommands:
+      append:
+        usage: \"config_tool.py append <file> <content>\"
+        inputs:
+          file:    { type: string, required: true, note: \"Target root config filename.\" }
+          content: { type: string, required: true, note: \"Text appended to the file.\" }
+      write:
+        usage: \"config_tool.py write <file> <content>\"
+        inputs:
+          file:    { type: string, required: true, note: \"Target root config filename.\" }
+          content: { type: string, required: true, note: \"Full replacement content.\" }
+      patch:
+        usage: \"config_tool.py patch <file> <section_key> <content>\"
+        inputs:
+          file:        { type: string, required: true, note: \"Target root config filename.\" }
+          section_key: { type: string, required: true, note: \"Section heading/key to replace.\" }
+          content:     { type: string, required: true, note: \"New section body.\" }
+      remove:
+        usage: \"config_tool.py remove <file> <section_key>\"
+        inputs:
+          file:        { type: string, required: true, note: \"Target root config filename.\" }
+          section_key: { type: string, required: true, note: \"Section heading/key to remove.\" }
+    output:
+      type: json
+      note: \"Each command prints a JSON result of the write operation.\"
+    constraints:
+      mode: read_write
+      confirm_before_write: [SOUL.md, IDENTITY.md, AGENTS.md]
+      skip_confirm: [TOOLS.md, USER.md]"
 
 if grep -qF "$TOOLS_MARKER" "$TOOLS" 2>/dev/null; then
   skip "TOOLS.md already has workspace_backup entry"
