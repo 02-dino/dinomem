@@ -10,13 +10,13 @@ TEI model: ~80MB. Memory files: minimal (text only). Vector DB grows with usage 
 Not natively. Use WSL2 with Ubuntu.
 
 **Will it affect my existing agent config?**
-The installer patches `openclaw.json` and appends to `AGENTS.md`. It does not delete anything. Use `--force` only to overwrite existing scripts.
+The installer patches `openclaw.json` and appends to `AGENTS.md`. It does not delete anything. Use `--force` only to overwrite existing scripts. See [OpenClaw config patches](../README.md#openclaw-config-patches) for the exact keys it writes.
 
 **Should I set `reserveTokens` and `keepRecentTokens`?**
-See "Compaction tuning" in the OpenClaw config patches section above.
+See [Compaction tuning](../README.md#compaction-tuning-manual-strongly-recommended) in the README.
 
 **What LLM does it use for memory extraction?**
-Your OpenClaw default model via the gateway. Falls back to OpenRouter (`google/gemini-2.5-flash`) if the gateway call fails. To cut cost, set `DINOMEM_CHEAP_MODEL` (routes the no-reasoning bulk scripts). Note: this covers dinomem's own scripts only — OpenClaw's compaction and memory-flush turns are separate, same-tier levers (`compaction.model` and `compaction.memoryFlush.model`). See "Model selection" and "Compaction tuning" in the README.
+Your OpenClaw default model via the gateway. Falls back to OpenRouter (`google/gemini-2.5-flash`) if the gateway call fails. To cut cost, set `DINOMEM_CHEAP_MODEL` (routes the no-reasoning bulk scripts). Note: this covers dinomem's own scripts only — OpenClaw's compaction and memory-flush turns are separate, same-tier levers (`compaction.model` and `compaction.memoryFlush.model`). See [Model selection](../README.md#model-selection) and [Compaction tuning](../README.md#compaction-tuning-manual-strongly-recommended) in the README.
 
 **What happens at 100k memories? Does review scale?**
 Memory stays bounded by design, not just by deletion. dinomem is not append-only — items expire via TTL, get deleted by daily batched review, and get merged by daily dedup. In practice, 5,000 sessions rarely produces 5,000 memories because redundant and stale items are continuously removed.
@@ -24,7 +24,7 @@ Memory stays bounded by design, not just by deletion. dinomem is not append-only
 For large collections, `memory_review.py` uses batched review (adaptive N files per run, full cycle ~7 days) and an embedding pre-filter (TEI clusters similar files, conflict candidates reviewed first). Review never loads all memories at once — it scales with collection size, not against it.
 
 **How is this different from OpenClaw's built-in memory?**
-See "Why dinomem is different" above.
+See [Why dinomem is different](../README.md#why-dinomem-is-different) in the README.
 
 Short version: OpenClaw retrieves memories. dinomem creates and maintains them.
 
