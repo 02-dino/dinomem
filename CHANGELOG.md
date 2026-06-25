@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.2.6
+
+### Docs
+- **`compaction.memoryFlush.model` documented as a cost lever.** The memory-flush
+  turn (reads the session tail, writes the bare daily `memory/YYYY-MM-DD.md` that
+  feeds `startupContext`) is the same no-reasoning bulk tier as compaction, but it
+  ran on the **live session model** by default — so a reasoning-heavy default
+  (Opus/Pro) burned the most expensive model on a write-to-disk chore every flush.
+  README and `references/openclaw-config-snippet.json5` now show pinning
+  `agents.defaults.compaction.memoryFlush.model` to the **same** cheap,
+  high-context model as `compaction.model` / `DINOMEM_CHEAP_MODEL`. Override is
+  exact (does not inherit the session fallback chain). Default-safe: unset = prior
+  behavior. The config table, Compaction tuning section, Model-selection table,
+  and the autonomous-installer note were all updated to treat memoryFlush as a
+  third same-tier lever alongside `compaction.model` and `DINOMEM_CHEAP_MODEL`.
+
 ## 1.2.5
 
 ### Changed

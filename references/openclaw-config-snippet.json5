@@ -46,6 +46,12 @@
         memoryFlush: {
           enabled: false,
           softThresholdTokens: 10000,
+          // model: memoryFlush is also a NO-REASONING bulk task (reads the session
+          // tail, writes the bare daily memory/YYYY-MM-DD.md) — same tier as
+          // compaction.model below. Pin it to the SAME cheap, high-context model.
+          // Override is exact (does not inherit the session fallback chain).
+          // Unset = your live session model is used (works, just costs more).
+          //   model: "your-provider/your-cheap-high-context-model",
         },
         // reserveTokens: set this to keep active context below ~200k tokens.
         // Formula: reserveTokens = max(0, contextWindow - 200000)

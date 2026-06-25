@@ -254,6 +254,7 @@ The installer automatically patches `~/.openclaw/openclaw.json`:
 | `compaction.mode` | `safeguard` | Summarizes before dropping context |
 | `compaction.truncateAfterCompaction` | `true` | Enabled — successor transcript prevents unbounded JSONL growth. `session_reset.py` now tracks compaction depth via `parentSession` chain traversal instead of `compactionCount`, so this is safe. Predecessor JSONLs are archived immediately on reset (no 48h orphan delay). |
 | `compaction.memoryFlush.enabled` | `true` | Enabled as a guarded writer of the bare daily file `memory/YYYY-MM-DD.md` that feeds `startupContext`. A prompt override confines it to that file and forbids touching `MEMORY.md`. |
+| `compaction.memoryFlush.model` | unset (manual) | Same no-reasoning bulk tier as `compaction.model`. Pin to the **same cheap, high-context model** so the silent flush turn doesn't burn your default model on a write-to-disk chore. Unset = uses the live session model. See [Compaction tuning](#compaction-tuning-manual-strongly-recommended). |
 | `memorySearch.provider` | `openai-compatible` | Use local TEI server |
 | `memorySearch.remote.baseUrl` | `http://localhost:8080/v1` | TEI Docker endpoint |
 | `agents.defaults.contextInjection` | `always` | Root files (AGENTS.md, SOUL.md, etc) injected every turn — not skipped on continuation turns. (This is already the OpenClaw default; set explicitly to document intent. The valid key is `contextInjection` — earlier dinomem versions wrote an invalid `workspaceBootstrap` key that crashed the gateway; install/uninstall now strip that legacy key automatically.) |
@@ -275,6 +276,8 @@ Examples: 200k model → `50000`, 128k model → `32000`, 1M model → `50000`.
 
 **`model`** — compaction (summarizing session context) is a **no-reasoning bulk task**, the same tier as dinomem's `extract_memory` / `memory_review`. Set `agents.defaults.compaction.model` to the **same cheap, high-context model** you'd use for [`DINOMEM_CHEAP_MODEL`](#model-selection). One model, both jobs: cheap where it's bulk, default where it's reasoning. If unset, OpenClaw uses your default model for compaction too (works, just costs more). dinomem does not set this for you — you (or your install agent) pick it, since the right model depends entirely on what you have.
 
+**`memoryFlush.model`** — the silent memory-flush turn (reads the session tail, writes the bare daily `memory/YYYY-MM-DD.md` that feeds `startupContext`) is the **same no-reasoning bulk tier** as compaction. By default it runs on whatever your **live session model** is — so on a reasoning-heavy default (e.g. an Opus/Pro tier) every flush burns your most expensive model on a write-to-disk chore. Set `agents.defaults.compaction.memoryFlush.model` to the **same cheap, high-context model** as `compaction.model` (and `DINOMEM_CHEAP_MODEL`). The override is exact — it does **not** inherit the session fallback chain. Caveat: the flush turn decides what's worth keeping; a cheap model is fine for extract-and-write, but if flushed notes ever look thin, bump it up a tier.
+
 Set these under `agents.defaults.compaction` in `openclaw.json`. See `references/openclaw-config-snippet.json5` for annotated examples.
 
 ### Model selection
@@ -286,7 +289,7 @@ model.
 
 | Tier | Scripts | Recommended model | Why |
 |------|---------|-------------------|-----|
-| No-reasoning (bulk) | `extract_memory`, `memory_review`, **+ OpenClaw compaction** | Cheapest model with the **highest context window** you have | High-volume text ops (extraction, summarization, context compaction). Context window matters more than reasoning depth. Use the **same** model for `DINOMEM_CHEAP_MODEL` and `compaction.model`. |
+| No-reasoning (bulk) | `extract_memory`, `memory_review`, **+ OpenClaw compaction & memoryFlush** | Cheapest model with the **highest context window** you have | High-volume text ops (extraction, summarization, context compaction, daily-file flush). Context window matters more than reasoning depth. Use the **same** model for `DINOMEM_CHEAP_MODEL`, `compaction.model`, and `compaction.memoryFlush.model`. |
 
 **Default behavior:** every script uses your OpenClaw default model (`agents.defaults.model.primary`). Nothing to configure.
 
@@ -311,7 +314,7 @@ export DINOMEM_CHEAP_MODEL="your-provider/your-cheap-high-context-model"
 
 **Provider requirements:** scripts call the LLM through the OpenClaw gateway, so they use whatever providers you already have configured — no extra account needed. If the gateway is ever unreachable, dinomem falls back to a direct API call using your **own default model's provider**. **OpenRouter is optional** — it is only used as a fallback target if it happens to be the provider you have. A gateway-only setup with no direct-API key still works (the fallback is simply skipped).
 
-**For autonomous installers (AI agents):** this is opt-in and default-safe — skip it and everything works. If you are cost-optimizing, read the user's `openclaw.json` model catalog, pick the cheapest model whose context window is large enough for `extract_memory` batches (~80k input), and set **both** of the same-tier no-reasoning levers to it: `export DINOMEM_CHEAP_MODEL=<that model>` **and** `agents.defaults.compaction.model = <that model>` (OpenClaw compaction is the same bulk tier). Do not pick a low-context model — it will truncate extraction batches. Leave `model.primary` on the default (and, if dinomem-neuron is also installed, its reasoning scripts stay on the default automatically). If you cannot confidently rank the catalog, leave everything unset (default-safe) or recommend the choice to your human instead of guessing.
+**For autonomous installers (AI agents):** this is opt-in and default-safe — skip it and everything works. If you are cost-optimizing, read the user's `openclaw.json` model catalog, pick the cheapest model whose context window is large enough for `extract_memory` batches (~80k input), and set **all** of the same-tier no-reasoning levers to it: `export DINOMEM_CHEAP_MODEL=<that model>`, `agents.defaults.compaction.model = <that model>`, **and** `agents.defaults.compaction.memoryFlush.model = <that model>` (OpenClaw compaction and the memoryFlush daily-file writer are the same bulk tier). Do not pick a low-context model — it will truncate extraction batches. Leave `model.primary` on the default (and, if dinomem-neuron is also installed, its reasoning scripts stay on the default automatically). If you cannot confidently rank the catalog, leave everything unset (default-safe) or recommend the choice to your human instead of guessing.
 
 ---
 
