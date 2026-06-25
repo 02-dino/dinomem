@@ -16,7 +16,7 @@ The installer patches `openclaw.json` and appends to `AGENTS.md`. It does not de
 See "Compaction tuning" in the OpenClaw config patches section above.
 
 **What LLM does it use for memory extraction?**
-Your OpenClaw default model via the gateway. Falls back to OpenRouter (`google/gemini-2.5-flash`) if the gateway call fails.
+Your OpenClaw default model via the gateway. Falls back to OpenRouter (`google/gemini-2.5-flash`) if the gateway call fails. To cut cost, set `DINOMEM_CHEAP_MODEL` (routes the no-reasoning bulk scripts). Note: this covers dinomem's own scripts only — OpenClaw's compaction and memory-flush turns are separate, same-tier levers (`compaction.model` and `compaction.memoryFlush.model`). See "Model selection" and "Compaction tuning" in the README.
 
 **What happens at 100k memories? Does review scale?**
 Memory stays bounded by design, not just by deletion. dinomem is not append-only — items expire via TTL, get deleted by daily batched review, and get merged by daily dedup. In practice, 5,000 sessions rarely produces 5,000 memories because redundant and stale items are continuously removed.
