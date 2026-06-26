@@ -625,6 +625,7 @@ Rules:
 - EVERY insight MUST start with [factual], [pattern], [lesson], [uncertain], or [preference]
 - [factual] = structural truths, NOT transient events
 - [decision] and [correction] = err on side of extracting
+- CONFIG/BEHAVIOR CHANGE RULE: if the session changes a config value, default, policy, or behavior affecting future sessions, extract it as [decision] even if not phrased as "we decided" (e.g. "changed default to X", "updated README to reflect ON by default", "switched Y to Z"). State the new value AND the old one it replaces.
 - [operational] = specific and actionable, end with [ctx:max 5 words]
 - [decision] and [correction] = end with [ctx:max 5 words]
 - Return empty arrays if nothing worth remembering for that archive
@@ -729,6 +730,7 @@ Rules:
 - [lesson] items MUST reflect a concrete takeaway from an outcome, mistake, or experiment
 - [source_scores] track reliability over time: which sources or tools have been right/wrong and why
 - [decision] items MUST capture what was chosen AND what was rejected — these are commitments to honor in future sessions. Err on the side of extracting — a single decision from a short session is worth storing.
+- CONFIG/BEHAVIOR CHANGE RULE: if the session changes a config value, default, policy, or behavior that affects future sessions, extract it as a [decision] even if not explicitly framed as "we decided." Examples: "changed default to X", "updated README to reflect ON by default", "switched from Y to Z." State the NEW value AND the OLD one it supersedes so the contradiction checker can retire the stale fact.
 - [correction] items MUST capture the exact mistake made AND the correct behavior — highest priority for recall. Err on the side of extracting — a single correction from a short session is worth storing.
 - [operational] items MUST be specific and actionable: exact names, paths, values — NOT vague descriptions
 - EVERY [operational], [decision], [correction] item MUST end with a [ctx:...] tag: one short phrase (max 5 words) describing the session context. Example: [ctx:github push session], [ctx:cron restore fix], [ctx:user correction]. Keep it minimal.
@@ -820,8 +822,12 @@ def _contradiction_check_items(new_items, memory_dir, threshold=0.85):
     if not new_items:
         return new_items
 
+    # Match the actual stored format: per-item files store the item as a bare
+    # line `[type] text` (no dash). Also accept legacy dash-bullets `- [type] text`.
+    # insight/factual included so stale structural facts (e.g. config defaults)
+    # can be superseded instead of silently coexisting with a newer decision.
     item_pattern = re.compile(
-        r'^(\s*-\s*)\[(operational|decision|correction)\]\s*(.+?)$'
+        r'^\s*-?\s*\[(operational|decision|correction|insight|factual)\]\s*(.+?)$'
     )
     existing_items = []
     md_files = sorted([f for f in memory_dir.glob("*.md")
@@ -889,11 +895,26 @@ Classify the relationship. Reply with JSON only:
             continue
         elif verdict in ('update', 'contradiction'):
             for (md_file, line_idx, raw_line, item_text) in candidates:
+                # Per-item files store one item as the whole body. If the item
+                # line is the only content line, delete the file outright instead
+                # of leaving an orphan frontmatter-only file. Legacy multi-item
+                # files: blank just the superseded line.
                 lines = md_file.read_text(encoding='utf-8').split('\n')
-                if line_idx < len(lines):
+                content_line_idxs = [
+                    j for j, ln in enumerate(lines)
+                    if ln.strip() and not ln.strip().startswith('---')
+                    and not re.match(r'^[a-z_]+:\s', ln.strip())
+                ]
+                if content_line_idxs == [line_idx]:
+                    try:
+                        md_file.unlink()
+                        log(f"   🗑️  Contradiction check: deleted stale file {md_file.name} ({verdict})")
+                    except Exception as _e:
+                        log(f"   ⚠️  Could not delete {md_file.name}: {_e}")
+                elif line_idx < len(lines):
                     lines[line_idx] = ''
                     md_file.write_text('\n'.join(lines), encoding='utf-8')
-            log(f"   ♻️  Contradiction check: superseded {len(candidates)} old item(s) ({verdict})")
+                    log(f"   ♻️  Contradiction check: blanked stale line in {md_file.name} ({verdict})")
             kept_new.append(new_item)
         else:
             kept_new.append(new_item)
@@ -976,6 +997,7 @@ def write_memory_file(summary, dedup=True):
     decisions = _contradiction_check_items(decisions, MEMORY_DIR)
     corrections = _contradiction_check_items(corrections, MEMORY_DIR)
     operational = _contradiction_check_items(operational, MEMORY_DIR)
+    insights = _contradiction_check_items(insights, MEMORY_DIR)
 
     # Context snippet for frontmatter (first 80 chars of session context)
     ctx_snippet = context[:80] if context else ""
