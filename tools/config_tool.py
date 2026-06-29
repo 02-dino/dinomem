@@ -18,7 +18,7 @@ Usage (import):
 ## WRITING PRINCIPLES (for LLM generating content to pass to this script)
 Root files are injected into LLM context every turn. Every character costs tokens.
 
-Before writing: read the full target file. Use common sense — dedup, resolve contradictions, group related content. No examples. Shortest form that preserves meaning. Machine-readable over human-readable.
+Before writing: read the full target file. Use common sense — dedup, resolve contradictions, group related content. No examples. No notes (no "note:", "NOTE", asides, caveats, or meta-commentary — write the rule itself, not commentary about it). Shortest form that preserves meaning. Machine-readable over human-readable.
 
 ## WHAT BELONGS IN ROOT FILES vs OUTSIDE
 Root files = always-on behavioral config. Only put things here that the agent needs every single turn.
@@ -36,6 +36,7 @@ DOES NOT BELONG in root files (put elsewhere):
   - Long reference docs, legal text, contracts → docs/ + RAG
   - Tool implementation details (how it works internally) → inline comments in the script
   - Workflow examples or tutorials → README
+  - Notes / reminders / todos / time-bound items → memory/_note_*.md (never a root file)
   - Anything only needed occasionally → memory/*.md or docs/
 
 REMOVE from root files if:
