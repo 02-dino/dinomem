@@ -567,15 +567,6 @@ BLOCK="$BEGIN
     confirm_before_write: [SOUL.md, IDENTITY.md, AGENTS.md]
     skip_confirm: [TOOLS.md, USER.md]
     ambiguous: ask one question then route
-    on_size_warning:
-      when: config_tool.py result includes warnings[] (file/total approaching or over bootstrap cap)
-      rule: STOP. never trim/compress/self-resolve silently and never decide importance alone. surface the warning to the human, then propose this ladder IN ORDER; each step needs human permission before acting
-      ladder:
-        - 1_restyle: rewrite the WHOLE target file into the WRITING PRINCIPLES style (one rule=one line, no examples, no prose, no notes, machine-readable). lossless reformat of entries not yet in that style. propose first — recovers space without losing meaning
-        - 2_compress: only if already styled and still over. condense phrasing tighter (mildly lossy). human-approved
-        - 3_trim_outdated: only if compression decays meaning too much. agent CANNOT judge importance — present candidate outdated/unused sections to the human and let THEM choose what to cut
-        - 4_human_edit: human edits the file directly
-      never: auto-trim, auto-compress, assume what is important, or resolve without asking
 
 ## backup_restore
   when: restore request | "what backups" | undo file/memory change

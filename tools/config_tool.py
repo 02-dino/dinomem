@@ -97,6 +97,21 @@ MAX_FILE_CHARS, MAX_TOTAL_CHARS = _resolve_caps()  # LIVE caps (>= 20000/60000 f
 WARN_FILE_CHARS = int(MAX_FILE_CHARS * 0.75)   # warn at 75% of the live per-file cap
 WARN_TOTAL_CHARS = int(MAX_TOTAL_CHARS * 0.83)  # warn at 83% of the live total cap
 
+# Remediation ladder carried INSIDE the over-cap warning (not in AGENTS.md, to
+# avoid inflating the always-injected prompt). The agent reads this from the
+# tool result and must follow it: STOP, ask the human, escalate in order, get
+# permission at each step. Never self-resolve, never assume importance.
+REMEDIATION_LADDER = (
+    "ACTION REQUIRED — do NOT trim/compress or decide importance yourself. STOP and ask the human, "
+    "then proceed IN ORDER, one step per human approval: "
+    "(1) RESTYLE: rewrite the WHOLE file into the WRITING PRINCIPLES style (one rule=one line, no examples, "
+    "no prose, no notes, machine-readable) — lossless, recovers space from un-styled entries; try this first. "
+    "(2) COMPRESS: only if already styled and still over — condense phrasing (mildly lossy). "
+    "(3) TRIM OUTDATED: only if compression loses too much — you CANNOT judge importance, so present candidate "
+    "outdated/unused sections and let the human choose what to cut. "
+    "(4) HUMAN EDITS the file directly."
+)
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def backup(path):
     if BACKUP_SCRIPT.exists():
@@ -114,10 +129,8 @@ def check_size(filename, new_content):
     if projected > MAX_FILE_CHARS:
         warnings.append(
             f"{filename} will be {projected} chars after write — exceeds maxBootstrapFileChars ({MAX_FILE_CHARS}). "
-            f"Content beyond limit won't be injected into context (root files are injected every turn — smaller = faster + more reliable). "
-            f"Ask your agent to review and clean up {filename} — it can trim outdated sections, merge duplicates, "
-            f"rewrite verbose rules, remove dead rules, flatten deep nesting, and restructure sections. "
-            f"Or do it manually: one rule = one line; no redundant symbols or padding; no self-evident examples; no prose."
+            f"Content beyond limit won't be injected into context (root files are injected every turn). "
+            + REMEDIATION_LADDER
         )
     elif projected > WARN_FILE_CHARS:
         warnings.append(
@@ -138,9 +151,8 @@ def check_size(filename, new_content):
     if total > MAX_TOTAL_CHARS:
         warnings.append(
             f"Total root files will be {total} chars — exceeds maxBootstrapTotalChars ({MAX_TOTAL_CHARS}). "
-            f"Some files won't be fully injected (all root files load every turn — total size matters). "
-            f"Check sizes: wc -c {' '.join(ALLOWED_FILES)} — then ask your agent to review and clean up the largest files. "
-            f"It can trim, merge, rewrite, and restructure. Or manually: one rule = one line; no redundant symbols or padding."
+            f"Some files won't be fully injected (all root files load every turn). Largest first: wc -c {' '.join(ALLOWED_FILES)}. "
+            + REMEDIATION_LADDER
         )
     elif total > WARN_TOTAL_CHARS:
         warnings.append(
