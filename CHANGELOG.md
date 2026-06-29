@@ -1,5 +1,45 @@
 # Changelog
 
+## 1.2.8
+
+Addresses install-experience feedback in [#2](https://github.com/02-dino/dinomem/issues/2).
+
+### Fixed
+- **`install.sh` non-fatal shell errors during config + AGENTS.md patching**
+  (`line NNN: contextInjection: command not found`, `line NNN: content: No such
+  file or directory`). Root cause: the `openclaw.json` Python block ran in an
+  **unquoted** heredoc (`<<PYEOF`), so backticks in its comments were executed as
+  shell command substitution; and the AGENTS.md/TOOLS.md blocks were built as
+  **double-quoted strings** whose embedded quotes closed the string early,
+  exposing `<content>`/`<slug>` placeholders as shell redirections. The AGENTS.md
+  case was not merely cosmetic — in some shells the broken string produced an
+  **empty managed block** (policy silently not installed). Fixed by switching the
+  config block to a quoted heredoc (`<<'PYEOF'`) with values passed via
+  environment, and building the AGENTS.md/TOOLS.md blocks as quoted heredocs
+  captured into a variable. Generated content is byte-for-byte unchanged.
+
+### Added
+- **`--dry-run` flag for `install.sh`.** Previews every change — directories,
+  copied scripts, crontab entries, the OpenClaw Daily Note Review cron, the
+  `openclaw.json` patch, and the AGENTS.md/TOOLS.md blocks — **without writing
+  anything**. Idempotency-aware: prints `[plan]` for actions a real run would
+  take and `[skip]` for what already exists. Exits before any mutation.
+- **Config validation on install.** After patching `openclaw.json`, the
+  installer now runs `openclaw config validate` and, on failure, **rolls back to
+  the exact pre-write bytes** and prints the schema error (which names the
+  offending field and path). This turns the original `workspaceBootstrap`
+  gateway-crash class into a caught, named, auto-reverted error **before** the
+  user restarts — instead of a silent crash at gateway startup. Set
+  `DINOMEM_SKIP_CONFIG_VALIDATE=1` to opt out (e.g. when the `openclaw` CLI is
+  unavailable). Generalizes the previous single-key `workspaceBootstrap` strip
+  into schema-wide validation.
+
+### Not addressed (upstream)
+- Suggestion that **gateway crash messages name the offending field**: that is an
+  OpenClaw core concern, not dinomem's to fix. The install-time validation above
+  is dinomem's mitigation — it catches the bad key before a restart and names the
+  field itself.
+
 ## 1.2.7
 
 ### Changed

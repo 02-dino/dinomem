@@ -190,6 +190,7 @@ After a session is archived and extracted, you'll see new files in `memory/` and
 | `--no-cron` | — | Skip crontab registration |
 | `--no-backup-cron` | — | Skip weekly backup cron (if you have your own backup system) |
 | `--force` | — | Overwrite existing scripts |
+| `--dry-run` | — | Preview every change without writing anything (no files, crons, Docker, or config patch). Idempotency-aware: reports `[plan]` for new actions, `[skip]` for what already exists. Re-run without the flag to apply. |
 
 ---
 
@@ -242,7 +243,7 @@ dinomem is designed for a default OpenClaw setup. If your agent is already custo
 | Native Codex plugin active | OpenClaw skips raw `MEMORY.md` injection and uses a memory pointer instead — breaks dinomem's always-injected guarantee | Do not activate `plugins.entries.codex` when using dinomem. No config override exists — this is hardcoded in OpenClaw internals. |
 | OpenClaw Dreaming enabled | Dreaming writes its own memory extractions to `memory/` — conflicts with dinomem's `extract_memory.py` which writes to the same folder. Both may overwrite each other. | Disable Dreaming manually before installing dinomem. install.sh cannot force this off — Dreaming is a separate feature and must be disabled independently in your OpenClaw config. (Note: dinomem's `memoryFlush` is the guarded bare-daily writer for startupContext and is unrelated to Dreaming.) |
 
-> If your agent has heavy customization, run `bash scripts/install.sh --no-docker --no-cron` first to inspect what would change, then apply cron and Docker manually.
+> If your agent has heavy customization, run `bash scripts/install.sh --dry-run` first to preview every change (files, crons, Docker, config patch) without writing anything, then re-run without `--dry-run` to apply.
 
 ---
 

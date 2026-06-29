@@ -4,7 +4,7 @@
 # Idempotent: safe to run multiple times.
 #
 # Usage:
-#   bash scripts/install.sh [--workspace DIR] [--agent-id ID] [--no-docker] [--no-cron] [--no-backup-cron] [--force]
+#   bash scripts/install.sh [--workspace DIR] [--agent-id ID] [--no-docker] [--no-cron] [--no-backup-cron] [--force] [--dry-run]
 #
 # Options:
 #   --workspace DIR   Path to agent workspace (default: $OPENCLAW_WORKSPACE or ~/.openclaw/workspace)
@@ -13,6 +13,9 @@
 #   --no-cron         Skip crontab registration
 #   --no-backup-cron  Skip weekly backup cron (if you have your own backup system)
 #   --force           Overwrite existing files
+#   --dry-run         Preview every change without writing anything (no files,
+#                     no crons, no Docker, no config patch). Idempotency-aware:
+#                     reports would-create vs already-present.
 set -euo pipefail
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -22,6 +25,7 @@ DO_DOCKER=1
 DO_CRON=1
 DO_BACKUP_CRON=1
 FORCE=0
+DRY_RUN=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -31,6 +35,7 @@ while [ $# -gt 0 ]; do
     --no-cron)         DO_CRON=0; shift ;;
     --no-backup-cron)  DO_BACKUP_CRON=0; shift ;;
     --force)      FORCE=1; shift ;;
+    --dry-run)    DRY_RUN=1; shift ;;
     -h|--help)    grep -E '^#( |$)' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
@@ -41,6 +46,18 @@ skip() { printf '  \033[33m[skip]\033[0m %s\n' "$*"; }
 warn() { printf '  \033[33m[warn]\033[0m %s\n' "$*"; }
 fail() { printf '  \033[31m[fail]\033[0m %s\n' "$*"; exit 1; }
 hr()   { printf '\033[1m== %s ==\033[0m\n' "$*"; }
+# plan: in --dry-run, print what WOULD happen instead of doing it.
+plan() { printf '  \033[36m[plan]\033[0m %s\n' "$*"; }
+# run: execute a command, or in --dry-run print it (with an optional label).
+# Usage: run "<human label>" <command> [args...]
+run() {
+  local label="$1"; shift
+  if [ "$DRY_RUN" = 1 ]; then
+    plan "$label"
+  else
+    "$@"
+  fi
+}
 
 [ -d "$WS" ] || fail "Workspace not found: $WS  (pass --workspace DIR)"
 
@@ -55,6 +72,9 @@ SESSIONS_DIR="$OPENCLAW_DIR/agents/$AGENT_ID/sessions"
 
 echo
 hr "dinomem -> $WS (agent: $AGENT_ID)"
+if [ "$DRY_RUN" = 1 ]; then
+  printf '\033[1;36m== DRY RUN — preview only, nothing will be written ==\033[0m\n'
+fi
 
 # ── 0) Pre-flight compatibility checks ───────────────────────────────────────────
 hr "Pre-flight checks"
@@ -155,7 +175,7 @@ fi
 # ── 1) Create workspace directories ──────────────────────────────────────────
 hr "Directories"
 for d in procedures tools logs memory .memory_archive; do
-  if [ -d "$WS/$d" ]; then skip "$d/ (exists)"; else mkdir -p "$WS/$d"; ok "$d/"; fi
+  if [ -d "$WS/$d" ]; then skip "$d/ (exists)"; elif [ "$DRY_RUN" = 1 ]; then plan "create dir $d/"; else mkdir -p "$WS/$d"; ok "$d/"; fi
 done
 
 # ── 2) Copy scripts ───────────────────────────────────────────────────────────
@@ -164,6 +184,8 @@ for f in procedures/session_reset.py procedures/auto_session_reset.py procedures
   dst="$WS/$f"
   if [ -f "$dst" ] && [ "$FORCE" = 0 ]; then
     skip "$f (exists, use --force to overwrite)"
+  elif [ "$DRY_RUN" = 1 ]; then
+    plan "copy + substitute placeholders -> $f"
   else
     cp "$SKILL_DIR/$f" "$dst"
     sed -i "s|DINOMEM_WORKSPACE_PLACEHOLDER|$WS|g" "$dst"
@@ -177,6 +199,8 @@ for f in procedures/memory_cleanup.py procedures/memory_review.py procedures/cle
   dst="$WS/$f"
   if [ -f "$dst" ] && [ "$FORCE" = 0 ]; then
     skip "$f (exists, use --force to overwrite)"
+  elif [ "$DRY_RUN" = 1 ]; then
+    plan "copy + substitute placeholders -> $f"
   else
     cp "$SKILL_DIR/$f" "$dst"
     sed -i "s|DINOMEM_WORKSPACE_PLACEHOLDER|$WS|g" "$dst"
@@ -197,24 +221,24 @@ if [ "$DO_DOCKER" = 1 ]; then
   else
     # Detect Compose plugin; fallback to docker run
     if docker compose version >/dev/null 2>&1; then
-      cp "$SKILL_DIR/docker/docker-compose.tei.yml" "$WS/docker-compose.tei.yml"
-      ok "docker-compose.tei.yml copied"
-      if docker compose -f "$WS/docker-compose.tei.yml" ps 2>/dev/null | grep -q "running"; then
+      run "copy docker-compose.tei.yml -> $WS/" cp "$SKILL_DIR/docker/docker-compose.tei.yml" "$WS/docker-compose.tei.yml"
+      [ "$DRY_RUN" = 1 ] || ok "docker-compose.tei.yml copied"
+      if [ "$DRY_RUN" != 1 ] && docker compose -f "$WS/docker-compose.tei.yml" ps 2>/dev/null | grep -q "running"; then
         skip "TEI container already running"
       else
-        docker compose -f "$WS/docker-compose.tei.yml" up -d
-        ok "TEI container started on port 8080 (compose)"
+        run "docker compose up -d (TEI embed server on :8080)" docker compose -f "$WS/docker-compose.tei.yml" up -d
+        [ "$DRY_RUN" = 1 ] || ok "TEI container started on port 8080 (compose)"
       fi
     else
       warn "docker compose plugin not found — using docker run fallback"
-      if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^tei-embed$'; then
+      if [ "$DRY_RUN" != 1 ] && docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^tei-embed$'; then
         skip "TEI container already running (tei-embed)"
       else
-        docker run -d --name tei-embed --restart unless-stopped \
+        run "docker run tei-embed (TEI embed server on :8080)" docker run -d --name tei-embed --restart unless-stopped \
           -p 8080:80 \
           ghcr.io/huggingface/text-embeddings-inference:cpu-1.6 \
           --model-id sentence-transformers/all-MiniLM-L6-v2 --auto-truncate
-        ok "TEI container started on port 8080 (docker run)"
+        [ "$DRY_RUN" = 1 ] || ok "TEI container started on port 8080 (docker run)"
       fi
     fi
   fi
@@ -230,10 +254,12 @@ upsert_cron() {
   if [ "$existing" = "$cron_line" ]; then
     skip "$label (exists, up to date)"
   elif [ -n "$existing" ]; then
+    if [ "$DRY_RUN" = 1 ]; then plan "update cron: $label"; return; fi
     # Content differs — replace
     { crontab -l 2>/dev/null | grep -v "$keyword"; echo "# $comment"; echo "$cron_line"; } | crontab -
     ok "$label (updated)"
   else
+    if [ "$DRY_RUN" = 1 ]; then plan "register cron: $label"; return; fi
     { crontab -l 2>/dev/null; echo "# $comment"; echo "$cron_line"; } | crontab -
     ok "$label (registered)"
   fi
@@ -283,6 +309,8 @@ except: print('skip')
     skip "note_review OpenClaw cron (exists)"
   elif [ "$NOTE_REVIEW_CHECK" = "skip" ]; then
     warn "Could not check OpenClaw cron — add Daily Note Review cron manually via OpenClaw"
+  elif [ "$DRY_RUN" = 1 ]; then
+    plan "register OpenClaw cron: Daily Note Review (daily 6:00 UTC)"
   else
     python3 - <<PYEOF
 import subprocess, json
@@ -321,18 +349,19 @@ fi
 hr "OpenClaw config"
 OPENCLAW_JSON="${OPENCLAW_JSON:-$HOME/.openclaw/openclaw.json}"
 [ -f "$OPENCLAW_JSON" ] || OPENCLAW_JSON="$OPENCLAW_DIR/openclaw.json"
-if [ -f "$OPENCLAW_JSON" ]; then
+if [ -f "$OPENCLAW_JSON" ] && [ "$DRY_RUN" != 1 ]; then
   bash "$SKILL_DIR/scripts/file-backup.sh" "$OPENCLAW_JSON" >/dev/null 2>&1 && ok "openclaw.json backed up" || warn "openclaw.json backup failed — continuing"
 fi
 if [ ! -f "$OPENCLAW_JSON" ]; then
   warn "openclaw.json not found at $OPENCLAW_JSON — skipping config patch"
 else
-  python3 - <<PYEOF
-import json, sys
+  DINOMEM_DRY_RUN="$DRY_RUN" DINOMEM_OPENCLAW_JSON="$OPENCLAW_JSON" DINOMEM_WS="$WS" python3 - <<'PYEOF'
+import json, sys, os, subprocess
 
-path = "$OPENCLAW_JSON"
+path = os.environ["DINOMEM_OPENCLAW_JSON"]
 with open(path) as f:
-    cfg = json.load(f)
+    original = f.read()
+cfg = json.loads(original)
 
 changed = []
 
@@ -417,7 +446,7 @@ FILE_BUFFER = 10000
 TOTAL_BUFFER = 10000
 SANITY_FILE = 100000   # warn (not block) if a single file balloons past this
 try:
-    ws = "$WS"
+    ws = os.environ["DINOMEM_WS"]
     root_files = ["AGENTS.md", "SOUL.md", "IDENTITY.md", "TOOLS.md", "USER.md", "MEMORY.md"]
     sizes = {}
     for rf in root_files:
@@ -479,26 +508,67 @@ if "tei-embed" not in providers:
     }
     changed.append("models.providers.tei-embed -> added")
 
-if changed:
+if changed and os.environ.get("DINOMEM_DRY_RUN") == "1":
+    for c in changed:
+        print(f"  \033[36m[plan]\033[0m patch openclaw.json: {c}")
+    print("  \033[36m[plan]\033[0m would validate against schema, then restart needed")
+elif not changed:
+    print("  \033[33m[skip]\033[0m openclaw.json already configured")
+else:
     with open(path, "w") as f:
         json.dump(cfg, f, indent=2)
+
+    # Validate the write against OpenClaw's schema BEFORE the user restarts the
+    # gateway. A bad/unknown key (the original workspaceBootstrap crash class)
+    # otherwise only surfaces at gateway startup with no field named. If the
+    # validator is available and rejects the config, roll back to the exact
+    # pre-write bytes and surface the schema error (which names the field+path).
+    if os.environ.get("DINOMEM_SKIP_CONFIG_VALIDATE") == "1":
+        validate = None
+    else:
+        try:
+            validate = subprocess.run(
+                ["openclaw", "config", "validate"],
+                capture_output=True, text=True, timeout=30,
+            )
+        except FileNotFoundError:
+            validate = None  # openclaw CLI absent (config patches were skipped anyway)
+        except Exception:
+            validate = None
+
+    if validate is not None and validate.returncode != 0:
+        with open(path, "w") as f:
+            f.write(original)  # restore exact pre-write bytes
+        detail = (validate.stderr or validate.stdout or "").strip()
+        print("  \033[31m[fail]\033[0m openclaw.json patch FAILED schema validation "
+              "— rolled back, config unchanged:")
+        for line in detail.splitlines():
+            line = line.strip()
+            if line:
+                print(f"           {line}")
+        print("  \033[31m[fail]\033[0m Not restarting will keep OpenClaw working on the "
+              "previous valid config. Report this at the dinomem repo.")
+        sys.exit(3)
+
     for c in changed:
         print(f"  \033[32m[ok]\033[0m   patched: {c}")
+    if validate is not None:
+        print("  \033[32m[ok]\033[0m   openclaw.json validated against schema")
     print("  \033[33m[warn]\033[0m Restart OpenClaw: openclaw gateway restart")
-else:
-    print("  \033[33m[skip]\033[0m openclaw.json already configured")
 PYEOF
 fi
 
 # ── 6) Wire AGENTS.md ─────────────────────────────────────────────────────────
 hr "AGENTS.md"
 AGENTS="$WS/AGENTS.md"
-if [ -f "$AGENTS" ]; then
+if [ -f "$AGENTS" ] && [ "$DRY_RUN" != 1 ]; then
   bash "$SKILL_DIR/scripts/file-backup.sh" "$AGENTS" >/dev/null 2>&1 && ok "AGENTS.md backed up" || warn "AGENTS.md backup failed — continuing"
 fi
 BEGIN="<!-- BEGIN:dinomem (managed — do not edit between markers) -->"
 END="<!-- END:dinomem -->"
-BLOCK="$BEGIN
+# Body is literal (quoted heredoc): inner double-quotes and <angle-bracket>
+# placeholders must NOT be shell-evaluated. Markers added around it after.
+DINOMEM_BODY=$(cat <<'DINOMEM_AGENTS_BODY'
 ## dinomem
   memory_index: {file: MEMORY.md, instruction: topic in MEMORY.md → memory_search then memory_get}
   constraints:
@@ -575,11 +645,17 @@ BLOCK="$BEGIN
   restore: python3 procedures/workspace_backup.py --restore [index|name] [--yes]
   restore_file: python3 procedures/workspace_backup.py --restore [index|name] --file <path>
   note: auto-runs via cron
+DINOMEM_AGENTS_BODY
+)
+BLOCK="$BEGIN
+$DINOMEM_BODY
 $END"
 
-touch "$AGENTS"
+[ "$DRY_RUN" = 1 ] || touch "$AGENTS"
 if grep -qF "$BEGIN" "$AGENTS" 2>/dev/null; then
   skip "AGENTS.md already wired (use --force to refresh)"
+elif [ "$DRY_RUN" = 1 ]; then
+  plan "append dinomem managed block to AGENTS.md"
 else
   printf '\n%s\n' "$BLOCK" >> "$AGENTS"
   ok "AGENTS.md wired"
@@ -589,7 +665,7 @@ fi
 hr "TOOLS.md"
 TOOLS="$WS/TOOLS.md"
 TOOLS_MARKER="# dinomem: workspace_backup"
-TOOLS_BLOCK="$TOOLS_MARKER
+TOOLS_BODY=$(cat <<'DINOMEM_TOOLS_BODY'
   workspace_backup:
     path: procedures/workspace_backup.py
     type: exec
@@ -631,36 +707,42 @@ TOOLS_BLOCK="$TOOLS_MARKER
       the confirm-before-write rules. This is the HOW/capability spec.
     subcommands:
       append:
-        usage: \"config_tool.py append <file> <content>\"
+        usage: "config_tool.py append <file> <content>"
         inputs:
-          file:    { type: string, required: true, note: \"Target root config filename.\" }
-          content: { type: string, required: true, note: \"Text appended to the file.\" }
+          file:    { type: string, required: true, note: "Target root config filename." }
+          content: { type: string, required: true, note: "Text appended to the file." }
       write:
-        usage: \"config_tool.py write <file> <content>\"
+        usage: "config_tool.py write <file> <content>"
         inputs:
-          file:    { type: string, required: true, note: \"Target root config filename.\" }
-          content: { type: string, required: true, note: \"Full replacement content.\" }
+          file:    { type: string, required: true, note: "Target root config filename." }
+          content: { type: string, required: true, note: "Full replacement content." }
       patch:
-        usage: \"config_tool.py patch <file> <section_key> <content>\"
+        usage: "config_tool.py patch <file> <section_key> <content>"
         inputs:
-          file:        { type: string, required: true, note: \"Target root config filename.\" }
-          section_key: { type: string, required: true, note: \"Section heading/key to replace.\" }
-          content:     { type: string, required: true, note: \"New section body.\" }
+          file:        { type: string, required: true, note: "Target root config filename." }
+          section_key: { type: string, required: true, note: "Section heading/key to replace." }
+          content:     { type: string, required: true, note: "New section body." }
       remove:
-        usage: \"config_tool.py remove <file> <section_key>\"
+        usage: "config_tool.py remove <file> <section_key>"
         inputs:
-          file:        { type: string, required: true, note: \"Target root config filename.\" }
-          section_key: { type: string, required: true, note: \"Section heading/key to remove.\" }
+          file:        { type: string, required: true, note: "Target root config filename." }
+          section_key: { type: string, required: true, note: "Section heading/key to remove." }
     output:
       type: json
-      note: \"Each command prints a JSON result of the write operation.\"
+      note: "Each command prints a JSON result of the write operation."
     constraints:
       mode: read_write
       confirm_before_write: [SOUL.md, IDENTITY.md, AGENTS.md]
-      skip_confirm: [TOOLS.md, USER.md]"
+      skip_confirm: [TOOLS.md, USER.md]
+DINOMEM_TOOLS_BODY
+)
+TOOLS_BLOCK="$TOOLS_MARKER
+$TOOLS_BODY"
 
 if grep -qF "$TOOLS_MARKER" "$TOOLS" 2>/dev/null; then
   skip "TOOLS.md already has workspace_backup entry"
+elif [ "$DRY_RUN" = 1 ]; then
+  plan "append dinomem tool entries to TOOLS.md"
 else
   printf '\n%s\n' "$TOOLS_BLOCK" >> "$TOOLS"
   ok "TOOLS.md wired (workspace_backup)"
@@ -691,6 +773,14 @@ except Exception as e:
 PYEOF
 
 echo
+if [ "$DRY_RUN" = 1 ]; then
+  hr "dry run complete"
+  echo "  Preview only — nothing was written (no files, crons, Docker, or config)."
+  echo "  [plan] lines above show what a real run would do."
+  echo "  Re-run without --dry-run to apply."
+  echo "  Undo (after a real install): bash $SKILL_DIR/scripts/uninstall.sh --workspace $WS --agent-id $AGENT_ID"
+  exit 0
+fi
 hr "done"
 echo "  dinomem installed for agent: $AGENT_ID"
 echo "  workspace: $WS"
