@@ -291,7 +291,7 @@ job = {
     "schedule": {"kind": "cron", "expr": "0 6 * * *", "tz": "UTC"},
     "payload": {
         "kind": "agentTurn",
-        "message": "Scan all memory/_note_*.md files in $WS/memory/. Resolve each note (today = current UTC date): 1) task_bound notes (have done_when:): verify the done_when condition against workspace state (file exists, feature shipped). If verified, flip status to done and delete the note (promote to _pin_*.md if it has lasting value). Else leave pending. 2) stale_after GC: if a note is still pending AND done_when was never met AND today > stale_after (default date+30d, or date+7d for reminder/quick-todo notes), delete it as abandoned. 3) Legacy notes with no schema fields: infer the task from content, delete if clearly resolved, else leave. Leave untouched any fields you do not recognize. Report what resolved, what was GC'd, and what remains.",
+        "message": "Scan all memory/_note_*.md files in $WS/memory/. Resolve each note (today = current UTC date): 1) task_bound notes (have done_when:): verify the done_when condition against workspace state (file exists, feature shipped). If verified, flip status to done and delete the note (promote to _pin_*.md if it has lasting value). Else leave pending. 2) type:project notes (project executor schema, may be added by neuron): these are normally advanced/closed by the Project Advancer, BUT a project can be finished out-of-band by a human-driven session and left status:in_progress, or parked at a safety-gated final step (git push / external action) that the Advancer is forbidden to run — so it would otherwise orphan here. For any type:project note, verify its done_when the SAME way as task_bound (run the locally-checkable condition; e.g. for a git-push done_when run the rev-parse HEAD==@{u} check). If done_when verifies (and/or all steps are [x]), flip status to done and delete/promote it. If it is in_progress and clearly still has unchecked non-gated steps, leave it for the Advancer. Do not delete a project whose done_when does not verify. 3) stale_after GC: if a note is still pending/in_progress AND done_when was never met AND today > stale_after (default date+30d, or date+7d for reminder/quick-todo notes), delete it as abandoned. 4) Legacy notes with no schema fields: infer the task from content, delete if clearly resolved, else leave. Leave untouched any fields you do not recognize. Report what resolved, what was GC'd, and what remains.",
         "timeoutSeconds": 120
     },
     "sessionTarget": "isolated",
@@ -460,12 +460,20 @@ BLOCK="$BEGIN
   memory_index: {file: MEMORY.md, instruction: topic in MEMORY.md → memory_search then memory_get}
   constraints:
     M0: context_unclear → memory_search + memory_get; fallback: ask
+    M_session_start:
+      when: FIRST substantive turn of a session/topic (cold start), BEFORE answering — applies to ANY message including a plain question, not only "build X" requests. Failure mode this guards: a question-shaped opener does not trip the build-time check, so an open _note_ goes unread and the agent re-derives stale state.
+      action:
+        - glob memory/_note_*.md (direct ls, deterministic) BEFORE the first answer
+        - for each note with status: in_progress OR status: pending → read it; treat it as the authoritative "where we left off" (resume_state beats your own assumptions and beats chat history)
+        - if any in_progress/pending note's TOPIC matches the user's message (entity, repo, feature, project) → surface it and resume from its resume_state instead of re-investigating
+        - in_progress project parked at a safety-gated final step (push/external) awaiting approval → re-verify whether that step's artifact now exists (e.g. git rev-parse HEAD vs @{u}); if done since, close the note instead of re-asking
+      enforce: MECHANISM not vibe — the cold-start glob is mandatory; an open note one ls away that you didn't read is the most common silent failure. Do it before forming any answer.
     M1:
-      before: tool/script with side effects
+      before: tool/script with side effects OR any message naming an entity/repo/feature that matches an open _note_ (not only literal "build" requests)
       action:
         - memory_search first
         - glob memory/_note_*.md (direct ls, not semantic) → read open notes before building; deterministic, can't miss
-      enforce: build-time note check is mandatory so a new session sees open _note_ files before starting a task
+      enforce: build-time note check is mandatory so a new session sees open _note_ files before starting a task; trigger fires on entity-name match too, so question openers about an in-flight project still pull the note
     M2:
       when: named entity | temporal ref | implicit ref | continuation request
       action: rewrite implicit query → memory_search FIRST (before fs/exec/any tool)
@@ -491,6 +499,7 @@ BLOCK="$BEGIN
       schema:
         type: task_bound = resolves via done_when; time_bound = date-based reminder
         done_when: concrete artifact check; lever the cron uses to flip status done + delete (task_bound only)
+        done_when_MUST_be_locally_verifiable: done_when has to be a check a cron can run against LOCAL workspace state with NO chat history and NO network identity — file exists, grep matches, command exits 0. NEVER write a narrative done_when like "pushed to repo X" / "told the user" / "deployed" — those are unverifiable and the note will never auto-close (it silently rots pending until stale_after GC). For a git push step, the verifiable form is: git -C <repo> rev-parse HEAD == git -C <repo> rev-parse @{u}  (local not ahead of upstream). For "feature shipped", point at the concrete file/function that must exist. If you cannot write a locally-checkable done_when, the step is not done-able by the resolver — make the artifact checkable or do not rely on auto-close.
         stale_after: fallback GC for abandoned notes; default date+30d, reminders date+7d; agent may override
         unknown_fields: the resolver acts only on done_when + stale_after; any other fields on a note are left untouched
         status: flip to done only when done_when verified; else pending
