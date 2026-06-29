@@ -63,10 +63,38 @@ BACKUP_SCRIPT = WORKSPACE.parent.parent / "scripts/file-backup.sh"
 
 ALLOWED_FILES = {"SOUL.md", "IDENTITY.md", "AGENTS.md", "TOOLS.md", "USER.md"}
 
-MAX_FILE_CHARS = 20000   # matches agents.defaults.maxBootstrapFileChars default
-MAX_TOTAL_CHARS = 60000  # matches agents.defaults.maxBootstrapTotalChars default
-WARN_FILE_CHARS = 15000  # warn at 75% of limit
-WARN_TOTAL_CHARS = 50000 # warn at 83% of limit  # similarity ratio above which content is considered duplicate
+def _resolve_caps():
+    """Read the LIVE bootstrap caps from openclaw.json instead of assuming the
+    20000/60000 defaults. install.sh raises agents.defaults.bootstrapMaxChars /
+    bootstrapTotalMaxChars to fit injected blocks (+10k headroom); if this tool
+    kept warning against a hardcoded 20000 it would false-alarm on every write
+    above 20k even when the real cap is higher — nagging the user to trim a file
+    that fits fine, the inverse of the memory_cleanup stale-hardcode bug.
+
+    Returns (max_file, max_total). Floors at the historical defaults so this tool
+    never warns LATER than before if the config is unreadable/absent: a config
+    with caps below default is treated as default (we never relax below 20k/60k).
+    Same config-read pattern as extract_memory.py's auto-routing.
+    """
+    FILE_DEFAULT, TOTAL_DEFAULT = 20000, 60000
+    try:
+        cfg_path = Path.home() / ".openclaw" / "openclaw.json"
+        if not cfg_path.exists():
+            return FILE_DEFAULT, TOTAL_DEFAULT
+        import json as _json
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            defaults = _json.load(f).get("agents", {}).get("defaults", {})
+        mf = defaults.get("bootstrapMaxChars", FILE_DEFAULT)
+        mt = defaults.get("bootstrapTotalMaxChars", TOTAL_DEFAULT)
+        mf = mf if isinstance(mf, (int, float)) and mf > 0 else FILE_DEFAULT
+        mt = mt if isinstance(mt, (int, float)) and mt > 0 else TOTAL_DEFAULT
+        return max(FILE_DEFAULT, int(mf)), max(TOTAL_DEFAULT, int(mt))
+    except Exception:
+        return FILE_DEFAULT, TOTAL_DEFAULT
+
+MAX_FILE_CHARS, MAX_TOTAL_CHARS = _resolve_caps()  # LIVE caps (>= 20000/60000 floor)
+WARN_FILE_CHARS = int(MAX_FILE_CHARS * 0.75)   # warn at 75% of the live per-file cap
+WARN_TOTAL_CHARS = int(MAX_TOTAL_CHARS * 0.83)  # warn at 83% of the live total cap
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def backup(path):
