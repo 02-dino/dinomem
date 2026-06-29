@@ -51,7 +51,34 @@ OPENPROJ_MARKER_END = "<!-- dinomem:open-projects-end -->"
 
 SIM_THRESHOLD = 0.80          # string similarity fallback
 SEMANTIC_THRESHOLD = 0.88     # cosine similarity for semantic dedup
-MAX_INDEX_CHARS = 18000       # 90% of default maxBootstrapFileChars (20000)
+
+def _resolve_max_index_chars(default_cap: int = 20000, floor: int = 18000) -> int:
+    """Trim MEMORY.md at 90% of the LIVE bootstrap per-file cap, not a stale
+    hardcode. install.sh raises agents.defaults.bootstrapMaxChars to fit the
+    injected blocks (+10k headroom); if this trimmer kept cutting at a fixed
+    18000 it would shrink MEMORY.md back below the raised cap and silently waste
+    all the headroom install.sh just bought. So read the cap from openclaw.json
+    (same config-read pattern as extract_memory.py's auto-routing) and track it.
+
+    Returns 90% of the resolved cap (keep a 10% margin so the index never rides
+    the exact truncation edge). Floors at 18000 so we never trim MORE aggressively
+    than the original behavior, even if the cap is read as a small/absent value.
+    """
+    try:
+        cfg_path = Path.home() / ".openclaw" / "openclaw.json"
+        if not cfg_path.exists():
+            return floor
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        defaults = cfg.get("agents", {}).get("defaults", {})
+        cap = defaults.get("bootstrapMaxChars", default_cap)
+        if not isinstance(cap, (int, float)) or cap <= 0:
+            cap = default_cap
+        return max(floor, int(cap * 0.9))
+    except Exception:
+        return floor
+
+MAX_INDEX_CHARS = _resolve_max_index_chars()  # 90% of LIVE bootstrapMaxChars (>=18000 floor)
 TEI_URL = "http://localhost:8080/v1/embeddings"
 ALL_ITEM_TAGS = r'\[factual\]|\[pattern\]|\[operational\]|\[decision\]|\[correction\]|\[preference\]|\[uncertain\]|\[lesson\]|\[prediction\]'
 # Bare daily files (memory/YYYY-MM-DD.md) are written by OpenClaw memoryFlush
