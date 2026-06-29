@@ -46,6 +46,8 @@ AGENT_ID = "DINOMEM_AGENT_ID_PLACEHOLDER"
 SESSIONS_DIR = OPENCLAW_ROOT / "agents" / AGENT_ID / "sessions"
 RECENCY_MARKER_START = "<!-- dinomem:recency-start -->"
 RECENCY_MARKER_END = "<!-- dinomem:recency-end -->"
+OPENPROJ_MARKER_START = "<!-- dinomem:open-projects-start -->"
+OPENPROJ_MARKER_END = "<!-- dinomem:open-projects-end -->"
 
 SIM_THRESHOLD = 0.80          # string similarity fallback
 SEMANTIC_THRESHOLD = 0.88     # cosine similarity for semantic dedup
@@ -242,6 +244,7 @@ def cleanup():
 
     trim_memory_index()
     update_recency_section()
+    update_open_projects_section()
 
 
 def get_previous_session_topics():
@@ -335,6 +338,75 @@ def get_previous_session_topics():
     except Exception as e:
         print(f'⚠️  get_previous_session_topics error: {e}')
         return None
+
+def get_open_projects_section():
+    """
+    Scan memory/_note_*.md for in_progress notes (project executor + paused tasks)
+    and build an 'Open Projects' block for MEMORY.md so the agent sees unfinished
+    work at session start without having to glob voluntarily.
+
+    SCAN-BUT-EMIT-ONLY-IF-PRESENT: base dinomem notes are task_bound/time_bound
+    (status pending|done, no in_progress) and have no project executor, so this
+    returns None in a pure-base install (no-op). It only emits where in_progress
+    notes exist (neuron project executor / configured agents). Single source of
+    truth in base; neuron-only behaviour.
+    """
+    try:
+        memory_dir = MEMORY_INDEX.parent / 'memory'
+        if not memory_dir.exists():
+            return None
+        rows = []
+        for note in sorted(memory_dir.glob('_note_*.md')):
+            try:
+                text = note.read_text(encoding='utf-8')
+            except Exception:
+                continue
+            status = re.search(r'^status:\s*(.+)$', text, re.MULTILINE)
+            if not status or status.group(1).strip() != 'in_progress':
+                continue
+            title = re.search(r'^#\s*(?:Project:\s*)?(.+)$', text, re.MULTILINE)
+            name = title.group(1).strip() if title else note.stem.replace('_note_', '')
+            step = re.search(r'^current_step:\s*(.+)$', text, re.MULTILINE)
+            steps_total = len(re.findall(r'^\s*-\s*\[[ x]\]\s', text, re.MULTILINE))
+            step_str = ''
+            if step:
+                cur = step.group(1).strip()
+                step_str = f' — step {cur}' + (f'/{steps_total}' if steps_total else '')
+            rows.append(f'- **{name}**{step_str} — resume from its `resume_state` (file: `{note.name}`)')
+        if not rows:
+            return None
+        body = '\n'.join(rows)
+        return (f'{OPENPROJ_MARKER_START}\n## Open Projects (resume these — read the note before answering)\n'
+                f'{body}\n{OPENPROJ_MARKER_END}')
+    except Exception as e:
+        print(f'⚠️  get_open_projects_section error: {e}')
+        return None
+
+def update_open_projects_section():
+    """Inject or update the Open Projects section in MEMORY.md (marker-bounded)."""
+    if not MEMORY_INDEX.exists():
+        return
+    block = get_open_projects_section()
+    content = MEMORY_INDEX.read_text(encoding='utf-8')
+    if OPENPROJ_MARKER_START in content:
+        start = content.index(OPENPROJ_MARKER_START)
+        end = content.index(OPENPROJ_MARKER_END) + len(OPENPROJ_MARKER_END)
+        content = content[:start].rstrip() + '\n' + content[end:].lstrip()
+    if not block:
+        MEMORY_INDEX.write_text(content, encoding='utf-8')
+        return
+    # Inject at very top, before recency/searchable, so it is the first thing seen
+    lines = content.splitlines()
+    insert_at = len(lines)
+    for i, line in enumerate(lines):
+        if line.startswith('## ') and i > 0:
+            insert_at = i
+            break
+    lines.insert(insert_at, '')
+    lines.insert(insert_at + 1, block)
+    lines.insert(insert_at + 2, '')
+    MEMORY_INDEX.write_text('\n'.join(lines), encoding='utf-8')
+    print('Open Projects section updated in MEMORY.md.')
 
 def update_recency_section():
     """
