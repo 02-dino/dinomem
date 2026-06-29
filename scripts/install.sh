@@ -413,7 +413,7 @@ elif "contextInjection" not in defaults:
 import os, glob as _glob
 FILE_DEFAULT = 20000
 TOTAL_DEFAULT = 60000
-FILE_BUFFER = 2000
+FILE_BUFFER = 5000
 TOTAL_BUFFER = 4000
 SANITY_FILE = 100000   # warn (not block) if a single file balloons past this
 try:
