@@ -402,6 +402,49 @@ elif "contextInjection" not in defaults:
     defaults["contextInjection"] = "always"
     changed.append("contextInjection -> always (root files injected every turn)")
 
+# bootstrapMaxChars / bootstrapTotalMaxChars -> raise caps to fit what dinomem
+# injects, so the policy blocks are never silently truncated. Measured, not a
+# fixed delta: read each root bootstrap file's ACTUAL size (the AGENTS.md/TOOLS.md
+# blocks have already been appended by this point in the script), and raise the
+# caps to max(existing_or_default, measured + buffer). ONLY ever increases — a
+# user who manually set a higher cap is never clobbered, and the cap self-corrects
+# on every reinstall instead of going stale. Cost note: bigger bootstrap = more
+# tokens injected every turn, so we add only a small buffer, not a blanket inflate.
+import os, glob as _glob
+FILE_DEFAULT = 20000
+TOTAL_DEFAULT = 60000
+FILE_BUFFER = 2000
+TOTAL_BUFFER = 4000
+SANITY_FILE = 100000   # warn (not block) if a single file balloons past this
+try:
+    ws = "$WS"
+    root_files = ["AGENTS.md", "SOUL.md", "IDENTITY.md", "TOOLS.md", "USER.md", "MEMORY.md"]
+    sizes = {}
+    for rf in root_files:
+        p = os.path.join(ws, rf)
+        if os.path.isfile(p):
+            sizes[rf] = os.path.getsize(p)
+    if sizes:
+        max_file = max(sizes.values())
+        total = sum(sizes.values())
+        biggest = max(sizes, key=sizes.get)
+        if max_file > SANITY_FILE:
+            print(f"  \033[33m[warn]\033[0m {biggest} is {max_file} chars (>100k) — raising cap anyway, but consider trimming; large bootstrap inflates every prompt.")
+        need_file = max_file + FILE_BUFFER
+        need_total = total + TOTAL_BUFFER
+        cur_file = defaults.get("bootstrapMaxChars", FILE_DEFAULT)
+        cur_total = defaults.get("bootstrapTotalMaxChars", TOTAL_DEFAULT)
+        new_file = max(cur_file, FILE_DEFAULT, need_file)
+        new_total = max(cur_total, TOTAL_DEFAULT, need_total)
+        if new_file != defaults.get("bootstrapMaxChars"):
+            defaults["bootstrapMaxChars"] = new_file
+            changed.append(f"bootstrapMaxChars -> {new_file} (fits largest root file {biggest}={max_file} + {FILE_BUFFER} buffer; raise-only)")
+        if new_total != defaults.get("bootstrapTotalMaxChars"):
+            defaults["bootstrapTotalMaxChars"] = new_total
+            changed.append(f"bootstrapTotalMaxChars -> {new_total} (fits all root files {total} + {TOTAL_BUFFER} buffer; raise-only)")
+except Exception as _e:
+    print(f"  \033[33m[warn]\033[0m bootstrap cap auto-raise skipped: {_e}")
+
 # startupContext ON -> inject last 2 days of bare daily memory on /new and /reset.
 # Pairs with the guarded memoryFlush writer above + cleanup_startup_daily.py.
 # memory_search pull still handles deep recall; this adds recent raw context on reset.
