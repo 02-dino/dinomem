@@ -472,7 +472,7 @@ BLOCK="$BEGIN
       enforce: rewrite query to natural language before calling any memory tool
 
   memory_pin:
-    trigger: permanent_fact OR user emphasizes importance (any language)
+    trigger: permanent_fact OR user emphasizes importance
     uncertain: ask user before pinning
     long_docs: docs/<slug>.md → docs_ingest.py
     permanent: {prefix: _pin_, location: memory/, format: "# Title\n\n<content>", slug: "lowercase-hyphens-max30"}

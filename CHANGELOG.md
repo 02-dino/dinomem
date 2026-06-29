@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.2.7
+
+### Changed
+- **Dropped the `(any language)` tag from the `memory_pin` trigger.** It was a
+  no-op at runtime: the trigger is LLM-judged (the agent interprets intent), so
+  multi-language pinning works regardless of the tag — the tag changed no
+  behavior, only added an every-turn-injected token. Removing it also fixes a
+  doc inconsistency: `_pin` carried the tag, the `_note` (transient) trigger
+  didn't, which could wrongly read as "`_note` is English-only." Both triggers
+  are now tagless and consistent; language-agnostic behavior is unchanged (still
+  intent-judged, not keyword-matched).
+
 ## 1.2.6
 
 ### Docs
