@@ -291,7 +291,7 @@ job = {
     "schedule": {"kind": "cron", "expr": "0 6 * * *", "tz": "UTC"},
     "payload": {
         "kind": "agentTurn",
-        "message": "Scan all memory/_note_*.md files in $WS/memory/. For each file, check if the task/todo described is already completed based on workspace state (check if relevant files exist, features built, etc). If resolved: delete the _note_*.md file. If still pending: leave it.",
+        "message": "Scan all memory/_note_*.md files in $WS/memory/. Resolve each note (today = current UTC date): 1) task_bound notes (have done_when:): verify the done_when condition against workspace state (file exists, feature shipped). If verified, flip status to done and delete the note (promote to _pin_*.md if it has lasting value). Else leave pending. 2) stale_after GC: if a note is still pending AND done_when was never met AND today > stale_after (default date+30d, or date+7d for reminder/quick-todo notes), delete it as abandoned. 3) Legacy notes with no schema fields: infer the task from content, delete if clearly resolved, else leave. Leave untouched any fields you do not recognize. Report what resolved, what was GC'd, and what remains.",
         "timeoutSeconds": 120
     },
     "sessionTarget": "isolated",
@@ -460,7 +460,12 @@ BLOCK="$BEGIN
   memory_index: {file: MEMORY.md, instruction: topic in MEMORY.md → memory_search then memory_get}
   constraints:
     M0: context_unclear → memory_search + memory_get; fallback: ask
-    M1: before tool/script with side effects → memory_search first
+    M1:
+      before: tool/script with side effects
+      action:
+        - memory_search first
+        - glob memory/_note_*.md (direct ls, not semantic) → read open notes before building; deterministic, can't miss
+      enforce: build-time note check is mandatory so a new session sees open _note_ files before starting a task
     M2:
       when: named entity | temporal ref | implicit ref | continuation request
       action: rewrite implicit query → memory_search FIRST (before fs/exec/any tool)
@@ -481,8 +486,14 @@ BLOCK="$BEGIN
       uncertain: ask user before noting
       prefix: _note_
       location: memory/
-      format: '# Title\nstatus: pending\ndate: YYYY-MM-DD\ntime: HH:MM\n<content>'
       slug: "lowercase-hyphens-max30"
+      format: '# Title\ntype: task_bound | time_bound\nstatus: pending | done\ndate: YYYY-MM-DD\ndone_when: <checkable — file exists / feature shipped>\nstale_after: YYYY-MM-DD\n<content>'
+      schema:
+        type: task_bound = resolves via done_when; time_bound = date-based reminder
+        done_when: concrete artifact check; lever the cron uses to flip status done + delete (task_bound only)
+        stale_after: fallback GC for abandoned notes; default date+30d, reminders date+7d; agent may override
+        unknown_fields: the resolver acts only on done_when + stale_after; any other fields on a note are left untouched
+        status: flip to done only when done_when verified; else pending
 
   memory_recall:
     use: topic in MEMORY.md | context unclear | prior decisions/prefs relevant

@@ -103,13 +103,17 @@ For things you want to build or do:
 
 > "Remember to add dark mode to the app"
 
-Saved as `memory/_note_<slug>.md`. Recalled when you ask "what's on my build list?". Auto-deleted by daily cron once the agent detects it's been done.
+Saved as `memory/_note_<slug>.md`. Recalled when you ask "what's on my build list?". Auto-deleted by the daily cron once resolved. Notes carry a small schema (`type`, `status`, `done_when`, `stale_after`) so cleanup is deterministic rather than guesswork: `done_when` is a concrete artifact check that resolves the note, and `stale_after` garbage-collects abandoned notes (default 30 days, 7 for quick reminders). See [`references/architecture.md`](references/architecture.md#transient-note-schema-_note_md) for the full schema and resolution ownership.
+
+> Want the agent to create and drive these itself?
+> In dinomem-neuron it writes notes from its own commitments and turns big requests into step-by-step projects it works through on its own — plus calendar-linked reminders.
+> [↓ dinomem-neuron](#want-more--dinomem-neuron-private-repo)
 
 > **Note:** Memory is recall-based, not always-on. The agent searches for relevant memories when needed — nothing is automatically injected into every turn.
 
 > **⚠️ Don't hand-drop untagged files into `memory/`.** The daily cleanup cron (`memory_cleanup.py` + `cleanup_startup_daily.py`) actively manages this folder. Only files prefixed with `_` (e.g. `_pin_*.md`) are protected from all cleanup. Anything else is fair game for automated dedup, TTL expiry, bootcheck removal (empty/framework-only files), or daily-flush pruning. Specifically:
 > - `_pin_*.md` → **permanent**, never touched.
-> - `_note_*.md` → auto-deleted once the agent marks the task resolved.
+> - `_note_*.md` → auto-deleted once `done_when` is verified, or garbage-collected once `stale_after` passes (see [note schema](references/architecture.md#transient-note-schema-_note_md)).
 > - Bare `YYYY-MM-DD.md` (startupContext daily-flush files) → pruned after `dailyMemoryDays` (default 2) by `cleanup_startup_daily.py`.
 > - dinomem extraction files (`YYYY-MM-DD_type_slug.md`) → individual lines may be deduped/TTL-expired; whole files are removed only if they contain no tagged facts.
 > - `MEMORY.md` → regenerated; never hand-edit (your edits get overwritten).
@@ -205,7 +209,7 @@ After a session is archived and extracted, you'll see new files in `memory/` and
 ├── logs/
 └── memory/
     ├── _pin_*.md               # Permanent user-pinned memories (never deleted)
-    ├── _note_*.md              # Transient todos/reminders (auto-deleted when resolved)
+    ├── _note_*.md              # Transient todos/reminders (resolved via done_when, GC'd via stale_after)
     └── YYYY-MM-DD_<type>_<slug>.md  # Per-item memory files (auto-generated, one file per extracted item)
 MEMORY.md                       # Searchable index (auto-generated, do not edit)
 ```
@@ -494,6 +498,8 @@ status:           provisional → trusted
 | **Knowledge Promotion** | Insights that demonstrate stability over time become persistent knowledge. A single observation is never enough. |
 | **Long-document RAG** | Contracts, books, legal text — stored separately, never pollute memory, searchable via `docs_search` |
 | **Calendar integration** | `_note_` reminders linked to Google Calendar, auto-deleted when the event passes |
+| **Automatic notes** | The agent writes `_note_` files from its own commitments and task follow-ups — not only when you ask |
+| **Project execution** | Large builds become step-by-step plans the agent works through one step at a time across sessions, advancing on its own and pausing for approval on anything risky |
 | **Session deep recall** | When memory summary is thin, searches raw archived sessions (7-day window) for the exact exchange — sharper, more detailed recall for recent context |
 
 ---

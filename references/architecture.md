@@ -58,7 +58,7 @@ Grace period: sessions updated within the last 5 minutes are skipped to avoid in
     ├── 2026-06-01.md      # Daily memory file (auto-generated)
     ├── 2026-06-02.md
     ├── _pin_*.md          # Permanent user-pinned memories (never deleted)
-    ├── _note_*.md         # Transient todos/reminders (auto-deleted when resolved)
+    ├── _note_*.md         # Transient todos/reminders (resolved via done_when, GC'd via stale_after)
     └── ...
 MEMORY.md                  # Searchable index (auto-generated)
 ```
@@ -67,6 +67,44 @@ MEMORY.md                  # Searchable index (auto-generated)
 ```
 TOPIC [Nd] Short description | tag1, tag2, tag3 | Detail sentence
 ```
+
+## Transient Note Schema (`_note_*.md`)
+
+`_note_*.md` files are transient todos/reminders. They are created semi-automatically (the agent detects a todo/reminder/planned task and writes the file; it asks first when intent is uncertain) and resolved automatically by the daily cron.
+
+### Format
+
+```
+# Title
+type: task_bound | time_bound
+status: pending | done
+date: YYYY-MM-DD
+done_when: <checkable condition — file path exists / feature shipped>   # task_bound only
+stale_after: YYYY-MM-DD   # fallback GC; default date+30d, reminders date+7d
+<content>
+```
+
+Location: `memory/`. Slug: lowercase-hyphens, max 30 chars.
+
+### Field semantics
+
+| Field | Role |
+|-------|------|
+| `type` | `task_bound` resolves via `done_when`; `time_bound` is a date-based reminder. |
+| `status` | `pending` until resolved. Flipped to `done` only when `done_when` is verified. The field is human-readable — resolution is driven by `done_when`/`stale_after`, not by grepping `status`. |
+| `done_when` | Concrete artifact check (file exists, feature shipped). The lever the cron uses to flip `done` and delete. Without it, resolution falls back to fuzzy content inference and ambiguous notes linger. |
+| `stale_after` | Fallback garbage collector. Deletes abandoned notes that never resolved. Default `date + 30d` (build/feature), `date + 7d` (reminder/quick todo). Agent may override explicitly. |
+
+> The resolver only acts on `done_when` and `stale_after`. Any other fields present on a note are left untouched.
+
+### Resolution ownership
+
+- **Daily Note Review cron:** verify `done_when` → flip `done` + delete (optionally promote to `_pin_*.md` if lasting value); run `stale_after` GC (delete only if still `pending` AND `done_when` was never met AND today > `stale_after`).
+- The `stale_after` GC guardrail prevents nuking mid-progress notes: a note with a partially-built artifact stays `pending` and waits for `done_when`, not the clock.
+
+### Build-time recall guarantee
+
+Notes are recalled via the same path as all memory (`memory_search` → `memory_get`), so a new session that does not search memory before building could miss an open note. To close this gap, the agent rule set requires a direct filesystem glob (`ls memory/_note_*.md`) before any side-effect build — a deterministic check that cannot miss, unlike semantic search.
 
 ## OpenClaw Config Requirements
 
