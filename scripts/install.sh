@@ -655,8 +655,10 @@ DINOMEM_BODY=$(cat <<'DINOMEM_AGENTS_BODY'
         unknown_fields: the resolver acts only on done_when + stale_after; any other fields on a note are left untouched
         status: flip to done only when done_when verified; else pending
 
+  memory_tools:
+    memory_search: simple recall — facts, preferences, decisions, context; default for most queries
+    session_search: python3 tools/session_search.py; when memory_search thin/uncertain AND session <7d old AND transcript detail needed
   memory_recall:
-    use: topic in MEMORY.md | context unclear | prior decisions/prefs relevant
     after_search: memory_get on relevant result
     skip: do not call memory_search every turn
 
