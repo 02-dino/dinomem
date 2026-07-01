@@ -263,7 +263,7 @@ The installer automatically patches `~/.openclaw/openclaw.json`:
 | `memorySearch.remote.baseUrl` | `http://localhost:8080/v1` | TEI Docker endpoint |
 | `agents.defaults.contextInjection` | `always` | Root files (AGENTS.md, SOUL.md, etc) injected every turn — not skipped on continuation turns. (This is already the OpenClaw default; set explicitly to document intent. The valid key is `contextInjection` — earlier dinomem versions wrote an invalid `workspaceBootstrap` key that crashed the gateway; install/uninstall now strip that legacy key automatically.) |
 | `startupContext.enabled` | `true` (`dailyMemoryDays: 2`) | Injects the last 2 days of bare daily memory on `/new` and `/reset`. `memoryFlush` writes those bare `YYYY-MM-DD.md` files (separate namespace from dinomem's `_`-suffixed extraction files, so no clash); `cleanup_startup_daily.py` prunes them past the window. `memory_search` pull still handles deep recall. |
-| `agents.defaults.thinkingDefault` | `medium` | Base dinomem is no-reasoning bulk work. `adaptive` wastes thinking budget on extraction/summarization turns. `medium` is a safe floor — still allows reasoning on genuinely complex turns without burning max budget on every memory op. Skipped if you already have a non-default value set. |
+| `agents.defaults.thinkingDefault` | `medium` | Ensures the agent genuinely internalizes and acts on instructions in root files (AGENTS.md, SOUL.md, MEMORY.md, etc.) rather than skimming past them. Without a minimum thinking floor, injected behavior rules and memory context may be acknowledged but not reliably followed. Skipped if you already have a non-default value set. |
 | `agents.defaults.bootstrapMaxChars` | raised to fit (default `20000`) | Per-file injection cap. install.sh measures the largest root file *after* injecting dinomem's blocks and raises this to `max(existing, 20000, largest_file + 10000)` so the always-injected files are never silently truncated. Raise-only: never lowers your value, never shrinks below the default. Idempotent + order-independent (measured, not `current + delta`), so reinstalling or stacking dinotrust converges to one buffer, not two. |
 | `agents.defaults.bootstrapTotalMaxChars` | raised to fit (default `60000`) | Total cap across all root files. Same raise-only logic: `max(existing, 60000, total_root_files + 10000)`. The cap is a ceiling, not injected size — headroom costs nothing until used. Single files over `100000` trigger a sanity warning (advising a trim) but do not block. |
 
@@ -316,8 +316,7 @@ export DINOMEM_CHEAP_MODEL="your-provider/your-cheap-high-context-model"
 > permanent-promotion validity). Those always run on your **default** model and
 > ignore `DINOMEM_CHEAP_MODEL` on purpose, additionally requesting thinking via
 > `DINOMEM_REASONING_THINKING` (default `high`). If you only have base dinomem,
-> this tier doesn't apply — you have no reasoning scripts to route. See
-> [neuron → Model selection](https://github.com/02-dino/dinomem-neuron#model-selection).
+> this tier doesn't apply — you have no reasoning scripts to route.
 
 **Provider requirements:** scripts call the LLM through the OpenClaw gateway, so they use whatever providers you already have configured — no extra account needed. If the gateway is ever unreachable, dinomem falls back to a direct API call using your **own default model's provider**. **OpenRouter is optional** — it is only used as a fallback target if it happens to be the provider you have. A gateway-only setup with no direct-API key still works (the fallback is simply skipped).
 

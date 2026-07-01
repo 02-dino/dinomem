@@ -474,13 +474,14 @@ try:
 except Exception as _e:
     print(f"  \033[33m[warn]\033[0m bootstrap cap auto-raise skipped: {_e}")
 
-# thinkingDefault -> medium (base dinomem is no-reasoning bulk work; adaptive
-# wastes budget on extraction/summarization turns. medium is a safe floor that
-# still allows reasoning on genuinely complex turns without burning max budget
-# on every memory op. Skip if user already has a non-default value set.)
+# thinkingDefault -> medium (ensures the agent genuinely internalizes and acts
+# on instructions in root files — AGENTS.md, SOUL.md, MEMORY.md, etc. Without
+# a minimum thinking floor, injected behavior rules and memory context may be
+# acknowledged but not reliably followed. Skip if user already has a non-default
+# value set.)
 if defaults.get("thinkingDefault") in (None, "adaptive"):
     defaults["thinkingDefault"] = "medium"
-    changed.append("thinkingDefault -> medium (safe floor; adaptive wastes budget on bulk memory ops)")
+    changed.append("thinkingDefault -> medium (ensures root file instructions are internalized, not just acknowledged)")
 
 # startupContext ON -> inject last 2 days of bare daily memory on /new and /reset.
 # Pairs with the guarded memoryFlush writer above + cleanup_startup_daily.py.
