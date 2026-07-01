@@ -15,10 +15,23 @@ Usage (CLI):
 Usage (import):
   from tools.config_tool import append_to, patch_section, remove_section, write_file
 
-## WRITING PRINCIPLES (for LLM generating content to pass to this script)
-Root files are injected into LLM context every turn. Every character costs tokens.
+## ROUTING MAP (classify intent → select target file)
+SOUL.md:     tone, verbosity, style, personality
+IDENTITY.md: name, role, persona, avatar
+AGENTS.md:   sop, rule, workflow, constraint, when_to_use
+TOOLS.md:    new_tool, script_spec, capability
+USER.md:     user_pref, user_context, user_info
+docs/<slug>: long_doc, contract, book, legal → docs_ingest.py
+removal:     user says remove/stop/delete → call remove(section_key); confirm first
 
-Before writing: read the full target file. Use common sense — dedup, resolve contradictions, group related content. No examples. No notes (no "note:", "NOTE", asides, caveats, or meta-commentary — write the rule itself, not commentary about it). Shortest form that preserves meaning. Machine-readable over human-readable.
+## WRITING PRINCIPLES (for LLM generating content to pass to this script)
+Root files are injected into LLM context EVERY turn. Every character costs tokens every single call.
+
+Before writing: read the full target file. Dedup, resolve contradictions, group related content.
+SHORTEST FORM THAT PRESERVES MEANING — this is the highest priority writing rule.
+Machine-readable over human-readable. No examples. No notes. No prose. No meta-commentary.
+One rule = one line. No redundant symbols. No self-evident examples. Flatten deep nesting.
+If content can be expressed in 5 words instead of 15, use 5.
 
 ## WHAT BELONGS IN ROOT FILES vs OUTSIDE
 Root files = always-on behavioral config. Only put things here that the agent needs every single turn.

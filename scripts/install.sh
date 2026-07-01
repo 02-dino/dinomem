@@ -664,16 +664,8 @@ DINOMEM_BODY=$(cat <<'DINOMEM_AGENTS_BODY'
 
   self_config:
     tool: tools/config_tool.py
-    trigger: user implies changing behavior/rules/workflows/persona/tools/preferences (SOUL/IDENTITY/AGENTS/TOOLS/USER)
-    rule: classify intent → select target → generate content → call config_tool.py
-    routing:
-      SOUL.md: [tone,verbosity,style,personality]
-      IDENTITY.md: [name,role,persona]
-      AGENTS.md: [sop,rule,workflow,constraint,when_to_use]
-      TOOLS.md: [new_tool,script_spec,capability]
-      USER.md: [user_pref,user_context,user_info]
-      docs/<slug>.md: [long_doc,contract,book,legal] → docs_ingest.py
-    removal: user says remove/stop/delete → call remove(section_key); confirm first
+    trigger: user implies changing behavior/rules/workflows/persona/tools/preferences
+    rule: read config_tool.py docstring for routing map → generate content → call config_tool.py
     confirm_before_write: [SOUL.md, IDENTITY.md, AGENTS.md]
     skip_confirm: [TOOLS.md, USER.md]
     ambiguous: ask one question then route
@@ -740,11 +732,7 @@ TOOLS_BODY=$(cat <<'DINOMEM_TOOLS_BODY'
       - overwrite_file
       - patch_section_by_key
       - remove_section_by_key
-    when_to_use: |
-      Safe writer for agent root config files (SOUL.md, IDENTITY.md, AGENTS.md,
-      TOOLS.md, USER.md). See AGENTS.md self-edit policy for the WHEN/trigger
-      (user implies changing behavior/rules/workflows/persona/tools/prefs) and
-      the confirm-before-write rules. This is the HOW/capability spec.
+    when_to_use: safe writer for agent root config files; routing map in config_tool.py docstring
     subcommands:
       append:
         usage: "config_tool.py append <file> <content>"
