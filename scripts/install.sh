@@ -294,6 +294,10 @@ if [ "$DO_CRON" = 1 ]; then
   STARTUP_CLEANUP_CRON="5 2 * * * cd $WS && python3 procedures/cleanup_startup_daily.py >> logs/cleanup.log 2>&1"
   upsert_cron "cleanup_startup_daily.py" "dinomem: prune bare daily files for startupContext (>2d)" "$STARTUP_CLEANUP_CRON" "cleanup_startup_daily cron (daily 2:05 UTC)"
 
+  # weekly_stats — Sunday 09:00 local, zero LLM, sends stats card to Telegram
+  STATS_CRON="0 9 * * 0 python3 $SKILL_DIR/scripts/weekly_stats.py --workspace $WS >> $WS/logs/weekly_stats.log 2>&1"
+  upsert_cron "weekly_stats.py" "dinomem: weekly stats card (Sunday 09:00, no LLM)" "$STATS_CRON" "weekly_stats cron (Sunday 09:00)"
+
   # note_review — daily via OpenClaw cron (LLM judges resolved _note_*.md and deletes them)
   # Registered via OpenClaw cron API, not crontab
   NOTE_REVIEW_CHECK=$(python3 -c "
