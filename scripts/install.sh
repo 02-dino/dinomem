@@ -474,6 +474,14 @@ try:
 except Exception as _e:
     print(f"  \033[33m[warn]\033[0m bootstrap cap auto-raise skipped: {_e}")
 
+# thinkingDefault -> medium (base dinomem is no-reasoning bulk work; adaptive
+# wastes budget on extraction/summarization turns. medium is a safe floor that
+# still allows reasoning on genuinely complex turns without burning max budget
+# on every memory op. Skip if user already has a non-default value set.)
+if defaults.get("thinkingDefault") in (None, "adaptive"):
+    defaults["thinkingDefault"] = "medium"
+    changed.append("thinkingDefault -> medium (safe floor; adaptive wastes budget on bulk memory ops)")
+
 # startupContext ON -> inject last 2 days of bare daily memory on /new and /reset.
 # Pairs with the guarded memoryFlush writer above + cleanup_startup_daily.py.
 # memory_search pull still handles deep recall; this adds recent raw context on reset.
