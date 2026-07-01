@@ -458,7 +458,7 @@ status:           provisional → trusted
 | **Calendar integration** | `_note_` reminders linked to Google Calendar, auto-deleted when the event passes |
 | **Automatic notes** | The agent writes `_note_` files from its own commitments and task follow-ups — not only when you ask |
 | **Project execution** | Large builds become step-by-step plans the agent works through one step at a time across sessions, advancing on its own and pausing for approval on anything risky |
-| **Skill Promotion** | Completed project procedures are distilled into reusable skills; promoted automatically at convergence ≥ 3 across similar projects |
+| **Skill Promotion** | Reusable procedures distilled from completed projects, memory patterns, and best practices; promoted automatically |
 | **Session deep recall** | When memory summary is thin, searches raw archived sessions (7-day window) for the exact exchange — sharper, more detailed recall for recent context |
 
 ---
