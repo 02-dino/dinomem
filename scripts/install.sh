@@ -523,6 +523,14 @@ if "sessions_spawn" in deny_list:
     tools_cfg["deny"] = [t for t in deny_list if t != "sessions_spawn"]
     changed.append("tools.deny -> removed sessions_spawn (required for project executor sub-tasks)")
 
+# tools.allow -> add sessions_spawn if an explicit allowlist exists and sessions_spawn is missing
+# An explicit allow list is a whitelist — omitting sessions_spawn from it blocks the tool
+# even if it's not in deny. Only patch if allow is non-empty (empty = no restriction).
+allow_list = tools_cfg.get("allow", [])
+if allow_list and "sessions_spawn" not in allow_list:
+    tools_cfg["allow"] = allow_list + ["sessions_spawn"]
+    changed.append("tools.allow -> added sessions_spawn (explicit allowlist was missing it)")
+
 # models.providers -> add tei-embed provider
 providers = cfg.setdefault("models", {}).setdefault("providers", {})
 if "tei-embed" not in providers:
