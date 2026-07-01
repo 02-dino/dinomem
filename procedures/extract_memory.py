@@ -618,11 +618,13 @@ Each object in the array must have this structure:
   "corrections": ["[correction] exact mistake + correct behavior"],
   "operational": ["[operational] exact names/paths/values + behavioral default"],
   "user_preferences": ["permanent user trait or boundary"],
-  "topics": ["#hashtag"]
+  "topics": ["#hashtag"],
+  "relations": ["Subject → verb → Object"]
 }}
 
 Rules:
 - EVERY insight MUST start with [factual], [pattern], [lesson], [uncertain], or [preference]
+- [relation] = explicit relationship between two named concepts: "Subject → verb → Object" format. Only extract when relationship is clear and non-trivial. Examples: "Project Advancer → depends on → sessions_spawn", "Komunitech pricing → affects → workshop conversion rate", "memory_graph.py → reads from → memory/*.md". Max 3 per archive. Skip obvious/trivial ones.
 - [factual] = structural truths, NOT transient events
 - [decision] and [correction] = err on side of extracting
 - CONFIG/BEHAVIOR CHANGE RULE: if the session changes a config value, default, policy, or behavior affecting future sessions, extract it as [decision] even if not phrased as "we decided" (e.g. "changed default to X", "updated README to reflect ON by default", "switched Y to Z"). State the new value AND the old one it replaces.
@@ -664,7 +666,8 @@ Rules:
                 'corrections': item.get('corrections', []),
                 'operational': item.get('operational', []),
                 'user_preferences': item.get('user_preferences', []),
-                'topics': item.get('topics', [])
+                'topics': item.get('topics', []),
+                'relations': item.get('relations', [])
             }
             if has_content:
                 log(f"   ✅ {summary['archive']}: {len(summary['insights'])} insights, {len(summary['decisions'])} decisions, {len(summary['corrections'])} corrections, {len(summary['operational'])} operational")
@@ -983,6 +986,12 @@ def write_memory_file(summary, dedup=True):
     operational = summary.get('operational', [])
     prefs = summary.get('user_preferences', [])
     topics = summary.get('topics', [])
+    relations = summary.get('relations', [])
+    # Prefix relations with [relation] tag if not already present
+    relations = [
+        r if r.startswith('[relation]') else f'[relation] {r}'
+        for r in relations
+    ]
 
     # TTL tagging
     from datetime import timedelta
@@ -1010,6 +1019,7 @@ def write_memory_file(summary, dedup=True):
         ('correction', corrections),
         ('operational', operational),
         ('preference', prefs),
+        ('relation', relations),
     ]
 
     written = 0
