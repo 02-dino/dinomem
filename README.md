@@ -450,7 +450,7 @@ status:           provisional → trusted
 
 | Layer | What it does |
 |-------|--------------|
-| **Relationship Discovery** | Identifies relationships between memories — even across different conversations and time periods |
+| **Relationship Discovery** | Identifies relationships between memories across conversations — explicit relation extraction, entity nodes, forward reference detection, and graph traversal for multi-hop queries |
 | **Pattern Synthesis** | Analyzes groups of related memories and generates candidate insights. Skeptical by design — a pattern must emerge independently more than once. |
 | **Contradiction Resolution** | Prevents conflicting beliefs from becoming permanent knowledge. Conflicts are held back until resolved. |
 | **Knowledge Promotion** | Insights that demonstrate stability over time become persistent knowledge. A single observation is never enough. |

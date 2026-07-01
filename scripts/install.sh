@@ -630,7 +630,7 @@ DINOMEM_BODY=$(cat <<'DINOMEM_AGENTS_BODY'
       action: rewrite implicit query → memory_search FIRST (before fs/exec/any tool)
       enforce: no exceptions; memory before filesystem; violating M2 = repeating mistakes
     M3_query_style:
-      applies_to: memory_search | session_search
+      applies_to: memory_search
       prefer: natural_language
       avoid: technical_identifiers | code_terms | exact_strings | variable_names
       enforce: rewrite query to natural language before calling any memory tool
@@ -657,7 +657,6 @@ DINOMEM_BODY=$(cat <<'DINOMEM_AGENTS_BODY'
 
   memory_tools:
     memory_search: simple recall — facts, preferences, decisions, context; default for most queries
-    session_search: python3 tools/session_search.py; when memory_search thin/uncertain AND session <7d old AND transcript detail needed
   memory_recall:
     after_search: memory_get on relevant result
     skip: do not call memory_search every turn
