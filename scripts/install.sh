@@ -506,6 +506,23 @@ elif mem_search.get("provider") != "openai-compatible":
     }
     changed.append("memorySearch -> TEI openai-compatible (localhost:8080)")
 
+# tools.sessions.visibility -> all (cross-agent sessions_send/sessions_history)
+# Default "tree" only covers current session + spawned subagents — blocks cross-agent calls.
+# dinomem's memory pipeline needs to reach across agent boundaries.
+tools_cfg = cfg.setdefault("tools", {})
+sessions_cfg = tools_cfg.setdefault("sessions", {})
+if sessions_cfg.get("visibility") != "all":
+    sessions_cfg["visibility"] = "all"
+    changed.append("tools.sessions.visibility -> all (enables cross-agent sessions_send)")
+
+# tools.deny -> remove sessions_spawn if present
+# dinomem's Project Advancer relies on sessions_spawn to delegate sub-tasks.
+# If it's denied, project execution falls back to inline single-turn work and overflows context.
+deny_list = tools_cfg.get("deny", [])
+if "sessions_spawn" in deny_list:
+    tools_cfg["deny"] = [t for t in deny_list if t != "sessions_spawn"]
+    changed.append("tools.deny -> removed sessions_spawn (required for project executor sub-tasks)")
+
 # models.providers -> add tei-embed provider
 providers = cfg.setdefault("models", {}).setdefault("providers", {})
 if "tei-embed" not in providers:
