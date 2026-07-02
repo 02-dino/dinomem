@@ -693,6 +693,16 @@ DINOMEM_BODY=$(cat <<'DINOMEM_AGENTS_BODY'
         unknown_fields: the resolver acts only on done_when + stale_after; any other fields on a note are left untouched
         status: flip to done only when done_when verified; else pending
 
+  investigate_before_act:
+    triggers: bug_report | fix_request | refactor | cross_entity_claim | any assertion about file/git/version/config
+    rule:
+      inspect: read real artifact / run command before answering; memory is not a source
+      reproduce: get failure locally before fixing
+      verify: re-run after fix; assert symptom gone
+      cross_entity: shared lineage != shared bug; check target directly
+      stale_claim: prior "it's fixed" is not evidence; re-verify
+    enforce: mutable facts need live check every turn
+
   memory_tools:
     memory_search: simple recall — facts, preferences, decisions, context; default for most queries
   memory_recall:
