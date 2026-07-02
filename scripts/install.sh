@@ -612,19 +612,19 @@ DINOMEM_BODY=$(cat <<'DINOMEM_AGENTS_BODY'
   constraints:
     M0: context_unclear → memory_search + memory_get; fallback: ask
     M_session_start:
-      when: FIRST substantive turn of a session/topic (cold start), BEFORE answering — applies to ANY message including a plain question, not only "build X" requests. Failure mode this guards: a question-shaped opener does not trip the build-time check, so an open _note_ goes unread and the agent re-derives stale state.
+      when: FIRST substantive turn of session (cold start), BEFORE answering — any message, not just "build X"
       action:
         - glob memory/_note_*.md (direct ls, deterministic) BEFORE the first answer
-        - for each note with status: in_progress OR status: pending → read it; treat it as the authoritative "where we left off" (resume_state beats your own assumptions and beats chat history)
-        - if any in_progress/pending note's TOPIC matches the user's message (entity, repo, feature, project) → surface it and resume from its resume_state instead of re-investigating
-        - in_progress project parked at a safety-gated final step (push/external) awaiting approval → re-verify whether that step's artifact now exists (e.g. git rev-parse HEAD vs @{u}); if done since, close the note instead of re-asking
-      enforce: MECHANISM not vibe — the cold-start glob is mandatory; an open note one ls away that you didn't read is the most common silent failure. Do it before forming any answer.
+        - for each note with status: in_progress OR status: pending → read it; resume_state beats chat history
+        - if note TOPIC matches user's message → surface it, resume from resume_state
+        - safety-gated final step (git push / external): re-verify artifact exists before re-asking
+      enforce: MECHANISM not vibe — glob is mandatory; open note one ls away that you didn't read is the single most common silent failure
     M1:
-      before: tool/script with side effects OR any message naming an entity/repo/feature that matches an open _note_ (not only literal "build" requests)
+      before: tool/script with side effects OR message naming an entity/repo/feature matching an open _note_
       action:
         - memory_search first
-        - glob memory/_note_*.md (direct ls, not semantic) → read open notes before building; deterministic, can't miss
-      enforce: build-time note check is mandatory so a new session sees open _note_ files before starting a task; trigger fires on entity-name match too, so question openers about an in-flight project still pull the note
+        - glob memory/_note_*.md → read open notes before building
+      enforce: mandatory; fires on entity-name match too, not only literal "build" requests
     M2:
       when: named entity | temporal ref | implicit ref | continuation request
       action: rewrite implicit query → memory_search FIRST (before fs/exec/any tool)
@@ -650,7 +650,7 @@ DINOMEM_BODY=$(cat <<'DINOMEM_AGENTS_BODY'
       schema:
         type: task_bound = resolves via done_when; time_bound = date-based reminder
         done_when: concrete artifact check; lever the cron uses to flip status done + delete (task_bound only)
-        done_when_MUST_be_locally_verifiable: done_when has to be a check a cron can run against LOCAL workspace state with NO chat history and NO network identity — file exists, grep matches, command exits 0. NEVER write a narrative done_when like "pushed to repo X" / "told the user" / "deployed" — those are unverifiable and the note will never auto-close (it silently rots pending until stale_after GC). For a git push step, the verifiable form is: git -C <repo> rev-parse HEAD == git -C <repo> rev-parse @{u}  (local not ahead of upstream). For "feature shipped", point at the concrete file/function that must exist. If you cannot write a locally-checkable done_when, the step is not done-able by the resolver — make the artifact checkable or do not rely on auto-close.
+        done_when_MUST_be_locally_verifiable: cron-runnable against LOCAL state, no chat history, no network identity. file exists / grep / exit 0. NEVER narrative like "pushed to repo" / "told user" — unverifiable = note rots. git push form: git -C <repo> rev-parse HEAD == @{u}. If not locally checkable, do not rely on auto-close.
         stale_after: fallback GC for abandoned notes; default date+30d, reminders date+7d; agent may override
         unknown_fields: the resolver acts only on done_when + stale_after; any other fields on a note are left untouched
         status: flip to done only when done_when verified; else pending
