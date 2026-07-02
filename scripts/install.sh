@@ -338,6 +338,44 @@ PYEOF
   fi
 
   # TEI @reboot
+  # pending_note_reminder — every 3 days via OpenClaw cron (zero LLM pre-filter + LLM evaluate)
+  REMINDER_CHECK=$(python3 -c "
+import subprocess, json, sys
+try:
+    r = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)
+    jobs = json.loads(r.stdout) if r.returncode == 0 else []
+    exists = any('pending' in j.get('name','').lower() and 'note' in j.get('name','').lower() for j in (jobs if isinstance(jobs, list) else jobs.get('jobs', {}).get('jobs', [])))
+    print('exists' if exists else 'missing')
+except: print('skip')
+" 2>/dev/null)
+  if [ "$REMINDER_CHECK" = "exists" ]; then
+    skip "pending_note_reminder OpenClaw cron (exists)"
+  elif [ "$REMINDER_CHECK" = "skip" ]; then
+    warn "Could not check OpenClaw cron — add Pending Note Reminder cron manually via OpenClaw"
+  elif [ "$DRY_RUN" = 1 ]; then
+    plan "register OpenClaw cron: Pending Note Reminder (every 3 days 9:00 local)"
+  else
+    python3 - <<PYEOF
+import subprocess, json
+job = {
+    "name": "Pending Note Reminder",
+    "schedule": {"kind": "cron", "expr": "0 9 */3 * *"},
+    "payload": {
+        "kind": "agentTurn",
+        "message": "Run: python3 $WS/scripts/check_pending_notes.py\n\nIf exit code is 1 (no output) -> NO_REPLY, stop here, zero LLM cost.\n\nIf exit code is 0 (JSON output) -> for each note in the JSON:\n1. Read the full note file\n2. Evaluate done_when — run any shell command if verifiable, or reason from context\n3. If done -> update status to done in the file, report which ones closed\n4. If not done -> include in reminder summary to user\n\nSend reminder only if there are notes still pending after evaluation. Format: brief list with note title + stale_after date.",
+        "timeoutSeconds": 120
+    },
+    "sessionTarget": "isolated",
+    "delivery": {"mode": "announce"}
+}
+r = subprocess.run(['openclaw', 'cron', 'add', '--json', json.dumps(job)], capture_output=True, text=True, timeout=15)
+if r.returncode == 0:
+    print("  \033[32m[ok]\033[0m   pending_note_reminder OpenClaw cron registered (every 3 days 9:00)")
+else:
+    print(f"  \033[33m[warn]\033[0m Could not register pending_note_reminder cron: {r.stderr[:100]}")
+PYEOF
+  fi
+
   if [ "$DO_DOCKER" = 1 ] && command -v docker >/dev/null 2>&1; then
     if docker compose version >/dev/null 2>&1; then
     TEI_CRON="@reboot sleep 30 && docker compose -f $WS/docker-compose.tei.yml up -d >> /tmp/tei-startup.log 2>&1"
