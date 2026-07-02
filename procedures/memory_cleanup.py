@@ -333,8 +333,10 @@ def get_recent_flush_context():
                 if m and m.group(1) not in paths:
                     paths.append(m.group(1))
 
-            paths = list(dict.fromkeys(named_repos[:3] + paths))[:6]
-            decisions = list(dict.fromkeys(decisions))[:4]
+            # No hard cap — trim_memory_index() handles MEMORY.md size.
+            # Recent Context is at top so it survives trimming (recency wins).
+            paths = list(dict.fromkeys(named_repos + paths))
+            decisions = list(dict.fromkeys(decisions))
 
             if paths or decisions:
                 lines_out.append(f'### {date_str}')
