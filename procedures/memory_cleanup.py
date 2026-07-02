@@ -555,7 +555,7 @@ def update_recency_section():
     lines.insert(insert_at + 1, recency)
     lines.insert(insert_at + 2, '')
     MEMORY_INDEX.write_text('\n'.join(lines), encoding='utf-8')
-    print(f'Recency section updated in MEMORY.md ({session_date if recency else "none"}).')
+    print(f'Recency section updated in MEMORY.md ({"ok" if recency else "none"}).')
 
 def trim_memory_index():
     """
