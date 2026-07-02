@@ -692,6 +692,7 @@ DINOMEM_BODY=$(cat <<'DINOMEM_AGENTS_BODY'
         stale_after: fallback GC for abandoned notes; default date+30d, reminders date+7d; agent may override
         unknown_fields: the resolver acts only on done_when + stale_after; any other fields on a note are left untouched
         status: flip to done only when done_when verified; else pending
+        upgrade: enumerate steps FIRST; if >1 digital/verifiable step -> type: project; never skip enumeration; physical/non-verifiable tasks -> task_bound
 
   memory_tools:
     memory_search: simple recall — facts, preferences, decisions, context; default for most queries
