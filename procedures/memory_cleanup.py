@@ -274,6 +274,93 @@ def cleanup():
     update_open_projects_section()
 
 
+def get_recent_flush_context():
+    """
+    Read daily memory flush files (today + yesterday) and extract structured
+    recent context: named repos/projects, key decisions, recent commits.
+    Returns formatted section string or None.
+    """
+    from datetime import timedelta
+    try:
+        today = datetime.now().strftime('%Y-%m-%d')
+        yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+        lines_out = []
+
+        for date_str in [today, yesterday]:
+            flush_file = MEMORY_DIR / f'{date_str}.md'
+            if not flush_file.exists():
+                continue
+            text = flush_file.read_text(encoding='utf-8')
+            if not text.strip():
+                continue
+
+            # Extract key decisions
+            decisions = []
+            in_decisions = False
+            for line in text.splitlines():
+                if re.match(r'^#{1,3}\s+Key decisions', line, re.IGNORECASE):
+                    in_decisions = True
+                    continue
+                if in_decisions:
+                    if re.match(r'^#{1,3}\s+', line):
+                        in_decisions = False
+                        continue
+                    m = re.match(r'^[-*]\s+(.+)', line)
+                    if m:
+                        decisions.append(m.group(1).strip())
+
+            # Extract named repos from section headers + commit/push lines + paths
+            paths = []
+            named_repos = []
+            for line in text.splitlines():
+                m = re.match(r'^#{1,4}\s+.*(committed to|pushed to|built in|changes in|repo:|project:)\s*([\w\-\.]+)', line, re.IGNORECASE)
+                if m:
+                    repo = m.group(2).strip()
+                    if repo and repo not in named_repos:
+                        named_repos.append(f'{repo} (repo/project from session header)')
+                m = re.search(r'[Cc]ommitted?\s+`?([a-f0-9]{6,8})`?', line)
+                if m:
+                    clean = re.sub(r'[*`]', '', line).strip().lstrip('-').strip()
+                    if clean and clean not in paths:
+                        paths.append(clean[:120])
+                        continue
+                if re.search(r'[Pp]ushed', line) and ('github' in line.lower() or 'repo' in line.lower() or '.git' in line.lower()):
+                    clean = re.sub(r'[*`]', '', line).strip().lstrip('-').strip()
+                    if clean and clean not in paths:
+                        paths.append(clean[:120])
+                        continue
+                m = re.search(r'(/root/[\w/.\-]+|github/[\w/.\-]+|workspace-[\w]+/[\w/.\-]+)', line)
+                if m and m.group(1) not in paths:
+                    paths.append(m.group(1))
+
+            paths = list(dict.fromkeys(named_repos[:3] + paths))[:6]
+            decisions = list(dict.fromkeys(decisions))[:4]
+
+            if paths or decisions:
+                lines_out.append(f'### {date_str}')
+                if paths:
+                    lines_out.append('**Recent work:**')
+                    for p in paths:
+                        lines_out.append(f'- {p}')
+                if decisions:
+                    lines_out.append('**Key decisions:**')
+                    for d in decisions:
+                        lines_out.append(f'- {d}')
+
+        if not lines_out:
+            return None
+
+        body = '\n'.join(lines_out)
+        return (f'{RECENCY_MARKER_START}\n'
+                f'## Recent Context (from memory flush \u2014 no search needed)\n'
+                f'{body}\n'
+                f'{RECENCY_MARKER_END}')
+
+    except Exception as e:
+        print(f'\u26a0\ufe0f  get_recent_flush_context error: {e}')
+        return None
+
+
 def get_previous_session_topics():
     """
     Find the most recently archived session JSONL and extract topic hints.
@@ -443,7 +530,7 @@ def update_recency_section():
     if not MEMORY_INDEX.exists():
         return
 
-    recency = get_previous_session_topics()
+    recency = get_recent_flush_context() or get_previous_session_topics()
     content = MEMORY_INDEX.read_text(encoding='utf-8')
 
     # Remove existing recency block if present
