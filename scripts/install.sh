@@ -536,14 +536,21 @@ try:
 except Exception as _e:
     print(f"  \033[33m[warn]\033[0m bootstrap cap auto-raise skipped: {_e}")
 
-# thinkingDefault -> medium (ensures the agent genuinely internalizes and acts
+# thinkingDefault -> medium FLOOR (ensures the agent genuinely internalizes and acts
 # on instructions in root files — AGENTS.md, SOUL.md, MEMORY.md, etc. Without
 # a minimum thinking floor, injected behavior rules and memory context may be
-# acknowledged but not reliably followed. Skip if user already has a non-default
-# value set.)
-if defaults.get("thinkingDefault") in (None, "adaptive"):
+# acknowledged but not reliably followed).
+# TRUE FLOOR, raise-only: only lifts values BELOW medium (off/minimal/low) or unset.
+# medium/high/xhigh are already >= floor -> untouched. 'adaptive' scales up on demand
+# and 'max' is the ceiling -> both treated as >= floor and left alone (never clobbered
+# down to a fixed medium). A user who deliberately runs adaptive/high/max keeps it.
+_THINK_ORDER = {"off": 0, "minimal": 1, "low": 2, "medium": 3, "high": 4, "xhigh": 5}
+_cur_think = defaults.get("thinkingDefault")
+# below-floor set = unset, or a known fixed level ranked below medium.
+# adaptive/max are NOT in _THINK_ORDER by design -> they never match, so never lowered.
+if _cur_think is None or (_cur_think in _THINK_ORDER and _THINK_ORDER[_cur_think] < _THINK_ORDER["medium"]):
     defaults["thinkingDefault"] = "medium"
-    changed.append("thinkingDefault -> medium (ensures root file instructions are internalized, not just acknowledged)")
+    changed.append(f"thinkingDefault -> medium floor (was {_cur_think}; below-floor lifted, adaptive/high/max never lowered)")
 
 # startupContext ON -> inject last 2 days of bare daily memory on /new and /reset.
 # Pairs with the guarded memoryFlush writer above + cleanup_startup_daily.py.
