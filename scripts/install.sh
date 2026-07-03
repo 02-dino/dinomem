@@ -540,17 +540,24 @@ except Exception as _e:
 # on instructions in root files — AGENTS.md, SOUL.md, MEMORY.md, etc. Without
 # a minimum thinking floor, injected behavior rules and memory context may be
 # acknowledged but not reliably followed).
-# TRUE FLOOR, raise-only: only lifts values BELOW medium (off/minimal/low) or unset.
-# medium/high/xhigh are already >= floor -> untouched. 'adaptive' scales up on demand
-# and 'max' is the ceiling -> both treated as >= floor and left alone (never clobbered
-# down to a fixed medium). A user who deliberately runs adaptive/high/max keeps it.
+# TRUE FLOOR, raise-only, and CRITICALLY: only acts on EXPLICIT below-floor values.
+# We only lift a thinkingDefault that is explicitly set to off/minimal/low.
+# medium/high/xhigh -> already >= floor, untouched. adaptive/max -> >= floor, untouched.
+#
+# UNSET IS DELIBERATELY LEFT ALONE. 'unset' does NOT mean 'low' — it means the
+# provider/model default resolves (OpenClaw thinking.md): Claude 4.6 defaults to
+# 'adaptive' (>= our floor), while Opus 4.8/4.7 default 'off'. We cannot know the
+# user's model here, so writing 'medium' on unset would CLOBBER a 4.6 user's adaptive
+# default DOWN to a fixed medium (the exact bug we are avoiding). Better to respect the
+# model's own default than to guess wrong. Users who genuinely set off/minimal/low
+# explicitly still get lifted; everyone else keeps their model/provider default.
 _THINK_ORDER = {"off": 0, "minimal": 1, "low": 2, "medium": 3, "high": 4, "xhigh": 5}
 _cur_think = defaults.get("thinkingDefault")
-# below-floor set = unset, or a known fixed level ranked below medium.
-# adaptive/max are NOT in _THINK_ORDER by design -> they never match, so never lowered.
-if _cur_think is None or (_cur_think in _THINK_ORDER and _THINK_ORDER[_cur_think] < _THINK_ORDER["medium"]):
+# Act ONLY on an explicit, known level ranked below medium. Unset (None) -> skip.
+# adaptive/max are NOT in _THINK_ORDER by design -> never match, never lowered.
+if _cur_think is not None and _cur_think in _THINK_ORDER and _THINK_ORDER[_cur_think] < _THINK_ORDER["medium"]:
     defaults["thinkingDefault"] = "medium"
-    changed.append(f"thinkingDefault -> medium floor (was {_cur_think}; below-floor lifted, adaptive/high/max never lowered)")
+    changed.append(f"thinkingDefault -> medium floor (was explicit {_cur_think}; below-floor lifted; unset/adaptive/high/max untouched)")
 
 # startupContext ON -> inject last 2 days of bare daily memory on /new and /reset.
 # Pairs with the guarded memoryFlush writer above + cleanup_startup_daily.py.
