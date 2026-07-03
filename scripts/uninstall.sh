@@ -129,6 +129,18 @@ if "contextInjection" in defaults:
     defaults.pop("contextInjection")
     changed.append("contextInjection")
 
+# Revert timeoutSeconds floor — only if still exactly our installed value (300).
+# If the user raised/changed it, leave it: their intent wins.
+if defaults.get("timeoutSeconds") == 300:
+    defaults.pop("timeoutSeconds")
+    changed.append("timeoutSeconds")
+subagents = defaults.get("subagents", {})
+if isinstance(subagents, dict) and subagents.get("runTimeoutSeconds") == 300:
+    subagents.pop("runTimeoutSeconds")
+    if not subagents:
+        defaults.pop("subagents", None)
+    changed.append("subagents.runTimeoutSeconds")
+
 # Revert memorySearch
 ms = defaults.get("memorySearch", {})
 if ms.get("provider") == "openai-compatible":

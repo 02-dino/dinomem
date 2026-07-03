@@ -473,6 +473,26 @@ elif "contextInjection" not in defaults:
     defaults["contextInjection"] = "always"
     changed.append("contextInjection -> always (root files injected every turn)")
 
+# timeoutSeconds floor -> give heavy multi-step / research-then-build turns room to
+# finish before the LLM-request idle timeout fires. dinomem-neuron's Project Advancer
+# runs long inline steps and spawns sub-agents; on slower providers a single heavy call
+# can otherwise trip "LLM request timed out" mid-turn. 300s (5 min) is a deliberate
+# middle ground: enough headroom for a heavy step, short enough that a genuinely hung
+# request still surfaces without the user waiting forever. NON-CLOBBER: only raises an
+# unset or lower value; a user who set a higher ceiling is never lowered. This is a
+# base-repo setting (harmless without neuron) — neuron users install base first, no conflict.
+TIMEOUT_FLOOR = 300
+if not isinstance(defaults.get("timeoutSeconds"), int) or defaults.get("timeoutSeconds", 0) < TIMEOUT_FLOOR:
+    prev = defaults.get("timeoutSeconds")
+    defaults["timeoutSeconds"] = TIMEOUT_FLOOR
+    changed.append(f"agents.defaults.timeoutSeconds -> {TIMEOUT_FLOOR}s floor (was {prev}; heavy-turn headroom)")
+# sub-agent runs have their own separate timeout — the Advancer leans on these heavily.
+subagents = defaults.setdefault("subagents", {})
+if not isinstance(subagents.get("runTimeoutSeconds"), int) or subagents.get("runTimeoutSeconds", 0) < TIMEOUT_FLOOR:
+    prev = subagents.get("runTimeoutSeconds")
+    subagents["runTimeoutSeconds"] = TIMEOUT_FLOOR
+    changed.append(f"agents.defaults.subagents.runTimeoutSeconds -> {TIMEOUT_FLOOR}s floor (was {prev}; sub-agent headroom)")
+
 # bootstrapMaxChars / bootstrapTotalMaxChars -> raise caps to fit what dinomem
 # injects, so the policy blocks are never silently truncated. Measured, not a
 # fixed delta: read each root bootstrap file's ACTUAL size (the AGENTS.md/TOOLS.md
