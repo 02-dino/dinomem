@@ -58,12 +58,14 @@ OpenClaw session (.jsonl)
         │  every 15 min (cron)
         ▼
 [session_reset.py]
-  Archives sessions idle for 7 days or after 2 compaction generations; deletes archives older than 7 days
+  Archives sessions idle for 7 days (chat) or 1 day (cron/isolated), or after 2 compaction generations; deletes archives older than 7 days
         │
         ▼
 [extract_memory.py]
   LLM reads archived sessions → extracts facts, decisions, preferences, patterns, lessons
-  Writes to memory/YYYY-MM-DD_<type>_<slug>.md (one file per item) + updates MEMORY.md index
+  Writes to memory/YYYY-MM-DD_<type>_<slug>.md (one file per item)
+  (MEMORY.md itself is not written here — it is the navigation index, rebuilt/trimmed
+   from these per-item files by memory_cleanup.py)
 
 MEMORY.md is a machine-facing navigation index, not the memories themselves.
 Its purpose: help the agent decide which memory_search queries to run.
@@ -106,7 +108,7 @@ For things you want to build or do:
 Saved as `memory/_note_<slug>.md`. Recalled when you ask "what's on my build list?". Auto-deleted by the daily cron once resolved. Notes carry a small schema (`type`, `status`, `done_when`, `stale_after`) so cleanup is deterministic rather than guesswork: `done_when` is a concrete artifact check that resolves the note, and `stale_after` garbage-collects abandoned notes (default 30 days, 7 for quick reminders). See [`references/architecture.md`](references/architecture.md#transient-note-schema-_note_md) for the full schema and resolution ownership.
 
 > Want the agent to create and drive these itself?
-> In dinomem-neuron it writes notes from its own commitments and turns big requests into step-by-step projects it works through on its own — plus calendar-linked reminders.
+> In dinomem-neuron it writes notes from its own commitments and turns big requests into step-by-step projects it works through on its own.
 > [↓ dinomem-neuron](#want-more--dinomem-neuron-private-repo)
 
 > **Note:** Memory is recall-based, not always-on. The agent searches for relevant memories when needed — nothing is automatically injected into every turn.
@@ -455,7 +457,6 @@ status:           provisional → trusted
 | **Contradiction Resolution** | Prevents conflicting beliefs from becoming permanent knowledge. Conflicts are held back until resolved. |
 | **Knowledge Promotion** | Insights that demonstrate stability over time become persistent knowledge. A single observation is never enough. |
 | **Long-document RAG** | Contracts, books, legal text — stored separately, never pollute memory, searchable via `docs_search` |
-| **Calendar integration** | `_note_` reminders linked to Google Calendar, auto-deleted when the event passes |
 | **Automatic notes** | The agent writes `_note_` files from its own commitments and task follow-ups — not only when you ask |
 | **Project execution** | Large builds become step-by-step plans the agent works through one step at a time across sessions, advancing on its own and pausing for approval on anything risky |
 | **Skill Promotion** | Reusable procedures distilled from completed projects, memory patterns, and best practices; promoted automatically |

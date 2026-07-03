@@ -4,8 +4,8 @@ Session Reset Script
 
 Resets analysis agent sessions:
   - Archives orphaned session files (>48h old)
-  - Deletes old archives (>5 days)
-  - Resets tracked sessions (chat >7 days, cron >1 day, compaction >5)
+  - Deletes old archives (>7 days)
+  - Resets tracked sessions (chat >7 days, cron/isolated >1 day, compaction generations >=2)
   - Cleans JSONL content before archiving
 
 Run via orchestrator (auto_session_reset.py) or standalone.
