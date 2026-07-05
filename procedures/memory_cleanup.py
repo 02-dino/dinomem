@@ -23,6 +23,7 @@ Run: python3 procedures/memory_cleanup.py
 import json
 import os
 import re
+import time
 import urllib.request
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
@@ -39,6 +40,12 @@ WORKSPACE = Path(os.environ.get("DINOMEM_WORKSPACE", _WS_DEFAULT))
 MEMORY_DIR = WORKSPACE / "memory"
 ARCHIVE_DIR = WORKSPACE / ".memory_archive"
 MEMORY_INDEX = WORKSPACE / "MEMORY.md"
+
+# Retention for .memory_archive/: pre-dedup snapshots are continuity-only (rollback +
+# audit), NOT live-indexed by memory_search. Prune files older than this so the
+# archive can't grow unbounded across the install's lifetime. Plain markdown, tiny
+# volume, but a hard cap keeps every install clean without manual intervention.
+ARCHIVE_RETENTION_DAYS = 180
 
 # Sessions dir for recency section
 OPENCLAW_ROOT = WORKSPACE.parent
@@ -269,9 +276,29 @@ def cleanup():
 
     print(f"Bootcheck cleanup: {bootcheck_removed} files removed.")
 
+    pruned = prune_archive()
+    print(f"Archive retention: {pruned} file(s) older than {ARCHIVE_RETENTION_DAYS}d pruned from .memory_archive/.")
+
     trim_memory_index()
     update_recency_section()
     update_open_projects_section()
+
+
+def prune_archive():
+    """Delete .memory_archive/ files older than ARCHIVE_RETENTION_DAYS (by mtime).
+    Continuity-only snapshots; safe to GC once past the retention window."""
+    if not ARCHIVE_DIR.exists():
+        return 0
+    cutoff = time.time() - ARCHIVE_RETENTION_DAYS * 86400
+    pruned = 0
+    for f in ARCHIVE_DIR.glob("*.md"):
+        try:
+            if f.stat().st_mtime < cutoff:
+                f.unlink()
+                pruned += 1
+        except OSError:
+            continue
+    return pruned
 
 
 def get_recent_flush_context():
