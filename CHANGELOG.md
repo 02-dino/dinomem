@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.2.9
+
+Memory pipeline reliability fix. **Recommended for all users.**
+
+### Fixed
+- **Silent extraction failure on multi-Node hosts.** `extract_memory.py` shells out to the `openclaw` CLI, whose `#!/usr/bin/env node` shebang picks whatever `node` resolves first on PATH. On boxes with multiple Node installs, cron could resolve an outdated Node (< 22.19), causing the CLI to hard-exit and every LLM extraction to fail — writing **0 memory notes** while archives were still marked processed. Extraction now resolves a compatible Node (>= 22.19) at runtime (scans PATH, common install roots, and nvm; verifies version), self-healing across Node upgrades/moves. Emits a loud warning if no valid Node is found instead of failing silently.
+- **Permanent memory loss on transient LLM failure.** A failed extraction previously still marked the archive "processed", so it was never retried — dropping that session's memory permanently. Failed LLM calls now return an `LLM_FAILED` sentinel and are **not** marked processed, so they auto-retry on the next run. Genuinely-empty sessions are still marked (correct).
+- **False extraction failure from gateway stdout noise.** Tolerant JSON parsing: slice from the first `{` so gateway warning lines prepended to stdout can't trigger a false fallback on an otherwise-successful call.
+
+### Upgrade
+`git pull` then re-run `scripts/install.sh --force` to deploy the fixed `procedures/extract_memory.py`. dinomem-neuron users: update the dinomem base — neuron does not ship this file.
+
 ## 1.2.8
 
 Addresses install-experience feedback in [#2](https://github.com/02-dino/dinomem/issues/2).

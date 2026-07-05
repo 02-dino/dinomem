@@ -16,12 +16,60 @@ Logs to: logs/extract_memory.log
 import json
 import os
 import re
+import glob as _glob
+import shutil as _shutil
 import subprocess
 import urllib.request
 from pathlib import Path
 from datetime import datetime, timedelta
 
 # ─── Configuration ────────────────────────────────────────────────────────────
+
+# OpenClaw's CLI needs Node >= this. Cron PATH may resolve `node` to an old
+# version (multiple installs on host) -> CLI hard-exits -> LLM calls fail ->
+# 0 memories stored while archives get marked processed = silent permanent loss.
+# Resolve a valid Node at runtime and prepend its dir to the subprocess PATH.
+_NODE_MIN = (22, 19)
+_RESOLVED_NODE_DIR = None
+
+
+def _node_version_ok(node_bin):
+    try:
+        out = subprocess.run([node_bin, "--version"], capture_output=True,
+                             text=True, timeout=10)
+        m = re.match(r"v?(\d+)\.(\d+)", (out.stdout or "").strip())
+        if not m:
+            return None
+        ver = (int(m.group(1)), int(m.group(2)))
+        return ver if ver >= _NODE_MIN else None
+    except Exception:
+        return None
+
+
+def _resolve_node_dir():
+    """Find a Node >= _NODE_MIN, return its bin DIR (to prepend to PATH).
+    Self-healing: scans PATH + common roots + nvm, verifies version at runtime,
+    so it survives node upgrades/moves. Cached per-run. None if none found."""
+    global _RESOLVED_NODE_DIR
+    if _RESOLVED_NODE_DIR is not None:
+        return _RESOLVED_NODE_DIR or None
+    candidates = []
+    p = _shutil.which("node")
+    if p:
+        candidates.append(p)
+    candidates += ["/home/linuxbrew/.linuxbrew/bin/node", "/usr/local/bin/node"]
+    candidates += sorted(_glob.glob(os.path.expanduser("~/.nvm/versions/node/*/bin/node")), reverse=True)
+    candidates += sorted(_glob.glob("/root/.nvm/versions/node/*/bin/node"), reverse=True)
+    seen = set()
+    for c in candidates:
+        if not c or c in seen:
+            continue
+        seen.add(c)
+        if _node_version_ok(c):
+            _RESOLVED_NODE_DIR = os.path.dirname(os.path.realpath(c))
+            return _RESOLVED_NODE_DIR
+    _RESOLVED_NODE_DIR = ""
+    return None
 
 SESSIONS_DIR = Path("DINOMEM_AGENT_SESSIONS_PLACEHOLDER")
 MEMORY_DIR = Path(__file__).parent.parent / "memory"
@@ -438,11 +486,16 @@ def call_llm(prompt, max_tokens=None, reasoning=False):
     # Try OpenClaw gateway first
     try:
         log(f"   🔄 Calling OpenClaw gateway ({_route})...")
-        import shutil as _shutil
         _oc = _shutil.which("openclaw") or "/home/linuxbrew/.linuxbrew/bin/openclaw"
+        _env = dict(os.environ)
+        _node_dir = _resolve_node_dir()
+        if _node_dir:
+            _env["PATH"] = _node_dir + ":" + _env.get("PATH", "")
+        else:
+            log("   ⚠️  No Node >=%d.%d found for openclaw CLI; gateway may fail" % _NODE_MIN)
         result = subprocess.run(
             [_oc] + _gw_cmd,
-            capture_output=True, text=True, timeout=120
+            capture_output=True, text=True, timeout=120, env=_env
         )
         if result.returncode == 0:
             # Gateway may prepend non-JSON noise (e.g. [state-migrations] warnings)
@@ -752,7 +805,9 @@ Rules:
     success, response = call_llm(prompt, max_tokens=1500, reasoning=False)
     if not success:
         log(f"   ⚠️  LLM failed for {archive_filename}: {response}")
-        return None
+        # Sentinel: transient LLM failure (retry next run) vs genuinely-empty
+        # session (None). Prevents silent-permanent-loss on marked-processed.
+        return "LLM_FAILED"
     try:
         clean_response = response.strip()
         if clean_response.startswith('```json'):
@@ -1163,12 +1218,16 @@ def main():
         if len(batch) == 1:
             # Single archive — use single processor
             summary = process_single_archive(batch[0])
-            mark_archives_processed([batch[0]])
-            if summary:
+            if summary == "LLM_FAILED":
+                log(f"   ↺  Not marking {batch[0]} processed (LLM failed) — will retry")
+                failed_count += 1
+            elif summary:
+                mark_archives_processed([batch[0]])
                 success = write_memory_file(summary)
                 stored_count += 1 if success else 0
                 failed_count += 0 if success else 1
             else:
+                mark_archives_processed([batch[0]])
                 empty_count += 1
         else:
             # Multiple archives — batch LLM call
@@ -1178,12 +1237,16 @@ def main():
                 log(f"   ⚠️  Batch failed, falling back to single processing for {batch}")
                 for archive_name in batch:
                     summary = process_single_archive(archive_name)
-                    mark_archives_processed([archive_name])
-                    if summary:
+                    if summary == "LLM_FAILED":
+                        log(f"   ↺  Not marking {archive_name} processed (LLM failed) — will retry")
+                        failed_count += 1
+                    elif summary:
+                        mark_archives_processed([archive_name])
                         success = write_memory_file(summary)
                         stored_count += 1 if success else 0
                         failed_count += 0 if success else 1
                     else:
+                        mark_archives_processed([archive_name])
                         empty_count += 1
             else:
                 processed_names = [r[0] for r in results]
