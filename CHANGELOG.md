@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.2.10
+
+MEMORY.md index-bloat fix + neuron-coexistence guard. **Recommended for all users; required before installing neuron.**
+
+### Fixed
+- **MEMORY.md bloat from the "Previous Session" line.** `get_previous_session_topics()` built the Previous Session keyword line from the dated-slug path with **no per-item cap** — a heavy work-day (many `memory/YYYY-MM-DD_*.md` files) produced hundreds of slugs joined into one multi-KB line. `trim_memory_index()` removes whole lines and only touches `[TAG]` entries, so that single over-long line survived trimming and bloated the injected MEMORY.md (risking silent truncation on injection). Fix A: cap the slug path (15 items / 600 chars), symmetric with the already-capped word-freq fallback. Fix B: `trim_memory_index()` now also collapses any single over-long line (> 800 chars) in place as a safety net, not just `[TAG]` entries. (Same class of bug fixed in neuron 1.2.5's `generate_topic_index.py`; base carried the identical shape in `memory_cleanup.py`.)
+
+### Changed
+- **MEMORY.md writer ownership (neuron coexistence).** When the neuron layer is installed, `generate_topic_index.py` becomes the authoritative MEMORY.md writer. `memory_cleanup.py` now auto-detects neuron (presence of `procedures/generate_topic_index.py`) and **yields** the MEMORY.md-writing steps (recency / open-projects / trim) to it, preventing two writers racing on the same file after a base→neuron upgrade. Dedup / bootcheck / archive-prune still run in `memory_cleanup` either way. Base-only installs are unaffected (neuron absent → normal behavior). Override with `DINOMEM_FORCE_INDEX_WRITER=1`.
+
 ## 1.2.9
 
 Memory pipeline reliability fix. **Recommended for all users.**

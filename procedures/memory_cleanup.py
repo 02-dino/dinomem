@@ -279,6 +279,19 @@ def cleanup():
     pruned = prune_archive()
     print(f"Archive retention: {pruned} file(s) older than {ARCHIVE_RETENTION_DAYS}d pruned from .memory_archive/.")
 
+    # MEMORY.md writer ownership. In base-only installs, memory_cleanup is the
+    # sole writer of the MEMORY.md navigation index (recency / open-projects /
+    # trim). When the neuron layer is installed, generate_topic_index.py becomes
+    # the authoritative MEMORY.md writer (LLM-enriched index + cap + line guard).
+    # If both wrote the file we'd get two writers racing on the same file. So we
+    # auto-yield: if neuron is present, skip the MEMORY.md-writing steps here and
+    # let generate_topic_index own the file. Dedup / bootcheck / archive-prune
+    # above still run either way. Override with DINOMEM_FORCE_INDEX_WRITER=1.
+    neuron_present = (WORKSPACE / "procedures" / "generate_topic_index.py").exists()
+    if neuron_present and os.environ.get("DINOMEM_FORCE_INDEX_WRITER") != "1":
+        print("neuron detected (generate_topic_index.py present) — yielding MEMORY.md writing to neuron; skipping recency/open-projects/trim here.")
+        return
+
     trim_memory_index()
     update_recency_section()
     update_open_projects_section()
@@ -475,7 +488,18 @@ def get_previous_session_topics():
         if not topics:
             return None
 
+        # Cap the Previous Session keyword line. The slug path above has NO
+        # per-item limit — a heavy work-day produces hundreds of dated memory
+        # files -> hundreds of slugs -> one multi-KB line. trim_memory_index()
+        # removes whole lines, never within a line, so an over-long single line
+        # can survive trimming and bloat the injected MEMORY.md. Cap here: keep
+        # at most _PREV_SESSION_MAX_TOPICS items AND hard-ceil the joined length.
+        _PREV_SESSION_MAX_TOPICS = 15
+        _PREV_SESSION_MAX_CHARS = 600
+        topics = topics[:_PREV_SESSION_MAX_TOPICS]
         topics_str = ', '.join(topics)
+        if len(topics_str) > _PREV_SESSION_MAX_CHARS:
+            topics_str = topics_str[:_PREV_SESSION_MAX_CHARS].rsplit(', ', 1)[0] + ', …'
         return f'{RECENCY_MARKER_START}\n## Previous Session ({session_date}) — search if relevant\n{topics_str}\n{RECENCY_MARKER_END}'
 
     except Exception as e:
@@ -596,6 +620,23 @@ def trim_memory_index():
         return
 
     content = MEMORY_INDEX.read_text(encoding="utf-8")
+
+    # Safety net: before anything, collapse any single over-long line in place.
+    # trim_memory_index removes whole lines and only touches [TAG] entries, so a
+    # blown-up non-[TAG] line (e.g. the Previous Session keyword blob) could
+    # otherwise survive trimming and bloat the injected file. Truncate on a word
+    # boundary. Mirrors neuron generate_topic_index._guard_memory_size fix B.
+    _MAX_SINGLE_LINE_CHARS = 800
+    if any(len(ln) > _MAX_SINGLE_LINE_CHARS for ln in content.splitlines()):
+        fixed = []
+        for ln in content.splitlines():
+            if len(ln) > _MAX_SINGLE_LINE_CHARS:
+                ln = ln[:_MAX_SINGLE_LINE_CHARS].rsplit(' ', 1)[0] + ' …'
+            fixed.append(ln)
+        content = '\n'.join(fixed)
+        MEMORY_INDEX.write_text(content, encoding="utf-8")
+        print(f"MEMORY.md had an over-long line (> {_MAX_SINGLE_LINE_CHARS} chars) — collapsed in place.")
+
     if len(content) <= MAX_INDEX_CHARS:
         print(f"MEMORY.md: {len(content)} chars — under limit, no trim needed.")
         return
