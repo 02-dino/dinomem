@@ -6,13 +6,9 @@ Not patched automatically — skipping these hurts cost, performance, response s
 
 ## Compaction tuning
 
-**`reserveTokens`** — set to `contextWindow - 200000` (skip if your model is 200k or under). Keeps active context below 200k, which fixes three things: context bloat, response speed (inference slows non-linearly above 200k), and memory quality (leaner sessions = better compaction summaries).
+**`reserveTokens`** — set to `contextWindow - 200000`. If your model is `200000` or under, set it to `20000` instead. Keeps active context below 200k, which fixes three things: context bloat, response speed (inference slows non-linearly above 200k), and memory quality (leaner sessions = better compaction summaries).
 
-Examples: 200k model → `50000`, 1M model → `800000`, 128k model → skip.
-
-**`keepRecentTokens`** — set to 25% of `min(contextWindow, 200000)`. Minimum tokens preserved from the most recent window during compaction — protects immediate context continuity.
-
-Examples: 200k model → `50000`, 128k model → `32000`, 1M model → `50000`.
+**`keepRecentTokens`** — set to 10% of `min(contextWindow, 200000)`. Minimum tokens preserved from the most recent window during compaction — protects immediate context continuity.
 
 **`model`** — compaction (summarizing session context) is a **no-reasoning bulk task**, the same tier as dinomem's `extract_memory` / `memory_review`. Set `agents.defaults.compaction.model` to the **same cheap, high-context model** you'd use for [`DINOMEM_CHEAP_MODEL`](#model-selection). One model, both jobs: cheap where it's bulk, default where it's reasoning. If unset, OpenClaw uses your default model for compaction too (works, just costs more). dinomem does not set this for you — you (or your install agent) pick it, since the right model depends entirely on what you have.
 
