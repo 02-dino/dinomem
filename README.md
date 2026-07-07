@@ -161,6 +161,20 @@ The installer preflight checks these automatically: **RAM/CPU below minimum → 
 > **Don't know your agent ID or workspace path?**
 > Run `openclaw agents list` — it shows all agents and their workspace paths.
 
+### Token usage
+
+dinomem's only recurring cost is LLM tokens. Estimated tokens/month (input+output), grounded in the actual batch caps:
+
+| Usage | Tokens/mo | Cheap-eligible? |
+| ----------------------- | --------- | --------------- |
+| Low — ~2–3 sessions/day | ~1–2M     | ✅ all           |
+| Moderate — ~8–12/day    | ~5–9M     | ✅ all           |
+| High — ~30+/day         | ~18–30M   | ✅ all           |
+
+**Every base LLM call is no-reasoning bulk** (extraction, review) — so **100% of these tokens are cheap-eligible.** Set [`DINOMEM_CHEAP_MODEL`](#tuning-guide-manual-strongly-recommended) and all of it routes to your cheap high-context model.
+
+_Grounding: extract ~26k tok / 3 sessions · review one ~4k-token call/day · order-of-magnitude, scales with sessions/day + corpus size._
+
 ---
 
 ## Quick Start
