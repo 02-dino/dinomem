@@ -183,6 +183,16 @@ if [ "$PURGE" = 1 ]; then
     tools/config_tool.py; do
     [ -f "$WS/$f" ] && rm "$WS/$f" && ok "removed $f" || skip "$f not found"
   done
+
+  # Remove reset-extract hook
+  if [ -d "$WS/hooks/dinomem-reset-extract" ]; then
+    rm -rf "$WS/hooks/dinomem-reset-extract" && ok "removed hooks/dinomem-reset-extract/"
+    if command -v openclaw >/dev/null 2>&1 && openclaw status >/dev/null 2>&1; then
+      openclaw hooks disable dinomem-reset-extract >/dev/null 2>&1 || true
+    fi
+  else
+    skip "hooks/dinomem-reset-extract/ not found"
+  fi
 fi
 
 # ── OpenClaw cron (Daily Note Review) ────────────────────────────────────────

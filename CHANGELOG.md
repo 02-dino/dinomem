@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.2.12
+
+0-delay memory extraction on manual `/new` / `/reset` via an internal hook. **Recommended for all users** — closes the residual ≤15-min post-reset memory-blindness window introduced in 1.2.11.
+
+### Added
+- **`dinomem-reset-extract` internal hook** (`hooks/dinomem-reset-extract/`). Fires on `command:new` and `command:reset` and immediately launches `procedures/auto_session_reset.py` in the background — the same pipeline the `*/15` cron runs (adopt core reset-archives → `extract_memory.py` → optional `session_ingest.py`). Result: the session you just left is mined for memory at the instant you `/new`, not up to 15 minutes later. The handler is fire-and-forget (detached child process) so `/new` / `/reset` acknowledgements are never delayed. Fully idempotent: the pipeline holds `/tmp/dinomem_auto_reset.lock` and deduplicates per-archive (processed-log) and per-content (ingest hash), so a concurrent cron tick is harmless. If the hook races core's archive rename and misses the file, the regular cron catches it next tick — strictly an improvement, never a regression.
+- **`install.sh` section 2b**: copies `hooks/dinomem-reset-extract/` into `<workspace>/hooks/` and runs `openclaw hooks enable dinomem-reset-extract` automatically. Idempotent (skips if already present; `--force` overwrites).
+- **`uninstall.sh`**: removes `hooks/dinomem-reset-extract/` and disables the hook on uninstall.
+
+### Upgrade
+`git pull` then re-run `scripts/install.sh --force` to deploy the hook and enable it. Requires OpenClaw gateway restart after enable for the hook to activate.
+
 ## 1.2.11
 
 Manual `/new` `/reset` sessions were never mined for memory. **Recommended for all users** — recovers memory that was silently being lost on every manual reset.

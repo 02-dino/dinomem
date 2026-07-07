@@ -268,6 +268,28 @@ for f in procedures/memory_cleanup.py procedures/memory_review.py procedures/cle
   fi
 done
 
+# ── 2b) Install reset-extract hook ──────────────────────────────────────────
+hr "Reset-extract hook (0-delay memory pipeline on /new /reset)"
+HOOK_SRC="$SKILL_DIR/hooks/dinomem-reset-extract"
+HOOK_DST="$WS/hooks/dinomem-reset-extract"
+if [ -d "$HOOK_DST" ] && [ "$FORCE" = 0 ]; then
+  skip "hooks/dinomem-reset-extract/ (exists, use --force to overwrite)"
+elif [ "$DRY_RUN" = 1 ]; then
+  plan "copy hooks/dinomem-reset-extract/ -> $WS/hooks/"
+  plan "openclaw hooks enable dinomem-reset-extract"
+else
+  mkdir -p "$WS/hooks"
+  cp -r "$HOOK_SRC" "$HOOK_DST"
+  ok "hooks/dinomem-reset-extract/ copied"
+  if command -v openclaw >/dev/null 2>&1 && openclaw status >/dev/null 2>&1; then
+    openclaw hooks enable dinomem-reset-extract >/dev/null 2>&1 \
+      && ok "dinomem-reset-extract hook enabled (restart OpenClaw to activate)" \
+      || warn "openclaw hooks enable failed — run manually: openclaw hooks enable dinomem-reset-extract"
+  else
+    warn "OpenClaw not running — run after restart: openclaw hooks enable dinomem-reset-extract"
+  fi
+fi
+
 # ── 3) TEI Docker setup ───────────────────────────────────────────────────────
 if [ "$DO_DOCKER" = 1 ]; then
   hr "TEI Embedding Server (Docker)"
