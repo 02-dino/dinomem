@@ -460,6 +460,7 @@ status:           provisional → trusted
 | **Long-document RAG** | Contracts, books, legal text — stored separately, never pollute memory, searchable via `docs_search` |
 | **Automatic notes** | The agent writes `_note_` files from its own commitments and task follow-ups — not only when you ask |
 | **Project execution** | Large builds become step-by-step plans the agent works through one step at a time across sessions, advancing on its own and pausing for approval on anything risky |
+| **Self-improving closer** | When a project finishes, the agent reviews its own work, makes a safe, behavior-preserving improvement if one helps (or confirms none is needed), then retires the completed note automatically — the workspace cleans up after itself |
 | **Skill Promotion** | Reusable procedures distilled from completed projects, memory patterns, and best practices; promoted automatically |
 | **Session deep recall** | When memory summary is thin, searches raw archived sessions (7-day window) for the exact exchange — sharper, more detailed recall for recent context |
 
