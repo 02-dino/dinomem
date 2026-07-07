@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, openSync } from "node:fs";
+import { existsSync, openSync, closeSync } from "node:fs";
 import { join, isAbsolute } from "node:path";
 
 // dinomem-reset-extract: fire-and-forget memory pipeline on manual /new or /reset.
@@ -73,6 +73,17 @@ const handler = async (event: {
     child.on("error", (err: Error) => {
       console.warn("[dinomem-reset-extract] launch error: " + String(err));
     });
+
+    // Close the parent's copy of the log fd: the detached child holds its own dup,
+    // so this is behavior-preserving and avoids leaking one fd per /new or /reset
+    // over the gateway's lifetime.
+    if (typeof logFd === "number") {
+      try {
+        closeSync(logFd);
+      } catch {
+        // already closed / invalid — ignore
+      }
+    }
 
     child.unref();
 
