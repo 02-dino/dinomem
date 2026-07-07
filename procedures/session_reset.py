@@ -307,6 +307,73 @@ def cleanup_orphaned_files():
     return archived_count, archive_info
 
 
+def adopt_core_reset_archives():
+    """Adopt OpenClaw core's real-time reset archives into the pipeline-visible namespace.
+
+    BUG FIX (2026-07-07): OpenClaw core archives a session the instant it is manually
+    /new'd or /reset by renaming <session>.jsonl -> <session>.jsonl.reset.<ISOms>Z.
+    The memory pipeline (extract_memory.py) only globs *.archived.*.jsonl, and
+    get_orphaned_files() explicitly SKIPS any name containing '.reset.'. So a manually
+    reset session's transcript was NEVER extracted (permanent memory loss). This step
+    converts core's core-format reset files into <session>.archived.reset.<ts>.jsonl
+    (cleaned the same way orphans are), so extract_memory then picks them up. Idempotent:
+    once converted, the core file is removed, so re-runs find nothing new. Also serves as
+    a one-time backfill for stranded historical core reset files.
+    """
+    log("🩹 Checking for core reset-archives to adopt (.jsonl.reset.<iso>Z)...")
+    adopted_count = 0
+    adopt_info = []
+    # core format: <origstem>.jsonl.reset.<ISO-with-millis>Z  (does NOT end in .jsonl)
+    core_files = sorted(SESSIONS_DIR.glob("*.jsonl.reset.*"))
+    if not core_files:
+        log("✅ No core reset-archives to adopt")
+        return 0, []
+    for cf in core_files:
+        name = cf.name
+        if ".jsonl.reset." not in name:
+            continue
+        # skip if already in visible namespace (defensive; shouldn't match this glob)
+        if ".archived." in name:
+            continue
+        orig_stem = name.split(".jsonl.reset.")[0]
+        # preserve core's original reset timestamp: strip trailing Z + millis -> filesystem-safe
+        raw_ts = name.split(".jsonl.reset.")[1]
+        safe_ts = raw_ts.replace(":", "-").rstrip("Z")
+        if "." in safe_ts:  # drop sub-second millis (.305) for clean naming
+            safe_ts = safe_ts.split(".")[0]
+        archived_name = f"{orig_stem}.archived.reset.{safe_ts}.jsonl"
+        archived = SESSIONS_DIR / archived_name
+        if archived.exists():
+            # already adopted (idempotent): remove the stray core file
+            try:
+                cf.unlink()
+                log(f"♻️  Already adopted, removed core file: {name}")
+            except OSError:
+                pass
+            continue
+        cleaned_lines, stats = cleanup_jsonl_content(cf)
+        if cleaned_lines:
+            if write_cleaned_jsonl(archived, cleaned_lines):
+                try:
+                    cf.unlink()
+                except OSError:
+                    pass
+                adopted_count += 1
+                adopt_info.append({'file': archived_name, 'stats': stats, 'type': 'reset_adopted'})
+                log(f"✅ Adopted core reset: {name} → {archived.name}")
+                log(f"   🧹 Cleaned: {stats['kept']} kept, {stats['removed']} removed")
+        else:
+            # empty/no meaningful content: drop the core file
+            try:
+                cf.unlink()
+            except OSError:
+                pass
+            log(f"🗑️  Dropped empty core reset: {name}")
+    if adopted_count > 0:
+        log(f"✅ Adopted {adopted_count} core reset-archive(s) into pipeline namespace")
+    return adopted_count, adopt_info
+
+
 def cleanup_old_archives():
     """Delete archived JSONL files older than ARCHIVE_MAX_AGE_DAYS."""
     log("🗑️  Checking for old archived files...")
@@ -520,6 +587,13 @@ def main():
     log("")
     log("🧹 STEP 1: Checking for orphaned session files...")
     orphaned_count, orphan_info = cleanup_orphaned_files()
+
+    # Step 1.5: Adopt core's real-time reset archives (.jsonl.reset.<iso>Z) into the
+    # pipeline-visible .archived.reset.*.jsonl namespace so extract_memory sees manual
+    # /new /reset sessions. Fixes silent memory loss for manually-reset sessions.
+    log("")
+    log("🩹 STEP 1.5: Adopting core reset-archives (manual /new /reset)...")
+    adopted_count, adopt_info = adopt_core_reset_archives()
 
     # Step 2: Run cleanup of old archives
     log("")

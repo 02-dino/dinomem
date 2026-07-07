@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.2.11
+
+Manual `/new` `/reset` sessions were never mined for memory. **Recommended for all users** — recovers memory that was silently being lost on every manual reset.
+
+### Fixed
+- **Silent permanent memory loss on manual `/new` / `/reset`.** OpenClaw core archives a session the instant it is manually reset by renaming `<session>.jsonl` → `<session>.jsonl.reset.<ISOms>Z` in real time. But the memory pipeline never saw these: `extract_memory.py` only globs `*.archived.*.jsonl`, and `session_reset.py`'s `get_orphaned_files()` explicitly **skips** any name containing `.reset.`. The two archive namespaces were disjoint — core's real-time `.jsonl.reset.<iso>Z` files and the pipeline-visible `.archived.*.jsonl` files never met. Result: **any session you explicitly `/new` or `/reset` had its transcript archived by core but never extracted into `memory/` — permanent loss.** (On one live install this had silently stranded ~1 month / 54 sessions of un-mined transcripts, oldest dating to the first manual reset.) Age-out orphan cleanup masked it partially: sessions that aged into the orphan sweep before you manually reset them were caught by that path; only explicitly-reset sessions fell through.
+  - **Fix:** new `adopt_core_reset_archives()` step (Step 1.5 in `auto_session_reset.py`'s reset stage, after orphan cleanup, before archive pruning). It globs `*.jsonl.reset.*`, recovers the original session stem, preserves core's reset timestamp, cleans the transcript with the same `cleanup_jsonl_content()` used for orphans, and writes `<session>.archived.reset.<ts>.jsonl` into the pipeline-visible namespace — then removes core's stray file. `extract_memory.py` (and, on neuron, `session_ingest.py`) then pick it up on the same tick. Idempotent (target-exists check + the extract dedup log), so re-runs are no-ops. Doubles as a **one-time backfill**: the first run after upgrade sweeps every stranded historical `.jsonl.reset.<iso>Z` file and recovers its memory.
+
+### Known limitation (follow-up)
+- Adoption runs on the `*/15` cron tick, so there is still a **≤15-min lag** between a manual `/new` and its memory being extracted (down from *permanent loss*). Closing the residual window to 0-delay requires a `session_end` hook that fires at reset time; tracked as a separate follow-up.
+
+### Upgrade
+`git pull` then re-run `scripts/install.sh --force` to deploy the fixed `procedures/session_reset.py`. First cron run after upgrade backfills any historical manual-reset sessions.
+
 ## 1.2.10
 
 MEMORY.md index-bloat fix + neuron-coexistence guard. **Recommended for all users; required before installing neuron.**
