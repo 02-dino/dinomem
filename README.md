@@ -144,6 +144,20 @@ dinomem includes a routing system that detects your intent and writes to the cor
 - [ ] Python 3.8+
 - [ ] Linux or macOS (Windows: use WSL2)
 
+### Minimum spec
+
+The local TEI embedding server (CPU image, `all-MiniLM-L6-v2`) is the sizing driver.
+
+| Resource | Minimum | Comfortable |
+| -------- | ------------ | ----------- |
+| CPU      | 2 vCPU       | 2–4 vCPU    |
+| RAM      | 2 GB         | 4 GB        |
+| Disk     | 5 GB free    | 10 GB       |
+
+The installer preflight checks these automatically: **RAM/CPU below minimum → warning + continue** (TEI may OOM under batch load); **free disk below a 2 GB hard floor → install blocks** unless you pass `--force` (the TEI image pull will otherwise fail mid-install).
+
+**Agent-driven installs.** A warning printed to stdout is easy for an automated caller to skim past, so the preflight also emits machine-readable signals: `DINOMEM_PREFLIGHT_WARN=...` (below-recommended RAM/CPU/disk, continues) and `DINOMEM_PREFLIGHT_BLOCK=...` alongside `exit 1` (disk hard floor). An agent running the installer should **surface any `[AGENT-NOTICE]` / `PREFLIGHT_WARN` to the user before proceeding**, and treat the `exit 1` disk block as a hard stop — **do not auto-retry with `--force`** (that flag means "I accept the risk," not "retry harder").
+
 > **Don't know your agent ID or workspace path?**
 > Run `openclaw agents list` — it shows all agents and their workspace paths.
 

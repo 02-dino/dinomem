@@ -108,6 +108,64 @@ if [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 8 ]; };
 else
   ok "Python $PY_VERSION"
 fi
+# ── System resource check (RAM/CPU warn, disk block-unless-force) ─────────────
+# Minimum spec (inferred from footprint; TEI CPU embed server is the driver):
+#   dinomem base : 2 vCPU / 2 GB RAM / 5 GB free disk
+# RAM/CPU below-min => warn + continue (TEI may OOM under batch load).
+# Disk below hard floor (2 GB) => block unless --force (image pull WILL fail mid-install).
+MIN_RAM_MB=2048
+MIN_CPU=2
+DISK_HARD_MIN_MB=2048   # hard floor: below this the TEI image pull cannot complete
+DISK_REC_MB=5120        # recommended free
+PREFLIGHT_WARN=""       # accumulator: machine-readable below-spec signal for agent-driven installs
+# Total RAM
+if [ "$(uname)" = "Darwin" ]; then
+  TOTAL_RAM_MB=$(( $(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1024 / 1024 ))
+  CPU_COUNT=$(sysctl -n hw.ncpu 2>/dev/null || echo 0)
+  DISK_FREE_MB=$(df -m "$WS" 2>/dev/null | awk 'NR==2{print $4}')
+else
+  TOTAL_RAM_MB=$(( $(awk '/MemTotal/{print $2}' /proc/meminfo 2>/dev/null || echo 0) / 1024 ))
+  CPU_COUNT=$(nproc 2>/dev/null || echo 0)
+  DISK_FREE_MB=$(df -m "$WS" 2>/dev/null | awk 'NR==2{print $4}')
+fi
+[ -z "$DISK_FREE_MB" ] && DISK_FREE_MB=0
+# RAM (warn only)
+if [ "$TOTAL_RAM_MB" -gt 0 ] && [ "$TOTAL_RAM_MB" -lt "$MIN_RAM_MB" ]; then
+  warn "RAM ${TOTAL_RAM_MB}MB is below recommended ${MIN_RAM_MB}MB — TEI embed server may OOM under batch load. Continuing."
+  PREFLIGHT_WARN="${PREFLIGHT_WARN}ram=${TOTAL_RAM_MB}MB<${MIN_RAM_MB}MB "
+elif [ "$TOTAL_RAM_MB" -gt 0 ]; then
+  ok "RAM ${TOTAL_RAM_MB}MB"
+else
+  warn "Could not detect RAM — ensure >= ${MIN_RAM_MB}MB before running TEI."
+fi
+# CPU (warn only)
+if [ "$CPU_COUNT" -gt 0 ] && [ "$CPU_COUNT" -lt "$MIN_CPU" ]; then
+  warn "CPU ${CPU_COUNT} core(s) is below recommended ${MIN_CPU} — embedding will be slow. Continuing."
+  PREFLIGHT_WARN="${PREFLIGHT_WARN}cpu=${CPU_COUNT}<${MIN_CPU} "
+elif [ "$CPU_COUNT" -gt 0 ]; then
+  ok "CPU ${CPU_COUNT} core(s)"
+fi
+# Disk (block unless --force below hard floor; warn between hard floor and recommended)
+if [ "$DISK_FREE_MB" -lt "$DISK_HARD_MIN_MB" ]; then
+  if [ "$FORCE" = 1 ]; then
+    warn "Free disk ${DISK_FREE_MB}MB is below hard floor ${DISK_HARD_MIN_MB}MB — --force set, continuing anyway (TEI image pull may fail)."
+  else
+    printf 'DINOMEM_PREFLIGHT_BLOCK=disk=%sMB<%sMB\n' "$DISK_FREE_MB" "$DISK_HARD_MIN_MB"
+    fail "Free disk ${DISK_FREE_MB}MB is below hard floor ${DISK_HARD_MIN_MB}MB — TEI image pull will fail mid-install. Free space or re-run with --force. (Agent installers: this exit 1 is a hard stop; report to user, do NOT auto-retry with --force.)"
+  fi
+elif [ "$DISK_FREE_MB" -lt "$DISK_REC_MB" ]; then
+  warn "Free disk ${DISK_FREE_MB}MB is below recommended ${DISK_REC_MB}MB — tight but should fit. Continuing."
+  PREFLIGHT_WARN="${PREFLIGHT_WARN}disk=${DISK_FREE_MB}MB<${DISK_REC_MB}MB "
+else
+  ok "Free disk ${DISK_FREE_MB}MB"
+fi
+# Agent-installer contract: emit a machine-readable, hard-to-skim signal so an
+# automated caller cannot silently blur past below-spec warnings. Humans get the
+# colored [warn] lines above; agents get this token + explicit instruction.
+if [ -n "$PREFLIGHT_WARN" ]; then
+  printf '\033[1;33m[AGENT-NOTICE]\033[0m below-recommended spec detected. If this install is agent-driven, surface this to the user before continuing (do NOT auto-pass --force):\n'
+  printf 'DINOMEM_PREFLIGHT_WARN=%s\n' "$PREFLIGHT_WARN"
+fi
 # Workspace writable check
 if [ ! -d "$WS" ]; then
   warn "Workspace '$WS' does not exist — create it first or pass correct --workspace path."
