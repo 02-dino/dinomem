@@ -158,9 +158,6 @@ The installer preflight checks these automatically: **RAM/CPU below minimum → 
 
 **Agent-driven installs.** A warning printed to stdout is easy for an automated caller to skim past, so the preflight also emits machine-readable signals: `DINOMEM_PREFLIGHT_WARN=...` (below-recommended RAM/CPU/disk, continues) and `DINOMEM_PREFLIGHT_BLOCK=...` alongside `exit 1` (disk hard floor). An agent running the installer should **surface any `[AGENT-NOTICE]` / `PREFLIGHT_WARN` to the user before proceeding**, and treat the `exit 1` disk block as a hard stop — **do not auto-retry with `--force`** (that flag means "I accept the risk," not "retry harder").
 
-> **Don't know your agent ID or workspace path?**
-> Run `openclaw agents list` — it shows all agents and their workspace paths.
-
 ### Token usage
 
 dinomem's only recurring cost is LLM tokens. Estimated tokens/month (input+output), grounded in the actual batch caps:
@@ -188,6 +185,9 @@ openclaw gateway restart
 ```
 
 That's it. The installer handles Docker, cron, config patches, and AGENTS.md wiring.
+
+> **Don't know your agent ID or workspace path?**
+> Run `openclaw agents list` — it shows all agents and their workspace paths.
 
 ---
 
