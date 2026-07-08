@@ -253,7 +253,8 @@ Instructions:
 
 
 # ── Embedding pre-filter ─────────────────────────────────────────────────────
-TEI_URL = "http://localhost:8080/v1/embeddings"
+# Override with DINOMEM_EMBED_URL for a remote / non-Docker TEI-compatible server.
+TEI_URL = os.environ.get("DINOMEM_EMBED_URL", "http://localhost:8080/v1/embeddings")
 # Cosine similarity threshold — files above this are "similar enough" to need conflict check
 PREFILTER_SIM_THRESHOLD = 0.82
 

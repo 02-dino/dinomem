@@ -864,7 +864,8 @@ def _get_tei_embedding(text):
     try:
         import urllib.request as _ur
         payload = json.dumps({"input": [text], "model": ""}).encode()
-        req = _ur.Request("http://localhost:8080/v1/embeddings", data=payload,
+        _embed_url = os.environ.get("DINOMEM_EMBED_URL", "http://localhost:8080/v1/embeddings")
+        req = _ur.Request(_embed_url, data=payload,
                           headers={"Content-Type": "application/json"}, method="POST")
         with _ur.urlopen(req, timeout=8) as resp:
             data = json.loads(resp.read())

@@ -86,7 +86,10 @@ def _resolve_max_index_chars(default_cap: int = 20000, floor: int = 18000) -> in
         return floor
 
 MAX_INDEX_CHARS = _resolve_max_index_chars()  # 90% of LIVE bootstrapMaxChars (>=18000 floor)
-TEI_URL = "http://localhost:8080/v1/embeddings"
+# Embedding endpoint. Defaults to the local TEI server (Docker). Override with
+# DINOMEM_EMBED_URL to point at a remote / non-Docker TEI-compatible server
+# (this is what makes install.sh --no-docker usable for non-local embed servers).
+TEI_URL = os.environ.get("DINOMEM_EMBED_URL", "http://localhost:8080/v1/embeddings")
 ALL_ITEM_TAGS = r'\[factual\]|\[pattern\]|\[operational\]|\[decision\]|\[correction\]|\[preference\]|\[uncertain\]|\[lesson\]|\[prediction\]'
 # Bare daily files (memory/YYYY-MM-DD.md) are written by OpenClaw memoryFlush
 # solely to feed startupContext. They are flush-owned, untagged prose, and

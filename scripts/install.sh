@@ -9,8 +9,17 @@
 # Options:
 #   --workspace DIR   Path to agent workspace (default: $OPENCLAW_WORKSPACE or ~/.openclaw/workspace)
 #   --agent-id ID     OpenClaw agent ID (default: detected from workspace name)
-#   --no-docker       Skip TEI Docker setup
-#   --no-cron         Skip crontab registration
+#   --no-docker       ADVANCED. Skip the TEI Docker embed server. ONLY valid if you
+#                     already serve a TEI-compatible /v1/embeddings endpoint yourself
+#                     (native binary, remote host, other container). Point the engine
+#                     at it with DINOMEM_EMBED_URL=<url> (default http://localhost:8080
+#                     /v1/embeddings). Without an embed server, memory extraction/review
+#                     cannot embed and the engine is non-functional.
+#   --no-cron         ADVANCED. Skip crontab registration. Cron is what DRIVES dinomem
+#                     (extraction, review, cleanup, session reset all run as cron jobs).
+#                     A fresh install with --no-cron copies files but NEVER RUNS itself.
+#                     Use only for (1) re-runs/upgrades where crons already exist, or
+#                     (2) wiring the jobs via your own scheduler (systemd timers, etc.).
 #   --no-backup-cron  Skip weekly backup cron (if you have your own backup system)
 #   --no-smart-cache  Skip bundling the smart-cache-pro (compression-only) plugin
 #   --force           Overwrite existing files
@@ -355,8 +364,18 @@ upsert_cron() {
 if [ "$DO_CRON" = 1 ]; then
   hr "Cron jobs"
 
+  # Env prefix threaded into the embed-consuming crons so a remote/non-Docker
+  # embedding endpoint set at install time (DINOMEM_EMBED_URL) actually reaches
+  # cron-run scripts (crond does not inherit your interactive shell env).
+  # Empty when unset → no change (default localhost:8080 baked into the scripts).
+  EMBED_ENV=""
+  if [ -n "${DINOMEM_EMBED_URL:-}" ]; then
+    EMBED_ENV="DINOMEM_EMBED_URL=$DINOMEM_EMBED_URL "
+    ok "cron embed endpoint: $DINOMEM_EMBED_URL"
+  fi
+
   # auto_session_reset — every 15 min (orchestrates session archive + memory extraction)
-  RESET_CRON="*/15 * * * * cd $WS && python3 procedures/auto_session_reset.py >> logs/auto_reset.log 2>&1"
+  RESET_CRON="*/15 * * * * cd $WS && ${EMBED_ENV}python3 procedures/auto_session_reset.py >> logs/auto_reset.log 2>&1"
   upsert_cron "auto_session_reset.py" "dinomem: auto session reset + memory extraction" "$RESET_CRON" "auto_session_reset cron (every 15 min)"
 
   # workspace_backup — weekly Sunday at 2:00 UTC (snapshot of memory + config files)
@@ -368,11 +387,11 @@ if [ "$DO_CRON" = 1 ]; then
   fi
 
   # memory_cleanup — daily at 5:00 UTC
-  CLEANUP_CRON="0 5 * * * cd $WS && python3 procedures/memory_cleanup.py >> logs/memory_cleanup.log 2>&1"
+  CLEANUP_CRON="0 5 * * * cd $WS && ${EMBED_ENV}python3 procedures/memory_cleanup.py >> logs/memory_cleanup.log 2>&1"
   upsert_cron "memory_cleanup.py" "dinomem: daily memory deduplication" "$CLEANUP_CRON" "memory_cleanup cron (daily 5:00 UTC)"
 
   # memory_review — daily at 5:30 UTC (batched, full cycle ~7 days)
-  REVIEW_CRON="30 5 * * * cd $WS && python3 procedures/memory_review.py >> logs/memory_review.log 2>&1"
+  REVIEW_CRON="30 5 * * * cd $WS && ${EMBED_ENV}python3 procedures/memory_review.py >> logs/memory_review.log 2>&1"
   upsert_cron "memory_review.py" "dinomem: daily batched memory review (LLM)" "$REVIEW_CRON" "memory_review cron (daily 5:30 UTC, batched)"
 
   # cleanup_startup_daily — daily at 2:05 UTC. Prunes bare YYYY-MM-DD.md files
