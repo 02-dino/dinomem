@@ -4,7 +4,7 @@
 # Idempotent: safe to run multiple times.
 #
 # Usage:
-#   bash scripts/install.sh [--workspace DIR] [--agent-id ID] [--no-docker] [--no-cron] [--no-backup-cron] [--force] [--dry-run]
+#   bash scripts/install.sh [--workspace DIR] [--agent-id ID] [--no-docker] [--no-cron] [--no-backup-cron] [--no-smart-cache] [--force] [--dry-run]
 #
 # Options:
 #   --workspace DIR   Path to agent workspace (default: $OPENCLAW_WORKSPACE or ~/.openclaw/workspace)
@@ -12,6 +12,7 @@
 #   --no-docker       Skip TEI Docker setup
 #   --no-cron         Skip crontab registration
 #   --no-backup-cron  Skip weekly backup cron (if you have your own backup system)
+#   --no-smart-cache  Skip bundling the smart-cache-pro (compression-only) plugin
 #   --force           Overwrite existing files
 #   --dry-run         Preview every change without writing anything (no files,
 #                     no crons, no Docker, no config patch). Idempotency-aware:
@@ -24,8 +25,13 @@ AGENT_ID=""
 DO_DOCKER=1
 DO_CRON=1
 DO_BACKUP_CRON=1
+DO_SMART_CACHE=1
 FORCE=0
 DRY_RUN=0
+
+# smart-cache-pro (compression-only) — bundled token-discipline plugin. Overridable.
+SMART_CACHE_REPO="${SMART_CACHE_REPO:-https://github.com/02-dino/smart-cache-pro}"
+SMART_CACHE_BRANCH="${SMART_CACHE_BRANCH:-feat/compression-only-generalized}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -34,6 +40,7 @@ while [ $# -gt 0 ]; do
     --no-docker)  DO_DOCKER=0; shift ;;
     --no-cron)         DO_CRON=0; shift ;;
     --no-backup-cron)  DO_BACKUP_CRON=0; shift ;;
+    --no-smart-cache)  DO_SMART_CACHE=0; shift ;;
     --force)      FORCE=1; shift ;;
     --dry-run)    DRY_RUN=1; shift ;;
     -h|--help)    grep -E '^#( |$)' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -748,7 +755,84 @@ else:
 PYEOF
 fi
 
-# ── 6) Wire AGENTS.md ─────────────────────────────────────────────────────────
+# ── 5b) smart-cache-pro (compression-only) plugin ────────────────────────────
+# Bundle the token-discipline plugin: it compresses verbose tool output before it
+# enters context (tee'd full output to disk, nothing lost). Cloned next to the
+# workspace and wired into openclaw.json via plugins.load.paths + plugins.entries.
+# Force-installed: re-clone/pull + overwrite the entry every run (idempotent).
+# Skip with --no-smart-cache. Self-cleaning on disk; does not touch OpenClaw memory DB.
+if [ "$DO_SMART_CACHE" = 1 ]; then
+  hr "smart-cache-pro plugin (compression-only)"
+  SC_DIR="$OPENCLAW_DIR/smart-cache-pro"
+  if ! command -v git >/dev/null 2>&1; then
+    warn "git not found — skipping smart-cache-pro (install git or re-run with --no-smart-cache)"
+  elif [ "$DRY_RUN" = 1 ]; then
+    if [ -d "$SC_DIR/.git" ]; then
+      plan "git -C $SC_DIR fetch + reset to origin/$SMART_CACHE_BRANCH (force-refresh)"
+    else
+      plan "git clone -b $SMART_CACHE_BRANCH $SMART_CACHE_REPO -> $SC_DIR"
+    fi
+    plan "wire plugins.load.paths += $SC_DIR and plugins.entries['smart-cache-pro'].enabled=true in $OPENCLAW_JSON"
+  else
+    # Clone (or force-refresh) the pinned branch.
+    if [ -d "$SC_DIR/.git" ]; then
+      if git -C "$SC_DIR" fetch --depth 1 origin "$SMART_CACHE_BRANCH" >/dev/null 2>&1 \
+         && git -C "$SC_DIR" reset --hard "origin/$SMART_CACHE_BRANCH" >/dev/null 2>&1; then
+        ok "smart-cache-pro refreshed to origin/$SMART_CACHE_BRANCH"
+      else
+        warn "could not refresh $SC_DIR — using existing checkout"
+      fi
+    elif [ -e "$SC_DIR" ]; then
+      warn "$SC_DIR exists but is not a git repo — using as-is"
+    else
+      if git clone --depth 1 -b "$SMART_CACHE_BRANCH" "$SMART_CACHE_REPO" "$SC_DIR" >/dev/null 2>&1; then
+        ok "cloned smart-cache-pro ($SMART_CACHE_BRANCH) -> $SC_DIR"
+      else
+        warn "git clone failed ($SMART_CACHE_REPO @ $SMART_CACHE_BRANCH) — skipping plugin wiring"
+        SC_DIR=""
+      fi
+    fi
+    # Wire into openclaw.json (add-if-absent load.paths + enabled entry). Idempotent.
+    if [ -n "$SC_DIR" ] && [ -f "$OPENCLAW_JSON" ]; then
+      python3 - "$OPENCLAW_JSON" "$SC_DIR" <<'PYEOF'
+import json, sys
+path, sc_dir = sys.argv[1], sys.argv[2]
+with open(path) as f:
+    cfg = json.load(f)
+plugins = cfg.setdefault("plugins", {})
+load = plugins.setdefault("load", {})
+paths = load.get("paths")
+if not isinstance(paths, list):
+    paths = []
+changed = []
+if sc_dir not in paths:
+    paths.append(sc_dir); changed.append("plugins.load.paths += smart-cache-pro")
+load["paths"] = sorted(set(paths))            # de-dupe defensively
+entries = plugins.setdefault("entries", {})
+ent = entries.get("smart-cache-pro")
+if not isinstance(ent, dict):
+    entries["smart-cache-pro"] = {"enabled": True}; changed.append("plugins.entries['smart-cache-pro'] created")
+elif ent.get("enabled") is not True:
+    ent["enabled"] = True; changed.append("plugins.entries['smart-cache-pro'].enabled=true")
+# If an allowlist is in use, add the id (membership-based, harmless if absent).
+allow = plugins.get("allow")
+if isinstance(allow, list) and "smart-cache-pro" not in allow:
+    allow.append("smart-cache-pro"); changed.append("plugins.allow += smart-cache-pro")
+with open(path, "w") as f:
+    json.dump(cfg, f, indent=2)
+if changed:
+    for c in changed: print(f"  \033[32m[ok]\033[0m   {c}")
+else:
+    print("  \033[33m[skip]\033[0m smart-cache-pro already wired in openclaw.json")
+PYEOF
+      warn "Restart OpenClaw to load smart-cache-pro: openclaw gateway restart"
+    elif [ -n "$SC_DIR" ]; then
+      warn "openclaw.json not found at $OPENCLAW_JSON — clone done but plugin not wired"
+    fi
+  fi
+fi
+
+# ── 6) Wire AGENTS.md ──────────────────────────────────────────────
 hr "AGENTS.md"
 AGENTS="$WS/AGENTS.md"
 if [ -f "$AGENTS" ] && [ "$DRY_RUN" != 1 ]; then

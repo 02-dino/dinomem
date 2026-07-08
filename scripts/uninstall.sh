@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # dinomem — uninstall script
-# Removes: cron jobs, AGENTS.md block, openclaw.json patches, TEI Docker container.
+# Removes: cron jobs, AGENTS.md block, openclaw.json patches, smart-cache-pro plugin
+# wiring, TEI Docker container.
 # Does NOT delete memory data unless --purge-data or --purge-memory is passed.
+# --purge also removes the smart-cache-pro clone dir (and its tee/ledger cache).
 #
 # Usage:
 #   bash scripts/uninstall.sh --workspace DIR --agent-id ID
@@ -159,6 +161,54 @@ PYEOF
   ok "openclaw.json reverted"
 else
   skip "openclaw.json not found at $CONFIG"
+fi
+
+# ── smart-cache-pro plugin ────────────────────────────────────────────
+# Symmetric with install: unwire the bundled compression plugin from openclaw.json.
+# Clone dir + its tee/ledger cache are left unless --purge (below).
+hr "smart-cache-pro plugin"
+SC_DIR="$OPENCLAW_DIR/smart-cache-pro"
+if [ -f "$CONFIG" ]; then
+  python3 - "$CONFIG" "$SC_DIR" <<'PYEOF'
+import json, sys
+path, sc_dir = sys.argv[1], sys.argv[2]
+try:
+    with open(path) as f:
+        cfg = json.load(f)
+except Exception as e:
+    print(f"  \033[33m[warn]\033[0m could not read openclaw.json: {e}"); sys.exit(0)
+plugins = cfg.get("plugins", {})
+changed = []
+load = plugins.get("load", {})
+paths = load.get("paths")
+if isinstance(paths, list) and sc_dir in paths:
+    load["paths"] = [p for p in paths if p != sc_dir]
+    changed.append("plugins.load.paths")
+entries = plugins.get("entries", {})
+if isinstance(entries, dict) and "smart-cache-pro" in entries:
+    del entries["smart-cache-pro"]; changed.append("plugins.entries['smart-cache-pro']")
+allow = plugins.get("allow")
+if isinstance(allow, list) and "smart-cache-pro" in allow:
+    plugins["allow"] = [a for a in allow if a != "smart-cache-pro"]; changed.append("plugins.allow")
+if changed:
+    with open(path, "w") as f:
+        json.dump(cfg, f, indent=2)
+    print("  reverted: " + ", ".join(changed))
+else:
+    print("  nothing to revert (smart-cache-pro not wired)")
+PYEOF
+  ok "smart-cache-pro unwired from openclaw.json"
+else
+  skip "openclaw.json not found — smart-cache-pro not unwired"
+fi
+if [ "$PURGE" = 1 ]; then
+  if [ -d "$SC_DIR" ]; then
+    rm -rf "$SC_DIR" && ok "removed smart-cache-pro clone: $SC_DIR"
+  else
+    skip "smart-cache-pro clone dir not found"
+  fi
+elif [ -d "$SC_DIR" ]; then
+  warn "smart-cache-pro clone left at $SC_DIR (use --purge to remove)"
 fi
 
 # ── TEI Docker ────────────────────────────────────────────────────────────────
