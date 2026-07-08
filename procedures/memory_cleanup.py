@@ -187,14 +187,38 @@ def semantic_dedup_items(items):
     removed = len(items) - len(result)
     return result, removed
 
+# Frozen marker (must match memory_review.py / memory_retention.py). A frozen
+# file has graduated (all entries [valid] survived every review bucket) and is
+# immortal — semantic dedup MUST NOT drop its entries in favor of a lower-value
+# twin. We exclude frozen files from dedup entirely (self-contained + safe).
+FROZEN_MARKER = "<!-- frozen: true -->"
+
+def is_frozen(filepath):
+    """Frozen if the first non-empty line is the frozen marker."""
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            for line in f:
+                s = line.strip()
+                if not s:
+                    continue
+                return s == FROZEN_MARKER
+    except Exception:
+        return False
+    return False
+
 def extract_all_items(md_files):
     """
     Extract all tagged items across all memory files.
     Returns list of (file_path, line_index, raw_line, item_text).
+
+    Frozen files are skipped: their entries are immortal keepers and must never
+    be dropped as a near-twin of a non-frozen (lower-value) item.
     """
     all_items = []
     item_pattern = re.compile(r'^\s*-\s*(' + ALL_ITEM_TAGS + r')\s*(.+?)$')
     for md_file in md_files:
+        if is_frozen(md_file):
+            continue
         lines = md_file.read_text(encoding='utf-8').split('\n')
         for i, line in enumerate(lines):
             m = item_pattern.match(line)

@@ -71,6 +71,52 @@ AGE_BUCKETS = [
     (120, "review"),
 ]
 
+# Terminal review bucket. Surviving this bucket with an all-[valid] verdict
+# graduates a file to FROZEN (immortal, no more scheduled review). This bounds
+# per-entry review cost to its first ~120 days regardless of archive size.
+TERMINAL_BUCKET = 120
+
+# Inline frozen marker. Lives as the first line of the file (self-contained,
+# survives file moves, greppable by the deterministic deleter — no sidecar
+# desync risk). A frozen file is skipped by scheduled review forever; only
+# semantic dedup / manual edits can still touch it (frozen != _pin_).
+FROZEN_MARKER = "<!-- frozen: true -->"
+
+# Per-entry verdict tag prefixes the review writes at line start.
+VERDICT_TAGS = ("[valid]", "[invalidated]", "[uncertain]", "[noise]")
+
+
+def is_frozen(filepath):
+    """A file is frozen if its first non-empty line is the FROZEN_MARKER."""
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            for line in f:
+                s = line.strip()
+                if not s:
+                    continue
+                return s == FROZEN_MARKER
+    except Exception:
+        return False
+    return False
+
+
+def all_entries_valid(reviewed_text):
+    """True if every verdict-tagged entry in the reviewed output is [valid].
+
+    Only lines that carry a verdict tag are considered (blank lines, headers,
+    and untagged prose are ignored). Returns False if there are zero tagged
+    entries (nothing to graduate on)."""
+    saw_tagged = False
+    for raw in reviewed_text.splitlines():
+        s = raw.strip().lstrip("-").strip()
+        for tag in VERDICT_TAGS:
+            if s.startswith(tag):
+                saw_tagged = True
+                if tag != "[valid]":
+                    return False
+                break
+    return saw_tagged
+
 
 def load_tracker():
     if REVIEW_TRACKER.exists():
@@ -328,9 +374,15 @@ def review():
     files_failed = 0
     all_changes = []
 
+    files_frozen = 0
+
     for filepath in ordered_files:
         age = get_file_age(filepath)
         if age is None:
+            continue
+
+        # FROZEN files graduated out of scheduled review — skip forever.
+        if is_frozen(filepath):
             continue
 
         file_key = str(filepath)
@@ -373,14 +425,31 @@ def review():
             save_tracker(tracker)
             continue
 
+        # GRADUATION: at the terminal bucket, if the file survived with an
+        # all-[valid] verdict, freeze it (prepend the inline marker). Frozen
+        # files are immortal to scheduled review; the deterministic deleter
+        # (memory_retention.py) also honors the marker and never age-deletes
+        # them. Cost is thus bounded to each entry's first ~120 days.
+        graduate = (
+            applicable_bucket >= TERMINAL_BUCKET
+            and all_entries_valid(llm_output)
+        )
+
         # Write reviewed content
         try:
+            body = llm_output.strip() + "\n"
+            if graduate:
+                body = FROZEN_MARKER + "\n" + body
             with open(filepath, "w", encoding="utf-8") as f:
-                f.write(llm_output.strip() + "\n")
+                f.write(body)
             files_reviewed += 1
             tracker[file_key] = applicable_bucket
             save_tracker(tracker)
-            all_changes.append(f"REVIEWED: {filepath.name} (age {age}d)")
+            if graduate:
+                files_frozen += 1
+                all_changes.append(f"FROZEN: {filepath.name} (age {age}d, all [valid] @ {applicable_bucket}d — graduated, immortal)")
+            else:
+                all_changes.append(f"REVIEWED: {filepath.name} (age {age}d)")
         except Exception as e:
             all_changes.append(f"WRITE_ERROR: {filepath.name}: {e}")
 
@@ -390,6 +459,7 @@ def review():
 === MEMORY REVIEW REPORT ({today_display}) ===
 
 Files reviewed: {files_reviewed}
+Files frozen (graduated): {files_frozen}
 Files redundant/noise: {files_redundant}
 Files failed: {files_failed}
 
