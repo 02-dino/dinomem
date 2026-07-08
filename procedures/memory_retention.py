@@ -68,6 +68,12 @@ VERDICT_TAGS = ("[valid]", "[invalidated]", "[uncertain]", "[noise]")
 _ENTRY_RE = re.compile(r"^\s*-?\s*(\[valid\]|\[invalidated\]|\[uncertain\]|\[noise\])")
 _UNTAGGED_ENTRY_RE = re.compile(r"^\s*-\s+\S")
 
+# Frontmatter verdict seed (e.g. the done-note distiller stamps `verdict: valid`
+# on a freshly-distilled entry so this deleter does not kill it as no-verdict
+# before its first review bucket). A file carrying `verdict: valid` in its
+# frontmatter is treated as valid-bearing and never unlinked.
+_FRONTMATTER_VALID_RE = re.compile(r"^\s*verdict:\s*valid\s*$", re.IGNORECASE)
+
 
 def is_frozen(filepath: Path) -> bool:
     """Frozen if the first non-empty line is the frozen marker."""
@@ -116,6 +122,11 @@ def prune_file(filepath: Path, dry_run: bool = False):
         return {"action": "skip", "error": str(e), "removed_entries": 0, "kept_entries": 0}
 
     lines = text.split("\n")
+
+    # Frontmatter verdict seed protects the whole file (valid-bearing).
+    if any(_FRONTMATTER_VALID_RE.match(ln) for ln in lines[:15]):
+        return {"action": "keep", "removed_entries": 0, "kept_entries": 1}
+
     kept_lines = []
     valid_count = 0
     removed_entries = 0
