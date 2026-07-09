@@ -262,6 +262,12 @@ def get_embeddings_for_files(filepaths):
     """
     Get TEI embeddings for a list of files.
     Returns dict {filepath: vector} or None if TEI unavailable.
+
+    Intentionally unprefixed/symmetric: this is a file<->file similarity pre-filter
+    for conflict detection, not asymmetric query->doc retrieval, so no query:/passage:
+    prefix is applied here -- not a bug. (The DINOMEM_EMBED_PREFIX asymmetric-prefixing
+    convention exists for retrieval callsites elsewhere, e.g. dinomem-neuron's
+    tools/_embed.py.)
     """
     if not filepaths:
         return {}

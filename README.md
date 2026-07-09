@@ -312,6 +312,14 @@ See [docs/TUNING.md](docs/TUNING.md)
 
 ## Troubleshooting
 
+**Quick health check**
+```bash
+bash scripts/doctor.sh
+# Checks TEI /health + /info, reports model_id + max_input_length.
+# Exit 0 = healthy, exit 1 = unreachable/unhealthy (prints likely cause).
+# Use --url to point at a non-default endpoint, --quiet for scripting.
+```
+
 **TEI server won't start**
 ```bash
 docker logs tei-embed

@@ -9,6 +9,14 @@ Multilingual embeddings by default. **Recommended for anyone whose notes/queries
 - **New/first installs get multilingual retrieval out of the box; no per-user rebuild** (fresh installs embed against e5 from the start). Existing installs that were already using all-MiniLM would need to re-embed to benefit — not automated here. To pin the old model, set `--model-id sentence-transformers/all-MiniLM-L6-v2` in the compose/run command.
 - **Fix: removed `--max-input-length` flag** (added in an earlier draft of this change, never released) — TEI 1.6.1's CLI does not accept it (`error: unexpected argument '--max-input-length' found`, confirmed against a live container). Not needed: TEI derives the model's real max length (512 for e5-small) from the model config automatically — confirmed via `/info` on a running cpu-1.6 container serving e5-small.
 
+### Added
+- **`scripts/doctor.sh` — TEI embed-server health check.** Curls the TEI server (`/health` + a real embed round-trip), reports OK/unhealthy with basic model info, and prints actionable hints (container not running, wrong image tag, model still downloading). Wired into `install.sh` so a fresh install self-verifies the embedding server the memory pipeline depends on.
+
+### Docs
+- **TEI troubleshooting (FAQ.md):** the `cpu-1.5` "relative URL without a base" model-download bug (use `cpu-1.6`), and the `--max-input-length` crash-loop on TEI 1.6.1 (flag removed; TEI derives max length from the model config — 512 for e5-small).
+- **Protected-config CLI-writer workaround (FAQ.md):** some `openclaw.json` paths (e.g. `models.providers.*.models`, `agents.defaults.memorySearch.model`) are protected from the gateway `config.patch`/`config.apply` RPC; use the `openclaw config set ... --strict-json --replace` CLI writer instead of a raw file edit.
+- **Symmetric-embed intent** documented inline in `extract_memory.py` / `memory_cleanup.py` / `memory_review.py`: these raw-embed procedures are intentionally unprefixed/symmetric (dedup/similarity, not asymmetric query→doc retrieval), with a pointer to the `DINOMEM_EMBED_PREFIX` convention used at retrieval callsites.
+
 ## 1.2.12
 
 0-delay memory extraction on manual `/new` / `/reset` via an internal hook. **Recommended for all users** — closes the residual ≤15-min post-reset memory-blindness window introduced in 1.2.11.

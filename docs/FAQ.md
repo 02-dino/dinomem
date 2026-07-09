@@ -43,3 +43,16 @@ Two layers: (1) the extraction prompt instructs the LLM to tag uncertain items a
 **How are conflicting memories resolved?**
 `contradiction_check.py` runs before every write and checks new items against existing memory. Conflicts are flagged. Daily batched `memory_review.py` resolves them — keeping the more recent or better-evidenced item.
 
+**TEI won't download my embedding model — "relative URL without a base" error?**
+This is a known bug in the TEI `cpu-1.5` image when fetching certain models (e.g. `intfloat/multilingual-e5-small`) — it fails on `config.json` with a "relative URL without a base" error. This is a TEI image issue, not a model or network problem. Workaround: use the `cpu-1.6` image tag instead (set in `docker/docker-compose.tei.yml` or your `docker run` command). `cpu-1.6` serves the same models cleanly.
+
+**How do I set `max-input-length` for a custom embedding model?**
+As of TEI `1.6.1`, `--max-input-length` is not a valid CLI flag — passing it will crash-loop the container. TEI auto-derives `max_input_length` from the model's own config instead (e.g. 512 for `intfloat/multilingual-e5-small`, vs 256 for the default `all-MiniLM-L6-v2`). If you swap in a custom model, do not pass `--max-input-length` manually — check the model's `/info` endpoint after startup to confirm the derived value.
+
+**`openclaw config patch` (RPC) rejects my config change with a "protected path" error — how do I still set it?**
+Some `openclaw.json` paths (e.g. `models.providers.<id>.models`, `agents.defaults.memorySearch.model`) are protected from the gateway's `config.patch`/`config.apply` RPC to prevent accidental corruption via raw edits. This is intentional — do not try to bypass it with a raw file edit. Use the OpenClaw CLI writer instead, which is allowed to touch these paths directly:
+```bash
+openclaw config set <dot.path> <value> --strict-json --replace
+```
+Example (matches what dinomem's own migration used): `openclaw config set agents.defaults.memorySearch.model '"intfloat/multilingual-e5-small"' --strict-json --replace`. Run `openclaw config validate` afterward to confirm the file is still valid, then `openclaw gateway restart` to apply.
+

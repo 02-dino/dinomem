@@ -122,7 +122,14 @@ def is_duplicate(text, seen_facts):
 
 # ── Semantic Dedup via TEI ────────────────────────────────────────────────────────────
 def get_embeddings(texts):
-    """Get embeddings from TEI. Returns list of vectors or None if unavailable."""
+    """Get embeddings from TEI. Returns list of vectors or None if unavailable.
+
+    Intentionally unprefixed/symmetric: this is item<->item similarity clustering
+    for dedup, not asymmetric query->doc retrieval, so no query:/passage: prefix is
+    applied here -- not a bug. (The DINOMEM_EMBED_PREFIX asymmetric-prefixing
+    convention exists for retrieval callsites elsewhere, e.g. dinomem-neuron's
+    tools/_embed.py.)
+    """
     try:
         payload = json.dumps({"input": texts, "model": ""}).encode()
         req = urllib.request.Request(TEI_URL, data=payload,

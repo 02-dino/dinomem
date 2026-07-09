@@ -860,7 +860,14 @@ def _strip_meta_tags(text):
     return re.sub(r'\s*\[(ctx|expires):[^\]]*\]', '', text).strip()
 
 def _get_tei_embedding(text):
-    """Get single embedding from TEI. Returns vector or None."""
+    """Get single embedding from TEI. Returns vector or None.
+
+    Intentionally unprefixed/symmetric: this is a dedup/similarity comparison
+    (memory item vs memory item), not asymmetric query->doc retrieval, so no
+    query:/passage: prefix is applied here -- not a bug. (The DINOMEM_EMBED_PREFIX
+    asymmetric-prefixing convention exists for retrieval callsites elsewhere, e.g.
+    dinomem-neuron's tools/_embed.py.)
+    """
     try:
         import urllib.request as _ur
         payload = json.dumps({"input": [text], "model": ""}).encode()
