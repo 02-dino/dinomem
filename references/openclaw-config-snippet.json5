@@ -21,7 +21,7 @@
         api: "openai",
         baseUrl: "http://localhost:8080/v1",
         apiKey: "dummy",  // TEI does not require auth
-        models: [{ id: "sentence-transformers/all-MiniLM-L6-v2" }],
+        models: [{ id: "intfloat/multilingual-e5-small" }],
       },
     },
   },
@@ -89,7 +89,7 @@
       // Memory search via local TEI embedding server
       memorySearch: {
         provider: "openai-compatible",
-        model: "sentence-transformers/all-MiniLM-L6-v2",
+        model: "intfloat/multilingual-e5-small",
         remote: {
           baseUrl: "http://localhost:8080/v1",
         },

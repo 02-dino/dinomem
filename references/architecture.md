@@ -30,7 +30,7 @@ clean successor file (summary + unsummarized tail only).
 
 ## Vector DB (TEI)
 
-dinomem uses [Text Embeddings Inference](https://github.com/huggingface/text-embeddings-inference) with `sentence-transformers/all-MiniLM-L6-v2`:
+dinomem uses [Text Embeddings Inference](https://github.com/huggingface/text-embeddings-inference) with `intfloat/multilingual-e5-small` (multilingual, 384-dim, 512-token context):
 
 - Runs locally via Docker on port 8080
 - OpenAI-compatible API (`/v1/embeddings`)

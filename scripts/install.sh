@@ -333,7 +333,7 @@ if [ "$DO_DOCKER" = 1 ]; then
         run "docker run tei-embed (TEI embed server on :8080)" docker run -d --name tei-embed --restart unless-stopped \
           -p 8080:80 \
           ghcr.io/huggingface/text-embeddings-inference:cpu-1.6 \
-          --model-id sentence-transformers/all-MiniLM-L6-v2 --auto-truncate
+          --model-id intfloat/multilingual-e5-small --max-input-length 512 --auto-truncate
         [ "$DRY_RUN" = 1 ] || ok "TEI container started on port 8080 (docker run)"
       fi
     fi
@@ -682,7 +682,7 @@ if existing_provider and existing_provider not in (None, "openai-compatible", "b
 elif mem_search.get("provider") != "openai-compatible":
     defaults["memorySearch"] = {
         "provider": "openai-compatible",
-        "model": "sentence-transformers/all-MiniLM-L6-v2",
+        "model": "intfloat/multilingual-e5-small",
         "remote": {"baseUrl": "http://localhost:8080/v1"},
         "query": {"hybrid": {"vectorWeight": 0.7, "textWeight": 0.3}},
     }
@@ -720,7 +720,7 @@ if "tei-embed" not in providers:
         "api": "openai-completions",
         "baseUrl": "http://localhost:8080/v1",
         "apiKey": "dummy",
-        "models": [{"id": "sentence-transformers/all-MiniLM-L6-v2", "name": "sentence-transformers/all-MiniLM-L6-v2"}],
+        "models": [{"id": "intfloat/multilingual-e5-small", "name": "intfloat/multilingual-e5-small"}],
     }
     changed.append("models.providers.tei-embed -> added")
 

@@ -146,7 +146,7 @@ dinomem includes a routing system that detects your intent and writes to the cor
 
 ### Minimum spec
 
-The local TEI embedding server (CPU image, `all-MiniLM-L6-v2`) is the sizing driver.
+The local TEI embedding server (CPU image, `intfloat/multilingual-e5-small`, multilingual EN/ID + majors, 384-dim) is the sizing driver.
 
 | Resource | Minimum | Comfortable |
 | -------- | ------------ | ----------- |

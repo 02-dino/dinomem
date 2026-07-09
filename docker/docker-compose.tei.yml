@@ -2,22 +2,25 @@ version: "3.8"
 
 services:
   tei-embed:
-    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.5
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.6
     ports:
       - "8080:80"
     volumes:
       - /root/.cache/huggingface:/root/.cache/huggingface
     environment:
-      - MODEL_ID=sentence-transformers/all-MiniLM-L6-v2
+      # Multilingual default (EN/ID + majors). Swap this + --model-id below to change models.
+      - MODEL_ID=intfloat/multilingual-e5-small
       - HUGGINGFACE_HUB_CACHE=/root/.cache/huggingface/hub
     command:
       - --model-id
-      - sentence-transformers/all-MiniLM-L6-v2
+      - intfloat/multilingual-e5-small
       - --port
       - "80"
+      - --max-input-length
+      - "512"
       - --auto-truncate
     # GPU support (uncomment if you have nvidia-docker):
-    # image: ghcr.io/huggingface/text-embeddings-inference:1.5
+    # image: ghcr.io/huggingface/text-embeddings-inference:1.6
     # deploy:
     #   resources:
     #     reservations:
