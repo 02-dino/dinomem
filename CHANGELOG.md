@@ -6,7 +6,8 @@ Multilingual embeddings by default. **Recommended for anyone whose notes/queries
 
 ### Changed
 - **Default embedding model → `intfloat/multilingual-e5-small`.** `docker/docker-compose.tei.yml` and `scripts/install.sh` (docker-run fallback + the `openclaw.json` `memorySearch` / `tei-embed` provider patch) now provision e5-small. TEI image bumped **cpu-1.5 → cpu-1.6** (cpu-1.5 fails to download this model — a known image bug; cpu-1.6 serves it cleanly). Added `--max-input-length 512` to use e5's full context. `references/openclaw-config-snippet.json5`, `README.md`, and `references/architecture.md` updated to match.
-- **New/first installs get multilingual retrieval out of the box; no per-user rebuild** (fresh installs embed against e5 from the start). Existing installs that were already using all-MiniLM would need to re-embed to benefit — not automated here. To pin the old model, set `--model-id sentence-transformers/all-MiniLM-L6-v2` (drop `--max-input-length`) in the compose/run command.
+- **New/first installs get multilingual retrieval out of the box; no per-user rebuild** (fresh installs embed against e5 from the start). Existing installs that were already using all-MiniLM would need to re-embed to benefit — not automated here. To pin the old model, set `--model-id sentence-transformers/all-MiniLM-L6-v2` in the compose/run command.
+- **Fix: removed `--max-input-length` flag** (added in an earlier draft of this change, never released) — TEI 1.6.1's CLI does not accept it (`error: unexpected argument '--max-input-length' found`, confirmed against a live container). Not needed: TEI derives the model's real max length (512 for e5-small) from the model config automatically — confirmed via `/info` on a running cpu-1.6 container serving e5-small.
 
 ## 1.2.12
 

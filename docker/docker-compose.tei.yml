@@ -16,8 +16,6 @@ services:
       - intfloat/multilingual-e5-small
       - --port
       - "80"
-      - --max-input-length
-      - "512"
       - --auto-truncate
     # GPU support (uncomment if you have nvidia-docker):
     # image: ghcr.io/huggingface/text-embeddings-inference:1.6

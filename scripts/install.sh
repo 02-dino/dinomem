@@ -333,7 +333,7 @@ if [ "$DO_DOCKER" = 1 ]; then
         run "docker run tei-embed (TEI embed server on :8080)" docker run -d --name tei-embed --restart unless-stopped \
           -p 8080:80 \
           ghcr.io/huggingface/text-embeddings-inference:cpu-1.6 \
-          --model-id intfloat/multilingual-e5-small --max-input-length 512 --auto-truncate
+          --model-id intfloat/multilingual-e5-small --auto-truncate
         [ "$DRY_RUN" = 1 ] || ok "TEI container started on port 8080 (docker run)"
       fi
     fi
