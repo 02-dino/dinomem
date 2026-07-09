@@ -486,6 +486,7 @@ status:           provisional → trusted
 | **Contradiction Resolution** | Prevents conflicting beliefs from becoming permanent knowledge. Conflicts are held back until resolved. |
 | **Knowledge Promotion** | Insights that demonstrate stability over time become persistent knowledge. A single observation is never enough. |
 | **Long-document RAG** | Contracts, books, legal text — stored separately, never pollute memory, searchable via `docs_search` |
+| **Structured data** | Spreadsheets, exports, CSV/JSON/Parquet — exact answers to *how many, which ones, under $X, grouped by* that embeddings can't give, plus forgiving value lookup and "find rows about X" over free-text columns. Stored separately, never pollutes memory, searchable via `data_query` |
 | **Automatic notes** | The agent writes `_note_` files from its own commitments and task follow-ups — not only when you ask |
 | **Project execution** | Large builds become step-by-step plans the agent works through one step at a time across sessions, advancing on its own and pausing for approval on anything risky |
 | **Self-improving closer** | When a project finishes, the agent reviews its own work, makes a safe, behavior-preserving improvement if one helps (or confirms none is needed), then retires the completed note automatically — the workspace cleans up after itself |
