@@ -29,7 +29,7 @@ Most systems inject everything into context, or retrieve blindly. dinomem gives 
 ---
 
 > Want your agent to not just remember, but learn?
-> dinomem-neuron is a separate private repo — not included here. Nightly pattern synthesis, contradiction detection, and behavioral promotion.
+> dinomem-neuron is a separate private repo — not included here. Scheduled pattern synthesis, contradiction detection, and behavioral promotion.
 > [↓ dinomem-neuron](#want-more--dinomem-neuron-private-repo)
 
 ---
@@ -168,7 +168,7 @@ dinomem's only recurring cost is LLM tokens. Estimated tokens/month (input+outpu
 | Moderate — ~8–12/day    | ~5–9M     | ✅ all           |
 | High — ~30+/day         | ~18–30M   | ✅ all           |
 
-**Every base LLM call is no-reasoning bulk** (extraction, review) — so **100% of these tokens are cheap-eligible.** Set [`DINOMEM_CHEAP_MODEL`](#tuning-guide-manual-strongly-recommended) and all of it routes to your cheap high-context model.
+**Every dinomem base LLM call is no-reasoning bulk** (extraction, review) — so **100% of these tokens are cheap-eligible.** Set [`DINOMEM_CHEAP_MODEL`](#tuning-guide-manual-strongly-recommended) and all of it routes to your cheap high-context model.
 
 _Grounding: extract ~26k tok / 3 sessions · review one ~4k-token call/day · order-of-magnitude, scales with sessions/day + corpus size._
 
@@ -300,7 +300,7 @@ The installer automatically patches `~/.openclaw/openclaw.json`:
 | `tools.deny` / `tools.allow` | remove `sessions_spawn` from deny; add to allow if explicit allowlist exists | dinomem-neuron's Project Advancer relies on `sessions_spawn` to delegate bounded sub-tasks. If denied or missing from an explicit allowlist, project execution silently falls back to single-turn inline work and overflows context. install.sh removes it from deny and adds it to allow when an explicit allowlist is present (empty allow = no restriction, no patch needed). |
 | `agents.defaults.timeoutSeconds` / `…subagents.runTimeoutSeconds` | floor of `300`s (5 min) | Heavy multi-step turns and research-then-build steps (especially dinomem-neuron's Project Advancer, which runs long inline steps and spawns sub-agents) can otherwise trip an `LLM request timed out` mid-turn on slower providers. 300s is a deliberate middle ground: enough headroom for a heavy step, short enough that a genuinely hung request still surfaces without an endless wait. **Raise-only** — never lowers a higher value you set. On very slow/self-hosted models (local Ollama, llama.cpp) you may want to raise it further; on fast hosted APIs the floor rarely engages. Provider-level `models.providers.<id>.timeoutSeconds` is left untouched (provider-specific — your call). |
 
-See `references/openclaw-config-snippet.json5` for the full annotated config.
+See [`references/openclaw-config-snippet.json5`](references/openclaw-config-snippet.json5) for the full annotated config.
 
 ## Tuning guide (manual, strongly recommended)
 
