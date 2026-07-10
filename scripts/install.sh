@@ -430,7 +430,7 @@ job = {
     "payload": {
         "kind": "agentTurn",
         "message": "Scan all memory/_note_*.md files in $WS/memory/. Resolve each note (today = current UTC date): 1) task_bound notes (have done_when:): verify the done_when condition against workspace state (file exists, feature shipped). If verified, flip status to done and delete the note (promote to _pin_*.md if it has lasting value). Else leave pending. 2) type:project notes (project executor schema, may be added by neuron): these are normally advanced/closed by the neuron Project Advancer (base does not run it), BUT a project can be finished out-of-band by a human-driven session and left status:in_progress, or parked at a safety-gated final step (git push / external action) that the Advancer is forbidden to run — so it would otherwise orphan here. For any type:project note, verify its done_when the SAME way as task_bound (run the locally-checkable condition; e.g. for a git-push done_when run the rev-parse HEAD==@{u} check). If done_when verifies (and/or all steps are [x]), flip status to done and delete/promote it. If it is in_progress and clearly still has unchecked non-gated steps, leave it for the neuron Advancer (if installed). Do not delete a project whose done_when does not verify. 3) stale_after GC: if a note is still pending/in_progress AND done_when was never met AND today > stale_after (default date+30d, or date+7d for reminder/quick-todo notes), delete it as abandoned. 4) Legacy notes with no schema fields: infer the task from content, delete if clearly resolved, else leave. Leave untouched any fields you do not recognize. Report what resolved, what was GC'd, and what remains.",
-        "timeoutSeconds": 120
+        "timeoutSeconds": 300
     },
     "sessionTarget": "isolated",
     "delivery": {"mode": "none"}
@@ -469,7 +469,7 @@ job = {
     "payload": {
         "kind": "agentTurn",
         "message": "Run: python3 $WS/scripts/check_pending_notes.py\n\nIf exit code is 1 (no output) -> NO_REPLY, stop here, zero LLM cost.\n\nIf exit code is 0 (JSON output) -> for each note in the JSON:\n1. Read the full note file\n2. Evaluate done_when — run any shell command if verifiable, or reason from context\n3. If done -> update status to done in the file, report which ones closed\n4. If not done -> include in reminder summary to user\n\nSend reminder only if there are notes still pending after evaluation. Format: brief list with note title + stale_after date.",
-        "timeoutSeconds": 120
+        "timeoutSeconds": 300
     },
     "sessionTarget": "isolated",
     "delivery": {"mode": "announce"}
