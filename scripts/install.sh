@@ -52,6 +52,7 @@ while [ $# -gt 0 ]; do
     --no-smart-cache)  DO_SMART_CACHE=0; shift ;;
     --force)      FORCE=1; shift ;;
     --dry-run)    DRY_RUN=1; shift ;;
+    --agree)      shift ;;  # no-op: base has no license gate; neuron passes this through after the human accepted the neuron license. Accept+ignore so neuron auto-base install doesn't die on 'unknown arg'.
     -h|--help)    grep -E '^#( |$)' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
@@ -73,6 +74,16 @@ run() {
   else
     "$@"
   fi
+}
+
+# tei_healthy: return 0 if something on :8080 answers TEI's /health (200).
+# Lets us treat an already-running healthy TEI as reusable instead of a hard
+# port collision. TEI serves /health on its listen port; doctor.sh uses the same probe.
+tei_healthy() {
+  local url="http://localhost:${TEI_PORT:-8080}/health"
+  local code
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$url" 2>/dev/null)"
+  [ "$code" = "200" ]
 }
 
 [ -d "$WS" ] || fail "Workspace not found: $WS  (pass --workspace DIR)"
@@ -203,9 +214,14 @@ if [ -f "$OPENCLAW_JSON" ]; then
 else
   warn "openclaw.json not found at $OPENCLAW_JSON — config patches will be skipped. Set OPENCLAW_CONFIG or ensure OpenClaw is initialized."
 fi
-# Port 8080 conflict
+# Port 8080 conflict — but a healthy existing TEI on 8080 is reusable, not a conflict.
 if lsof -i :8080 >/dev/null 2>&1; then
-  warn "Port 8080 already in use — TEI embedding server may not start. Check: lsof -i :8080"
+  if tei_healthy; then
+    ok "Port 8080 in use by a healthy TEI (/health 200) — will reuse it, not start a new one."
+    TEI_REUSE=1
+  else
+    warn "Port 8080 already in use by something that is NOT a healthy TEI — embedding server may not start. Check: lsof -i :8080"
+  fi
 else
   ok "Port 8080 free"
 fi
@@ -311,8 +327,10 @@ if [ "$DO_DOCKER" = 1 ]; then
   hr "TEI Embedding Server (Docker)"
   if ! command -v docker >/dev/null 2>&1; then
     warn "Docker not found — skipping TEI setup. Install Docker and re-run."
+  elif [ "${TEI_REUSE:-0}" = 1 ] || tei_healthy; then
+    ok "Existing healthy TEI already answering on :8080 (/health 200) — reusing it, not starting a new container."
   elif lsof -i :8080 >/dev/null 2>&1 || ss -tlnp 2>/dev/null | grep -q ':8080 '; then
-    warn "Port 8080 already in use — TEI not started. Check: lsof -i :8080"
+    warn "Port 8080 in use by a non-TEI process — TEI not started. Check: lsof -i :8080"
     warn "Use --no-docker to skip TEI, or free port 8080 and re-run."
   else
     # Detect Compose plugin; fallback to docker run
@@ -412,6 +430,78 @@ if [ "$DO_CRON" = 1 ]; then
     python3 - <<PYEOF
 import subprocess, json
 
+def _cron_add_argv(job):
+    """Build a flag-based `openclaw cron add` argv from a job dict.
+    OpenClaw 2026.6.6+ has no `cron add --json <blob>`; jobs are built from flags.
+    `--json` here is OUTPUT-only (so we can parse the created job id)."""
+    a = ['openclaw', 'cron', 'add']
+    name = job.get('name')
+    if name:
+        a += ['--name', name]
+    sched = job.get('schedule', {}) or {}
+    if sched.get('kind') == 'cron' and sched.get('expr'):
+        a += ['--cron', sched['expr']]
+        if sched.get('tz'):
+            a += ['--tz', sched['tz']]
+    elif sched.get('kind') == 'every' and sched.get('every'):
+        a += ['--every', str(sched['every'])]
+    elif sched.get('kind') == 'at' and sched.get('at'):
+        a += ['--at', str(sched['at'])]
+    pay = job.get('payload', {}) or {}
+    pkind = pay.get('kind')
+    if pkind == 'command':
+        argv = pay.get('argv')
+        if isinstance(argv, list) and len(argv) >= 3 and argv[0] in ('sh', 'bash') and argv[1] in ('-lc', '-c'):
+            a += ['--command', argv[2]]
+        elif isinstance(argv, list) and argv:
+            import json as _j
+            a += ['--command-argv', _j.dumps(argv)]
+        elif pay.get('command'):
+            a += ['--command', pay['command']]
+        if pay.get('cwd'):
+            a += ['--command-cwd', pay['cwd']]
+        for k, v in (pay.get('env', {}) or {}).items():
+            a += ['--command-env', f'{k}={v}']
+    else:  # agentTurn (default)
+        if pay.get('message'):
+            a += ['--message', pay['message']]
+        if pay.get('model'):
+            a += ['--model', pay['model']]
+        if pay.get('thinking'):
+            a += ['--thinking', pay['thinking']]
+    st = job.get('sessionTarget')
+    if st in ('main', 'isolated'):
+        a += ['--session', st]
+    ts = pay.get('timeoutSeconds')
+    if ts:
+        a += ['--timeout-seconds', str(ts)]
+    dmode = (job.get('delivery', {}) or {}).get('mode')
+    if dmode == 'none':
+        a += ['--no-deliver']
+    elif dmode == 'announce':
+        a += ['--announce']
+    if job.get('enabled') is False:
+        a += ['--disabled']
+    a += ['--json']
+    return a
+
+def _cron_verify(name):
+    """Read back a cron job by name via `cron list --json`. Returns its id, or ''
+    if the gateway did not actually store it (silent-failure guard)."""
+    try:
+        lr = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)
+        if lr.returncode != 0:
+            return ''
+        data = json.loads(lr.stdout)
+        joblist = data if isinstance(data, list) else data.get('jobs', {}).get('jobs', data.get('jobs', []))
+        for j in (joblist or []):
+            if j.get('name','').strip().lower() == name.strip().lower():
+                return j.get('id','') or 'exists'
+    except Exception:
+        return ''
+    return ''
+
+
 def upsert_selfsched(job, label):
     """Upgrade-safe register for a SELF-scheduled agentTurn cron. If a job named
     job['name'] exists, refresh its prompt in place (--message) and keep it enabled
@@ -438,12 +528,17 @@ def upsert_selfsched(job, label):
             subprocess.run(args, capture_output=True, text=True, timeout=15)
             print(f"  \033[32m[ok]\033[0m   {label} OpenClaw cron updated (prompt refreshed, stays enabled)")
         else:
-            ar = subprocess.run(['openclaw', 'cron', 'add', '--json', json.dumps(job)],
+            ar = subprocess.run(_cron_add_argv(job),
                                 capture_output=True, text=True, timeout=15)
             if ar.returncode != 0:
-                print(f"  \033[33m[warn]\033[0m Could not register {label} cron: {ar.stderr[:100]}")
+                print(f"  \033[33m[warn]\033[0m Could not register {label} cron: {ar.stderr[:120]}")
+                print(f"  \033[33m[warn]\033[0m   Add it manually via the OpenClaw cron tool, name='{name}'. Install continues.")
                 return
-            print(f"  \033[32m[ok]\033[0m   {label} OpenClaw cron registered")
+            # (A) READ-BACK: confirm the gateway actually stored it.
+            if not _cron_verify(name):
+                print(f"  \033[31m[FAIL]\033[0m  {label} cron did NOT persist (read-back by name found nothing). Add it manually via the OpenClaw cron tool, name='{name}'. Install continues.")
+                return
+            print(f"  \033[32m[ok]\033[0m   {label} OpenClaw cron registered \u2713 verified")
     except Exception as e:
         print(f"  \033[33m[warn]\033[0m {label} upsert failed: {e}")
 
@@ -470,6 +565,78 @@ PYEOF
     python3 - <<PYEOF
 import subprocess, json
 
+def _cron_add_argv(job):
+    """Build a flag-based `openclaw cron add` argv from a job dict.
+    OpenClaw 2026.6.6+ has no `cron add --json <blob>`; jobs are built from flags.
+    `--json` here is OUTPUT-only (so we can parse the created job id)."""
+    a = ['openclaw', 'cron', 'add']
+    name = job.get('name')
+    if name:
+        a += ['--name', name]
+    sched = job.get('schedule', {}) or {}
+    if sched.get('kind') == 'cron' and sched.get('expr'):
+        a += ['--cron', sched['expr']]
+        if sched.get('tz'):
+            a += ['--tz', sched['tz']]
+    elif sched.get('kind') == 'every' and sched.get('every'):
+        a += ['--every', str(sched['every'])]
+    elif sched.get('kind') == 'at' and sched.get('at'):
+        a += ['--at', str(sched['at'])]
+    pay = job.get('payload', {}) or {}
+    pkind = pay.get('kind')
+    if pkind == 'command':
+        argv = pay.get('argv')
+        if isinstance(argv, list) and len(argv) >= 3 and argv[0] in ('sh', 'bash') and argv[1] in ('-lc', '-c'):
+            a += ['--command', argv[2]]
+        elif isinstance(argv, list) and argv:
+            import json as _j
+            a += ['--command-argv', _j.dumps(argv)]
+        elif pay.get('command'):
+            a += ['--command', pay['command']]
+        if pay.get('cwd'):
+            a += ['--command-cwd', pay['cwd']]
+        for k, v in (pay.get('env', {}) or {}).items():
+            a += ['--command-env', f'{k}={v}']
+    else:  # agentTurn (default)
+        if pay.get('message'):
+            a += ['--message', pay['message']]
+        if pay.get('model'):
+            a += ['--model', pay['model']]
+        if pay.get('thinking'):
+            a += ['--thinking', pay['thinking']]
+    st = job.get('sessionTarget')
+    if st in ('main', 'isolated'):
+        a += ['--session', st]
+    ts = pay.get('timeoutSeconds')
+    if ts:
+        a += ['--timeout-seconds', str(ts)]
+    dmode = (job.get('delivery', {}) or {}).get('mode')
+    if dmode == 'none':
+        a += ['--no-deliver']
+    elif dmode == 'announce':
+        a += ['--announce']
+    if job.get('enabled') is False:
+        a += ['--disabled']
+    a += ['--json']
+    return a
+
+def _cron_verify(name):
+    """Read back a cron job by name via `cron list --json`. Returns its id, or ''
+    if the gateway did not actually store it (silent-failure guard)."""
+    try:
+        lr = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)
+        if lr.returncode != 0:
+            return ''
+        data = json.loads(lr.stdout)
+        joblist = data if isinstance(data, list) else data.get('jobs', {}).get('jobs', data.get('jobs', []))
+        for j in (joblist or []):
+            if j.get('name','').strip().lower() == name.strip().lower():
+                return j.get('id','') or 'exists'
+    except Exception:
+        return ''
+    return ''
+
+
 def upsert_selfsched(job, label):
     """Upgrade-safe register for a SELF-scheduled agentTurn cron. If a job named
     job['name'] exists, refresh its prompt in place (--message) and keep it enabled
@@ -496,12 +663,17 @@ def upsert_selfsched(job, label):
             subprocess.run(args, capture_output=True, text=True, timeout=15)
             print(f"  \033[32m[ok]\033[0m   {label} OpenClaw cron updated (prompt refreshed, stays enabled)")
         else:
-            ar = subprocess.run(['openclaw', 'cron', 'add', '--json', json.dumps(job)],
+            ar = subprocess.run(_cron_add_argv(job),
                                 capture_output=True, text=True, timeout=15)
             if ar.returncode != 0:
-                print(f"  \033[33m[warn]\033[0m Could not register {label} cron: {ar.stderr[:100]}")
+                print(f"  \033[33m[warn]\033[0m Could not register {label} cron: {ar.stderr[:120]}")
+                print(f"  \033[33m[warn]\033[0m   Add it manually via the OpenClaw cron tool, name='{name}'. Install continues.")
                 return
-            print(f"  \033[32m[ok]\033[0m   {label} OpenClaw cron registered")
+            # (A) READ-BACK: confirm the gateway actually stored it.
+            if not _cron_verify(name):
+                print(f"  \033[31m[FAIL]\033[0m  {label} cron did NOT persist (read-back by name found nothing). Add it manually via the OpenClaw cron tool, name='{name}'. Install continues.")
+                return
+            print(f"  \033[32m[ok]\033[0m   {label} OpenClaw cron registered \u2713 verified")
     except Exception as e:
         print(f"  \033[33m[warn]\033[0m {label} upsert failed: {e}")
 
