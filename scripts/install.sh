@@ -941,45 +941,119 @@ if changed and os.environ.get("DINOMEM_DRY_RUN") == "1":
 elif not changed:
     print("  \033[33m[skip]\033[0m openclaw.json already configured")
 else:
+    # ── Write + validate + SURGICAL recovery ──────────────────────────
+    # Write the fully-patched config, then validate against OpenClaw's schema.
+    # If it fails, we do NOT blanket-revert to the pre-dinomem backup (that would
+    # throw away every dinomem change). Instead we keep MAX dinomem wiring: diff
+    # the patched config against the original down to leaf-paths, then re-apply
+    # those leaf changes onto the original ONE AT A TIME, validating after each,
+    # and DROP only the specific leaf(s) that break validation. Result: a valid
+    # config that still carries every dinomem change the running OpenClaw accepts.
     with open(path, "w") as f:
         json.dump(cfg, f, indent=2)
 
-    # Validate the write against OpenClaw's schema BEFORE the user restarts the
-    # gateway. A bad/unknown key (the original workspaceBootstrap crash class)
-    # otherwise only surfaces at gateway startup with no field named. If the
-    # validator is available and rejects the config, roll back to the exact
-    # pre-write bytes and surface the schema error (which names the field+path).
-    if os.environ.get("DINOMEM_SKIP_CONFIG_VALIDATE") == "1":
-        validate = None
-    else:
+    def _run_validate():
+        if os.environ.get("DINOMEM_SKIP_CONFIG_VALIDATE") == "1":
+            return None
         try:
-            validate = subprocess.run(
-                ["openclaw", "config", "validate"],
-                capture_output=True, text=True, timeout=30,
-            )
+            return subprocess.run(["openclaw", "config", "validate"],
+                                  capture_output=True, text=True, timeout=30)
         except FileNotFoundError:
-            validate = None  # openclaw CLI absent (config patches were skipped anyway)
+            return None
         except Exception:
-            validate = None
+            return None
+
+    validate = _run_validate()
 
     if validate is not None and validate.returncode != 0:
+        # Collect every leaf-path that differs between original and patched.
+        orig_cfg = json.loads(original)
+
+        def _leaf_paths(new, old, prefix=()):
+            out = []
+            if isinstance(new, dict):
+                for k, v in new.items():
+                    ov = old.get(k) if isinstance(old, dict) else None
+                    if isinstance(v, dict) and isinstance(ov, dict):
+                        out.extend(_leaf_paths(v, ov, prefix + (k,)))
+                    elif ov != v:
+                        out.append(prefix + (k,))
+                if isinstance(old, dict):
+                    for k in old:
+                        if k not in new:
+                            out.append(prefix + (k,))
+            else:
+                out.append(prefix)
+            return out
+
+        def _get(cfgobj, p):
+            cur = cfgobj
+            for k in p:
+                if not isinstance(cur, dict) or k not in cur:
+                    return (False, None)
+                cur = cur[k]
+            return (True, cur)
+
+        def _set(cfgobj, p, present, val):
+            cur = cfgobj
+            for k in p[:-1]:
+                cur = cur.setdefault(k, {})
+            if present:
+                cur[p[-1]] = val
+            else:
+                cur.pop(p[-1], None)  # dinomem removed this key
+
+        paths = _leaf_paths(cfg, orig_cfg)
+        # Start from the ORIGINAL, greedily add each dinomem leaf that still validates.
+        recovered = json.loads(original)
+        kept, dropped = [], []
+        for p in paths:
+            present, val = _get(cfg, p)
+            before_present, before_val = _get(recovered, p)
+            _set(recovered, p, present, val)
+            with open(path, "w") as f:
+                json.dump(recovered, f, indent=2)
+            v = _run_validate()
+            if v is not None and v.returncode != 0:
+                # this leaf breaks the config -> revert just this leaf, keep the rest
+                _set(recovered, p, before_present, before_val)
+                dropped.append(".".join(p))
+            else:
+                kept.append(".".join(p))
+        # Final write of the max-valid recovered config.
         with open(path, "w") as f:
-            f.write(original)  # restore exact pre-write bytes
+            json.dump(recovered, f, indent=2)
+        final = _run_validate()
+        if final is not None and final.returncode != 0:
+            # Even the original leaves fail (pre-existing invalid config, not us).
+            # Restore exact original bytes so we never leave it worse than we found it.
+            with open(path, "w") as f:
+                f.write(original)
+            detail = (final.stderr or final.stdout or "").strip()
+            print("  \033[31m[fail]\033[0m openclaw.json was already invalid before dinomem "
+                  "(recovery could not produce a valid config) — restored your original bytes:")
+            for line in detail.splitlines():
+                line = line.strip()
+                if line:
+                    print(f"           {line}")
+            sys.exit(3)
+        # We produced a valid config that keeps the accepted dinomem changes.
+        print("  \033[33m[warn]\033[0m Some config changes were rejected by your OpenClaw "
+              "version's schema and were skipped (kept everything else):")
+        for d in dropped:
+            print(f"           \033[33mskipped\033[0m {d}")
         detail = (validate.stderr or validate.stdout or "").strip()
-        print("  \033[31m[fail]\033[0m openclaw.json patch FAILED schema validation "
-              "— rolled back, config unchanged:")
         for line in detail.splitlines():
             line = line.strip()
             if line:
                 print(f"           {line}")
-        print("  \033[31m[fail]\033[0m Not restarting will keep OpenClaw working on the "
-              "previous valid config. Report this at the dinomem repo.")
-        sys.exit(3)
-
-    for c in changed:
-        print(f"  \033[32m[ok]\033[0m   patched: {c}")
-    if validate is not None:
-        print("  \033[32m[ok]\033[0m   openclaw.json validated against schema")
+        print(f"  \033[32m[ok]\033[0m   openclaw.json validated after recovery "
+              f"({len(kept)} change(s) kept, {len(dropped)} skipped).")
+    else:
+        for c in changed:
+            print(f"  \033[32m[ok]\033[0m   patched: {c}")
+        if validate is not None:
+            print("  \033[32m[ok]\033[0m   openclaw.json validated against schema")
     print("  \033[33m[warn]\033[0m Restart OpenClaw: openclaw gateway restart")
 PYEOF
 fi
