@@ -406,24 +406,47 @@ if [ "$DO_CRON" = 1 ]; then
 
   # note_review — daily via OpenClaw cron (LLM judges resolved _note_*.md and deletes them)
   # Registered via OpenClaw cron API, not crontab
-  NOTE_REVIEW_CHECK=$(python3 -c "
-import subprocess, json, sys
-try:
-    r = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)
-    jobs = json.loads(r.stdout) if r.returncode == 0 else []
-    exists = any('note' in j.get('name','').lower() and 'review' in j.get('name','').lower() for j in (jobs if isinstance(jobs, list) else jobs.get('jobs', {}).get('jobs', [])))
-    print('exists' if exists else 'missing')
-except: print('skip')
-" 2>/dev/null)
-  if [ "$NOTE_REVIEW_CHECK" = "exists" ]; then
-    skip "note_review OpenClaw cron (exists)"
-  elif [ "$NOTE_REVIEW_CHECK" = "skip" ]; then
-    warn "Could not check OpenClaw cron — add Daily Note Review cron manually via OpenClaw"
-  elif [ "$DRY_RUN" = 1 ]; then
-    plan "register OpenClaw cron: Daily Note Review (daily 6:00 UTC)"
+  if [ "$DRY_RUN" = 1 ]; then
+    plan "register/refresh OpenClaw cron: Daily Note Review (daily 6:00 UTC)"
   else
     python3 - <<PYEOF
 import subprocess, json
+
+def upsert_selfsched(job, label):
+    """Upgrade-safe register for a SELF-scheduled agentTurn cron. If a job named
+    job['name'] exists, refresh its prompt in place (--message) and keep it enabled
+    on its own schedule; else create it. No duplicates, no frozen old prompt."""
+    name = job['name']
+    existing_id = ''
+    try:
+        lr = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)
+        if lr.returncode == 0:
+            data = json.loads(lr.stdout)
+            joblist = data if isinstance(data, list) else data.get('jobs', {}).get('jobs', data.get('jobs', []))
+            for j in (joblist or []):
+                if j.get('name','').strip().lower() == name.strip().lower():
+                    existing_id = j.get('id',''); break
+    except Exception:
+        existing_id = ''
+    try:
+        if existing_id:
+            msg = job.get('payload', {}).get('message', '')
+            args = ['openclaw', 'cron', 'edit', existing_id, '--message', msg, '--enable']
+            sched = job.get('schedule', {})
+            if sched.get('kind') == 'cron' and sched.get('expr'):
+                args += ['--cron', sched['expr']]
+            subprocess.run(args, capture_output=True, text=True, timeout=15)
+            print(f"  \033[32m[ok]\033[0m   {label} OpenClaw cron updated (prompt refreshed, stays enabled)")
+        else:
+            ar = subprocess.run(['openclaw', 'cron', 'add', '--json', json.dumps(job)],
+                                capture_output=True, text=True, timeout=15)
+            if ar.returncode != 0:
+                print(f"  \033[33m[warn]\033[0m Could not register {label} cron: {ar.stderr[:100]}")
+                return
+            print(f"  \033[32m[ok]\033[0m   {label} OpenClaw cron registered")
+    except Exception as e:
+        print(f"  \033[33m[warn]\033[0m {label} upsert failed: {e}")
+
 job = {
     "name": "Daily Note Review",
     "schedule": {"kind": "cron", "expr": "0 6 * * *", "tz": "UTC"},
@@ -435,34 +458,53 @@ job = {
     "sessionTarget": "isolated",
     "delivery": {"mode": "none"}
 }
-r = subprocess.run(['openclaw', 'cron', 'add', '--json', json.dumps(job)], capture_output=True, text=True, timeout=15)
-if r.returncode == 0:
-    print("  \033[32m[ok]\033[0m   note_review OpenClaw cron registered (daily 6:00 UTC)")
-else:
-    print(f"  \033[33m[warn]\033[0m Could not register note_review cron: {r.stderr[:100]}")
+upsert_selfsched(job, "note_review")
 PYEOF
   fi
 
   # TEI @reboot
   # pending_note_reminder — every 3 days via OpenClaw cron (zero LLM pre-filter + LLM evaluate)
-  REMINDER_CHECK=$(python3 -c "
-import subprocess, json, sys
-try:
-    r = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)
-    jobs = json.loads(r.stdout) if r.returncode == 0 else []
-    exists = any('pending' in j.get('name','').lower() and 'note' in j.get('name','').lower() for j in (jobs if isinstance(jobs, list) else jobs.get('jobs', {}).get('jobs', [])))
-    print('exists' if exists else 'missing')
-except: print('skip')
-" 2>/dev/null)
-  if [ "$REMINDER_CHECK" = "exists" ]; then
-    skip "pending_note_reminder OpenClaw cron (exists)"
-  elif [ "$REMINDER_CHECK" = "skip" ]; then
-    warn "Could not check OpenClaw cron — add Pending Note Reminder cron manually via OpenClaw"
-  elif [ "$DRY_RUN" = 1 ]; then
-    plan "register OpenClaw cron: Pending Note Reminder (every 3 days 9:00 local)"
+  if [ "$DRY_RUN" = 1 ]; then
+    plan "register/refresh OpenClaw cron: Pending Note Reminder (every 3 days 9:00 local)"
   else
     python3 - <<PYEOF
 import subprocess, json
+
+def upsert_selfsched(job, label):
+    """Upgrade-safe register for a SELF-scheduled agentTurn cron. If a job named
+    job['name'] exists, refresh its prompt in place (--message) and keep it enabled
+    on its own schedule; else create it. No duplicates, no frozen old prompt."""
+    name = job['name']
+    existing_id = ''
+    try:
+        lr = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)
+        if lr.returncode == 0:
+            data = json.loads(lr.stdout)
+            joblist = data if isinstance(data, list) else data.get('jobs', {}).get('jobs', data.get('jobs', []))
+            for j in (joblist or []):
+                if j.get('name','').strip().lower() == name.strip().lower():
+                    existing_id = j.get('id',''); break
+    except Exception:
+        existing_id = ''
+    try:
+        if existing_id:
+            msg = job.get('payload', {}).get('message', '')
+            args = ['openclaw', 'cron', 'edit', existing_id, '--message', msg, '--enable']
+            sched = job.get('schedule', {})
+            if sched.get('kind') == 'cron' and sched.get('expr'):
+                args += ['--cron', sched['expr']]
+            subprocess.run(args, capture_output=True, text=True, timeout=15)
+            print(f"  \033[32m[ok]\033[0m   {label} OpenClaw cron updated (prompt refreshed, stays enabled)")
+        else:
+            ar = subprocess.run(['openclaw', 'cron', 'add', '--json', json.dumps(job)],
+                                capture_output=True, text=True, timeout=15)
+            if ar.returncode != 0:
+                print(f"  \033[33m[warn]\033[0m Could not register {label} cron: {ar.stderr[:100]}")
+                return
+            print(f"  \033[32m[ok]\033[0m   {label} OpenClaw cron registered")
+    except Exception as e:
+        print(f"  \033[33m[warn]\033[0m {label} upsert failed: {e}")
+
 job = {
     "name": "Pending Note Reminder",
     "schedule": {"kind": "cron", "expr": "0 9 */3 * *"},
@@ -474,11 +516,7 @@ job = {
     "sessionTarget": "isolated",
     "delivery": {"mode": "announce"}
 }
-r = subprocess.run(['openclaw', 'cron', 'add', '--json', json.dumps(job)], capture_output=True, text=True, timeout=15)
-if r.returncode == 0:
-    print("  \033[32m[ok]\033[0m   pending_note_reminder OpenClaw cron registered (every 3 days 9:00)")
-else:
-    print(f"  \033[33m[warn]\033[0m Could not register pending_note_reminder cron: {r.stderr[:100]}")
+upsert_selfsched(job, "pending_note_reminder")
 PYEOF
   fi
 
