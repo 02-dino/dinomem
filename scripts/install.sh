@@ -1121,6 +1121,13 @@ elif ent.get("enabled") is not True:
 allow = plugins.get("allow")
 if isinstance(allow, list) and "smart-cache-pro" not in allow:
     allow.append("smart-cache-pro"); changed.append("plugins.allow += smart-cache-pro")
+# bundledDiscovery is a REQUIRED companion to plugins.allow on OpenClaw 2026.6.x+.
+# An allow list WITHOUT bundledDiscovery makes the new schema reject the whole
+# config ("plugins: Invalid input") -> gateway won't start -> total bot silence.
+# "compat" preserves legacy bundled provider/channel discovery (won't kill chat
+# channels). Only stamp it when an allow list is actually present.
+if isinstance(allow, list) and plugins.get("bundledDiscovery") not in ("compat", "allowlist"):
+    plugins["bundledDiscovery"] = "compat"; changed.append('plugins.bundledDiscovery -> "compat"')
 with open(path, "w") as f:
     json.dump(cfg, f, indent=2)
 if changed:
