@@ -29,6 +29,8 @@ model.
 |------|---------|-------------------|-----|
 | No-reasoning (bulk) | `extract_memory`, `memory_review`, **+ OpenClaw compaction & memoryFlush** | Cheapest model with the **highest context window** you have | High-volume text ops (extraction, summarization, context compaction, daily-file flush). Context window matters more than reasoning depth. Use the **same** model for `DINOMEM_CHEAP_MODEL`, `compaction.model`, and `compaction.memoryFlush.model`. |
 
+**Tested models (mine).** For the **non-reasoning** tier, I tested **Haiku 4.5** and it works very well. For the **reasoning** tier (neuron), I tested **Opus 4.8, Sonnet 5, Sonnet 4.6, and MiMo 2.5 Pro** — all work very well.
+
 **Default behavior:** every script uses your OpenClaw default model (`agents.defaults.model.primary`). Nothing to configure.
 
 **To cut cost (opt-in):** set `DINOMEM_CHEAP_MODEL` to your cheapest high-context model. All of base dinomem's scripts are no-reasoning, so they all honor it.
