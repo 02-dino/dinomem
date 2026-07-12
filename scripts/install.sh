@@ -568,9 +568,10 @@ def upsert_selfsched(job, label):
         if existing_id:
             msg = job.get('payload', {}).get('message', '')
             args = ['openclaw', 'cron', 'edit', existing_id, '--message', msg, '--enable']
-            sched = job.get('schedule', {})
-            if sched.get('kind') == 'cron' and sched.get('expr'):
-                args += ['--cron', sched['expr']]
+            # NOTE: do NOT re-pass --cron/--at/--every on `cron edit`. The OpenClaw
+            # cron CLI (2026.6.x) rejects an edit that repeats a schedule flag on an
+            # already-scheduled job ('Choose exactly one schedule'). We only refresh
+            # message + re-enable here; the existing schedule is preserved as-is.
             subprocess.run(args, capture_output=True, text=True, timeout=15)
             print(f"  \033[32m[ok]\033[0m   {label} OpenClaw cron updated (prompt refreshed, stays enabled)")
         else:
@@ -703,9 +704,10 @@ def upsert_selfsched(job, label):
         if existing_id:
             msg = job.get('payload', {}).get('message', '')
             args = ['openclaw', 'cron', 'edit', existing_id, '--message', msg, '--enable']
-            sched = job.get('schedule', {})
-            if sched.get('kind') == 'cron' and sched.get('expr'):
-                args += ['--cron', sched['expr']]
+            # NOTE: do NOT re-pass --cron/--at/--every on `cron edit`. The OpenClaw
+            # cron CLI (2026.6.x) rejects an edit that repeats a schedule flag on an
+            # already-scheduled job ('Choose exactly one schedule'). We only refresh
+            # message + re-enable here; the existing schedule is preserved as-is.
             subprocess.run(args, capture_output=True, text=True, timeout=15)
             print(f"  \033[32m[ok]\033[0m   {label} OpenClaw cron updated (prompt refreshed, stays enabled)")
         else:

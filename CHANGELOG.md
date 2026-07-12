@@ -4,6 +4,9 @@
 
 Multilingual embeddings by default. **Recommended for anyone whose notes/queries aren't purely English.** The local TEI embedding server now ships `intfloat/multilingual-e5-small` instead of the English-centric `all-MiniLM-L6-v2` — same 384-dim vectors and comparable footprint (~0.45 GB, 118M params, XLM-RoBERTa), but strong retrieval across 100+ languages (English, Indonesian, Arabic, Chinese, French, Italian, Russian, Spanish, …) and double the context (512 vs 256 tokens).
 
+### Fixed
+- **Cron upsert no longer errors `Choose exactly one schedule`.** The install-time cron *edit* path (refreshing an existing job's message + re-enabling it) was re-passing `--cron <expr>` to `openclaw cron edit`, which the OpenClaw cron CLI (2026.6.x) rejects on an already-scheduled job (`Error: Choose exactly one schedule: --at, --every, or --cron`). Non-fatal (install still exited 0, jobs registered via the add path) but noisy. `cron edit` now refreshes message + `--enable` only and preserves the existing schedule as-is (both duplicate registration blocks fixed).
+
 ### Changed
 - **Default embedding model → `intfloat/multilingual-e5-small`.** `docker/docker-compose.tei.yml` and `scripts/install.sh` (docker-run fallback + the `openclaw.json` `memorySearch` / `tei-embed` provider patch) now provision e5-small. TEI image bumped **cpu-1.5 → cpu-1.6** (cpu-1.5 fails to download this model — a known image bug; cpu-1.6 serves it cleanly). Added `--max-input-length 512` to use e5's full context. `references/openclaw-config-snippet.json5`, `README.md`, and `references/architecture.md` updated to match.
 - **New/first installs get multilingual retrieval out of the box; no per-user rebuild** (fresh installs embed against e5 from the start). Existing installs that were already using all-MiniLM would need to re-embed to benefit — not automated here. To pin the old model, set `--model-id sentence-transformers/all-MiniLM-L6-v2` in the compose/run command.
