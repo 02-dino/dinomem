@@ -1398,6 +1398,40 @@ if [ "$DRY_RUN" = 1 ]; then
   echo "  Undo (after a real install): bash $SKILL_DIR/scripts/uninstall.sh --workspace $WS --agent-id $AGENT_ID"
   exit 0
 fi
+
+# ── Hook liveness self-check (L3/L3b) ───────────────────────────────────────
+# `openclaw hooks enable` only sets the config flag; it does NOT guarantee the
+# gateway can actually LOAD the hook. If $WS is not the gateway's scanned
+# workspace, the hook lands in an unscanned $WS/hooks/ and silently never fires.
+# Assert eligibility via `hooks check --json` (grep on the human table is
+# unreliable: emoji wrap splits names). On failure, fall back to installing the
+# hook pack into the always-scanned global ~/.openclaw/hooks/<name>/ and re-enable.
+if command -v openclaw >/dev/null 2>&1 && openclaw status >/dev/null 2>&1; then
+  hr "Hook liveness self-check"
+  GLOBAL_HOOKS_DIR="${OPENCLAW_DIR:-$HOME/.openclaw}/hooks"
+  for _hk in dinomem-reset-extract dinomem-open-notes; do
+    _elig="$(openclaw hooks check --json 2>/dev/null | python3 -c "import json,sys;
+try:
+  d=json.load(sys.stdin); print('yes' if '$_hk' in d.get('hooks',{}).get('eligible',[]) else 'no')
+except Exception: print('unknown')" 2>/dev/null)"
+    if [ "$_elig" = "yes" ]; then
+      ok "$_hk is eligible (gateway can load it)"
+    else
+      warn "$_hk NOT eligible from \$WS/hooks/ — installing into global $GLOBAL_HOOKS_DIR/ as fallback"
+      _hksrc="$SKILL_DIR/hooks/$_hk"
+      if [ -d "$_hksrc" ]; then
+        mkdir -p "$GLOBAL_HOOKS_DIR"
+        rm -rf "$GLOBAL_HOOKS_DIR/$_hk"
+        cp -r "$_hksrc" "$GLOBAL_HOOKS_DIR/$_hk"
+        openclaw hooks enable "$_hk" >/dev/null 2>&1 || true
+        warn "$_hk copied to global hooks dir — RESTART OpenClaw, then it will load (verify: openclaw hooks check --json)"
+      else
+        warn "$_hk source not found at $_hksrc — cannot self-heal; check the install"
+      fi
+    fi
+  done
+fi
+
 hr "done"
 echo "  dinomem installed for agent: $AGENT_ID"
 echo "  workspace: $WS"
