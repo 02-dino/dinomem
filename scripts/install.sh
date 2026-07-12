@@ -311,6 +311,7 @@ elif [ "$DRY_RUN" = 1 ]; then
   plan "openclaw hooks enable dinomem-reset-extract"
 else
   mkdir -p "$WS/hooks"
+  rm -rf "$HOOK_DST"
   cp -r "$HOOK_SRC" "$HOOK_DST"
   ok "hooks/dinomem-reset-extract/ copied"
   if command -v openclaw >/dev/null 2>&1 && openclaw status >/dev/null 2>&1; then
@@ -333,6 +334,7 @@ elif [ "$DRY_RUN" = 1 ]; then
   plan "openclaw hooks enable dinomem-open-notes"
 else
   mkdir -p "$WS/hooks"
+  rm -rf "$HOOK2_DST"
   cp -r "$HOOK2_SRC" "$HOOK2_DST"
   ok "hooks/dinomem-open-notes/ copied"
   if command -v openclaw >/dev/null 2>&1 && openclaw status >/dev/null 2>&1; then
@@ -357,6 +359,7 @@ if [ -d "$SKILL_DIR/skills" ]; then
       plan "copy skills/$_skname/ -> $WS/skills/"
     else
       mkdir -p "$WS/skills"
+      rm -rf "$_skdst"
       cp -r "$_sk" "$_skdst"
       ok "skills/$_skname/ copied"
     fi
@@ -1245,7 +1248,31 @@ $END"
 
 [ "$DRY_RUN" = 1 ] || touch "$AGENTS"
 if grep -qF "$BEGIN" "$AGENTS" 2>/dev/null; then
-  skip "AGENTS.md already wired (use --force to refresh)"
+  # Block already present. Refresh it in place ONLY under --force, so upgrades
+  # from an older dinomem (longer block, no hook/skills stubs) actually pick up
+  # the current block instead of keeping stale text. Strip the old
+  # BEGIN..END span first, then append the fresh block (idempotent upsert —
+  # never stacks a second block).
+  if [ "$FORCE" = 1 ]; then
+    if [ "$DRY_RUN" = 1 ]; then
+      plan "refresh dinomem managed block in AGENTS.md (strip old BEGIN..END, write current)"
+    else
+      _tmp_agents="$(mktemp)"
+      # Delete the inclusive BEGIN..END region (fixed-string match), keep everything else.
+      awk -v b="$BEGIN" -v e="$END" '
+        index($0,b){skip=1}
+        !skip{print}
+        index($0,e){skip=0}
+      ' "$AGENTS" > "$_tmp_agents"
+      # Trim trailing blank lines the removal may leave, then append fresh block.
+      awk 'NF{last=NR} {lines[NR]=$0} END{for(i=1;i<=last;i++) print lines[i]}' "$_tmp_agents" > "$AGENTS"
+      rm -f "$_tmp_agents"
+      printf '\n%s\n' "$BLOCK" >> "$AGENTS"
+      ok "AGENTS.md block refreshed (old block stripped, current block written)"
+    fi
+  else
+    skip "AGENTS.md already wired (re-run with --force to refresh the managed block)"
+  fi
 elif [ "$DRY_RUN" = 1 ]; then
   plan "append dinomem managed block to AGENTS.md"
 else
