@@ -44,12 +44,13 @@ export DINOMEM_CHEAP_MODEL="your-provider/your-cheap-high-context-model"
 - dinomem never auto-swaps models. It only routes when you set the var.
 
 > **Reasoning tier (only if you add [dinomem-neuron](https://github.com/02-dino/dinomem#want-more--dinomem-neuron-private-repo)):**
-> neuron adds scripts that *do* need a reasoning model — `memory_synthesis`,
-> `contradiction_check`, `memory_promote` (emergent insight, contradiction logic,
-> permanent-promotion validity). Those always run on your **default** model and
-> ignore `DINOMEM_CHEAP_MODEL` on purpose, additionally requesting thinking via
-> `DINOMEM_REASONING_THINKING` (default `high`). If you only have base dinomem,
-> this tier doesn't apply — you have no reasoning scripts to route.
+> neuron adds scripts that *do* need a reasoning model — `memory_synthesis` and
+> `contradiction_check` (emergent insight, contradiction logic). Those always run
+> on your **default** model and ignore `DINOMEM_CHEAP_MODEL` on purpose,
+> additionally requesting thinking via `DINOMEM_REASONING_THINKING` (default
+> `high`). neuron's L4 (`memory_promote`, `generate_topic_index`) is non-reasoning
+> and honors `DINOMEM_CHEAP_MODEL` like base. If you only have base dinomem, this
+> tier doesn't apply — you have no reasoning scripts to route.
 
 **Provider requirements:** scripts call the LLM through the OpenClaw gateway, so they use whatever providers you already have configured — no extra account needed. If the gateway is ever unreachable, dinomem falls back to a direct API call using your **own default model's provider**. **OpenRouter is optional** — it is only used as a fallback target if it happens to be the provider you have. A gateway-only setup with no direct-API key still works (the fallback is simply skipped).
 
