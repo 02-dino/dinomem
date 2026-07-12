@@ -243,6 +243,25 @@ if [ "$PURGE" = 1 ]; then
   else
     skip "hooks/dinomem-reset-extract/ not found"
   fi
+
+  # Remove open-notes hook
+  if [ -d "$WS/hooks/dinomem-open-notes" ]; then
+    rm -rf "$WS/hooks/dinomem-open-notes" && ok "removed hooks/dinomem-open-notes/"
+    if command -v openclaw >/dev/null 2>&1 && openclaw status >/dev/null 2>&1; then
+      openclaw hooks disable dinomem-open-notes >/dev/null 2>&1 || true
+    fi
+  else
+    skip "hooks/dinomem-open-notes/ not found"
+  fi
+
+  # Remove dinomem skills
+  for _skname in memory-pinning backup-restore self-config; do
+    if [ -d "$WS/skills/$_skname" ]; then
+      rm -rf "$WS/skills/$_skname" && ok "removed skills/$_skname/"
+    else
+      skip "skills/$_skname/ not found"
+    fi
+  done
 fi
 
 # ── OpenClaw cron (Daily Note Review) ────────────────────────────────────────

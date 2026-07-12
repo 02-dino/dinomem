@@ -322,7 +322,50 @@ else
   fi
 fi
 
-# ── 3) TEI Docker setup ───────────────────────────────────────────────────────
+# ── 2c) Install open-notes hook ────────────────────────────────────────────
+hr "Open-notes hook (inject open _note_ manifest at bootstrap)"
+HOOK2_SRC="$SKILL_DIR/hooks/dinomem-open-notes"
+HOOK2_DST="$WS/hooks/dinomem-open-notes"
+if [ -d "$HOOK2_DST" ] && [ "$FORCE" = 0 ]; then
+  skip "hooks/dinomem-open-notes/ (exists, use --force to overwrite)"
+elif [ "$DRY_RUN" = 1 ]; then
+  plan "copy hooks/dinomem-open-notes/ -> $WS/hooks/"
+  plan "openclaw hooks enable dinomem-open-notes"
+else
+  mkdir -p "$WS/hooks"
+  cp -r "$HOOK2_SRC" "$HOOK2_DST"
+  ok "hooks/dinomem-open-notes/ copied"
+  if command -v openclaw >/dev/null 2>&1 && openclaw status >/dev/null 2>&1; then
+    openclaw hooks enable dinomem-open-notes >/dev/null 2>&1 \
+      && ok "dinomem-open-notes hook enabled (restart OpenClaw to activate)" \
+      || warn "openclaw hooks enable failed — run manually: openclaw hooks enable dinomem-open-notes"
+  else
+    warn "OpenClaw not running — run after restart: openclaw hooks enable dinomem-open-notes"
+  fi
+fi
+
+# ── 2d) Install skills ─────────────────────────────────────────────────────
+hr "Skills (memory-pinning, backup-restore, self-config)"
+if [ -d "$SKILL_DIR/skills" ]; then
+  for _sk in "$SKILL_DIR/skills"/*/; do
+    [ -d "$_sk" ] || continue
+    _skname="$(basename "$_sk")"
+    _skdst="$WS/skills/$_skname"
+    if [ -d "$_skdst" ] && [ "$FORCE" = 0 ]; then
+      skip "skills/$_skname/ (exists, use --force to overwrite)"
+    elif [ "$DRY_RUN" = 1 ]; then
+      plan "copy skills/$_skname/ -> $WS/skills/"
+    else
+      mkdir -p "$WS/skills"
+      cp -r "$_sk" "$_skdst"
+      ok "skills/$_skname/ copied"
+    fi
+  done
+else
+  skip "no skills/ in package"
+fi
+
+# ── 3) TEI Docker setup ────────────────────────────────────────────────────────
 if [ "$DO_DOCKER" = 1 ]; then
   hr "TEI Embedding Server (Docker)"
   if ! command -v docker >/dev/null 2>&1; then
@@ -1155,21 +1198,14 @@ END="<!-- END:dinomem -->"
 DINOMEM_BODY=$(cat <<'DINOMEM_AGENTS_BODY'
 ## dinomem
   memory_index: {file: MEMORY.md, instruction: topic in MEMORY.md → memory_search then memory_get}
+  open_work: open _note_ files (status in_progress|pending) are auto-injected each session by the dinomem-open-notes hook as a must-read manifest — read the relevant one and resume from its resume_state before answering; do NOT restart finished work.
   constraints:
     M0: context_unclear → memory_search + memory_get; fallback: ask
-    M_session_start:
-      when: FIRST substantive turn of session (cold start), BEFORE answering — any message, not just "build X"
-      action:
-        - glob memory/_note_*.md (direct ls, deterministic) BEFORE the first answer
-        - for each note with status: in_progress OR status: pending → read it; resume_state beats chat history
-        - if note TOPIC matches user's message → surface it, resume from resume_state
-        - safety-gated final step (git push / external): re-verify artifact exists before re-asking
-      enforce: MECHANISM not vibe — glob is mandatory; open note one ls away that you didn't read is the single most common silent failure
     M1:
       before: tool/script with side effects OR message naming an entity/repo/feature matching an open _note_
       action:
         - memory_search first
-        - glob memory/_note_*.md → read open notes before building
+        - read open notes (see open_work manifest) before building
       enforce: mandatory; fires on entity-name match too, not only literal "build" requests
     M2:
       when: named entity | temporal ref | implicit ref | continuation request
@@ -1180,26 +1216,6 @@ DINOMEM_BODY=$(cat <<'DINOMEM_AGENTS_BODY'
       prefer: natural_language
       avoid: technical_identifiers | code_terms | exact_strings | variable_names
       enforce: rewrite query to natural language before calling any memory tool
-
-  memory_pin:
-    trigger: permanent_fact OR user emphasizes importance
-    uncertain: ask user before pinning
-    long_docs: docs/<slug>.md → docs_ingest.py
-    permanent: {prefix: _pin_, location: memory/, format: "# Title\n\n<content>", slug: "lowercase-hyphens-max30"}
-    transient:
-      trigger: todo/reminder/planned task/time-bound
-      uncertain: ask user before noting
-      prefix: _note_
-      location: memory/
-      slug: "lowercase-hyphens-max30"
-      format: '# Title\ntype: task_bound | time_bound\nstatus: pending | done\ndate: YYYY-MM-DD\ndone_when: <checkable — file exists / feature shipped>\nstale_after: YYYY-MM-DD\n<content>'
-      schema:
-        type: task_bound = resolves via done_when; time_bound = date-based reminder
-        done_when: concrete artifact check; lever the cron uses to flip status done + delete (task_bound only)
-        done_when_MUST_be_locally_verifiable: cron-runnable against LOCAL state, no chat history, no network identity. file exists / grep / exit 0. NEVER narrative like "pushed to repo" / "told user" — unverifiable = note rots. git push form: git -C <repo> rev-parse HEAD == @{u}. If not locally checkable, do not rely on auto-close.
-        stale_after: fallback GC for abandoned notes; default date+30d, reminders date+7d; agent may override
-        unknown_fields: the resolver acts only on done_when + stale_after; any other fields on a note are left untouched
-        status: flip to done only when done_when verified; else pending
 
   investigate_before_act:
     triggers: bug_report | fix_request | refactor | cross_entity_claim | any assertion about file/git/version/config
@@ -1217,21 +1233,10 @@ DINOMEM_BODY=$(cat <<'DINOMEM_AGENTS_BODY'
     after_search: memory_get on relevant result
     skip: do not call memory_search every turn
 
-  self_config:
-    tool: tools/config_tool.py
-    trigger: user implies changing behavior/rules/workflows/persona/tools/preferences
-    rule: read config_tool.py docstring for routing map → generate content → call config_tool.py
-    confirm_before_write: [SOUL.md, IDENTITY.md, AGENTS.md]
-    skip_confirm: [TOOLS.md, USER.md]
-    ambiguous: ask one question then route
-
-## backup_restore
-  when: restore request | "what backups" | undo file/memory change
-  tool: procedures/workspace_backup.py
-  list: python3 procedures/workspace_backup.py --list
-  restore: python3 procedures/workspace_backup.py --restore [index|name] [--yes]
-  restore_file: python3 procedures/workspace_backup.py --restore [index|name] --file <path>
-  note: auto-runs via cron
+  skills:
+    memory_pin: when user says remember/pin/note this, you commit to deferred work, or a todo/reminder/time-bound/project task arises → read skill "memory-pinning" for _pin_/_note_/project format + done_when rules
+    self_config: when user implies changing behavior/rules/workflow/persona/tools/preferences → read skill "self-config"
+    backup_restore: when user asks to undo/restore a file or memory change, or what backups exist → read skill "backup-restore"
 DINOMEM_AGENTS_BODY
 )
 BLOCK="$BEGIN
