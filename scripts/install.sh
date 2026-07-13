@@ -757,7 +757,7 @@ job = {
         "kind": "agentTurn",
         **({"model": _cheap} if _cheap else {}),
         "message": "Run: python3 $WS/scripts/check_pending_notes.py\n\nIf exit code is 1 (no output) -> NO_REPLY, stop here, zero LLM cost.\n\nIf exit code is 0 (JSON output) -> for each note in the JSON:\n1. Read the full note file\n2. Evaluate done_when — run any shell command if verifiable, or reason from context\n3. If done -> update status to done in the file, report which ones closed\n4. If not done -> include in reminder summary to user\n\nSend reminder only if there are notes still pending after evaluation. Format: brief list with note title + stale_after date.",
-        "timeoutSeconds": 300
+        "timeoutSeconds": 600
     },
     "sessionTarget": "isolated",
     "delivery": {"mode": "announce"}
