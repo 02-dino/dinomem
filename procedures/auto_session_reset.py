@@ -21,11 +21,13 @@ import subprocess
 import sys
 import os
 import fcntl
+import json
 from pathlib import Path
 from datetime import datetime
 
 LOG_FILE = Path(__file__).parent.parent / "logs" / "auto_reset.log"
 LOCK_FILE = Path("/tmp/dinomem_auto_reset.lock")
+EXTRACT_STATUS_FILE = Path(__file__).parent.parent / "logs" / ".extract_memory_status.json"
 LOG_FILE.parent.mkdir(exist_ok=True)
 
 
@@ -105,6 +107,27 @@ def main():
     finally:
         release_lock(lock_fh)
 
+def _memory_extraction_status_line(memory_ok):
+    """Distinguish a real extraction failure from a backlog that hit the 300s
+    subprocess timeout but is still self-healing (dedups via .processed_archives.json,
+    clears more archives every 15-min tick). Reads the small status file
+    extract_memory.py writes after every run. Falls back to the old blanket
+    FAILED wording if the status file is missing/unreadable (e.g. an older
+    extract_memory.py from before this fix, or the subprocess died mid-write)."""
+    if memory_ok:
+        return "✅ OK"
+    try:
+        if EXTRACT_STATUS_FILE.exists():
+            status = json.loads(EXTRACT_STATUS_FILE.read_text(encoding="utf-8"))
+            remaining = int(status.get("remaining_backlog", 0) or 0)
+            note = status.get("note", "")
+            if note == "backlog_draining" or (remaining > 0 and note != "real_failure"):
+                return f"⏳ IN PROGRESS ({remaining} archive(s) remaining, self-healing — not a real failure)"
+    except Exception:
+        pass
+    return "⚠️ FAILED"
+
+
 def _run_main():
     # Step 1: Session reset (critical — must not fail)
     session_ok = run_script("session_reset.py")
@@ -123,7 +146,7 @@ def _run_main():
     log("=" * 60)
     log("📋 ORCHESTRATOR SUMMARY")
     log(f"   • Session reset: {'✅ OK' if session_ok else '❌ FAILED'}")
-    log(f"   • Memory extraction: {'✅ OK' if memory_ok else '⚠️ FAILED'}")
+    log(f"   • Memory extraction: {_memory_extraction_status_line(memory_ok)}")
     if ingest_ok is not None:
         log(f"   • Session ingest: {'✅ OK' if ingest_ok else '⚠️ FAILED'}")
     log("=" * 60)

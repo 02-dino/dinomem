@@ -76,6 +76,7 @@ MEMORY_DIR = Path(__file__).parent.parent / "memory"
 PROCESSED_LOG = MEMORY_DIR / ".processed_archives.json"
 COMPACTION_LOG = MEMORY_DIR / ".compaction_counts.json"
 LOG_FILE = Path(__file__).parent.parent / "logs" / "extract_memory.log"
+STATUS_FILE = Path(__file__).parent.parent / "logs" / ".extract_memory_status.json"
 MEMORY_MAX_CHARS = 6000
 
 # Ensure dirs exist
@@ -278,6 +279,23 @@ def log(message):
     print(log_message.strip())
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(log_message)
+
+def _write_status(ok, remaining, note=""):
+    """Write a small machine-readable status file the orchestrator reads to
+    distinguish a real failure from a backlog that is draining normally
+    (self-healing via BATCH_SIZE + the dedup log). remaining = archives still
+    unprocessed after this run. Never raises — best-effort only."""
+    try:
+        payload = {
+            "ok": bool(ok),
+            "remaining_backlog": int(remaining),
+            "note": note,
+            "updated_at": datetime.now().isoformat(),
+        }
+        with open(STATUS_FILE, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+    except Exception:
+        pass
 
 
 def sanitize_text(text):
@@ -1194,12 +1212,14 @@ def main():
 
     if not LLM_ENABLED:
         log("⚠️  LLM not configured (no model found in OpenClaw config). Skipping memory extraction.")
+        _write_status(ok=True, remaining=0, note="llm_disabled")
         return
 
     # Find all archived files
     all_archives = [f.name for f in SESSIONS_DIR.glob("*.archived.*.jsonl")]
     if not all_archives:
         log("ℹ️  No archived files found")
+        _write_status(ok=True, remaining=0, note="no_archives")
         return
 
     log(f"📁 Found {len(all_archives)} archived file(s)")
@@ -1211,6 +1231,7 @@ def main():
 
     if not new_archives:
         log("✅ All archives already processed")
+        _write_status(ok=True, remaining=0, note="all_processed")
         return
 
     log(f"")
@@ -1272,6 +1293,19 @@ def main():
                         mark_archives_processed([name])
                         empty_count += 1
 
+        # Incremental status write after every batch. Critical for the case this
+        # fix targets: the orchestrator's subprocess.run(timeout=300) SIGKILLs
+        # this process on timeout, so the final _write_status() call at the end
+        # of main() never runs during a mid-backlog timeout — this keeps the
+        # status file fresh so the orchestrator can still tell "still draining"
+        # from "actually broken" even on a hard-killed run.
+        _remaining_so_far = max(0, len(new_archives) - (i + len(batch)))
+        _write_status(
+            ok=True,
+            remaining=_remaining_so_far,
+            note="backlog_draining" if _remaining_so_far > 0 else "in_progress",
+        )
+
     log(f"")
     log("=" * 60)
     log("📋 SUMMARY")
@@ -1283,6 +1317,20 @@ def main():
     log(f"   • Memory write failures: {failed_count}")
     log(f"   • Deduplication tracking: {len(load_processed_set())} archives tracked")
     log("=" * 60)
+
+    # Backlog remaining after this run. If the attempted batch itself came up
+    # empty (every attempted archive failed), that's a real failure signal —
+    # not a timeout-mid-backlog situation, which self-heals over subsequent runs.
+    processed_now = len(new_archives) - failed_count
+    remaining_backlog = max(0, len(all_archives) - skipped_count - processed_now)
+    real_failure = failed_count > 0 and processed_now == 0
+    if remaining_backlog > 0:
+        log(f"   • Backlog remaining: {remaining_backlog} archive(s) not yet processed — will continue next run")
+    _write_status(
+        ok=not real_failure,
+        remaining=remaining_backlog,
+        note="real_failure" if real_failure else ("backlog_draining" if remaining_backlog > 0 else "complete"),
+    )
 
 
 if __name__ == "__main__":
