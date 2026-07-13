@@ -19,6 +19,8 @@ import re
 import glob as _glob
 import shutil as _shutil
 import subprocess
+import sys
+import fcntl
 import urllib.request
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -77,6 +79,14 @@ PROCESSED_LOG = MEMORY_DIR / ".processed_archives.json"
 COMPACTION_LOG = MEMORY_DIR / ".compaction_counts.json"
 LOG_FILE = Path(__file__).parent.parent / "logs" / "extract_memory.log"
 STATUS_FILE = Path(__file__).parent.parent / "logs" / ".extract_memory_status.json"
+# Self-contained lock: the orchestrator's LOCK_FILE (auto_session_reset.py)
+# only guards against two orchestrator runs overlapping. It does NOT protect
+# a bare/manual invocation of this script (e.g. a background backlog catch-up
+# run) from racing a concurrent cron-triggered run — both would load/mutate/
+# save .processed_archives.json with no coordination, silently dropping dedup
+# entries on a last-write-wins clash. This lock makes extract_memory.py safe
+# regardless of how/how many times it's invoked.
+EXTRACT_LOCK_FILE = Path("/tmp/dinomem_extract_memory.lock")
 MEMORY_MAX_CHARS = 6000
 
 # Ensure dirs exist
@@ -279,6 +289,36 @@ def log(message):
     print(log_message.strip())
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(log_message)
+
+def _acquire_extract_lock():
+    """Non-blocking flock. Returns the open file handle on success, or None if
+    another extract_memory.py instance already holds it (any invocation path:
+    cron, manual, catch-up). Caller must release via _release_extract_lock.
+    Uses 'a+' (never truncates on open) so a losing process can still read the
+    holder's PID — opening with 'w' would truncate the file out from under the
+    holder before flock is even attempted, wiping its PID."""
+    lock_fh = open(EXTRACT_LOCK_FILE, 'a+')
+    try:
+        fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock_fh.seek(0)
+        lock_fh.truncate()
+        lock_fh.write(str(os.getpid()))
+        lock_fh.flush()
+        return lock_fh
+    except BlockingIOError:
+        lock_fh.seek(0)
+        holder_pid = lock_fh.read().strip() or "unknown"
+        lock_fh.close()
+        log(f"⏭️  Another extract_memory.py instance is already running (pid {holder_pid}) — skipping this run to avoid a dedup-log race")
+        return None
+
+def _release_extract_lock(lock_fh):
+    try:
+        fcntl.flock(lock_fh, fcntl.LOCK_UN)
+        lock_fh.close()
+        EXTRACT_LOCK_FILE.unlink(missing_ok=True)
+    except Exception:
+        pass
 
 def _write_status(ok, remaining, note=""):
     """Write a small machine-readable status file the orchestrator reads to
@@ -988,6 +1028,14 @@ Classify the relationship. Reply with JSON only:
             continue
         elif verdict in ('update', 'contradiction'):
             for (md_file, line_idx, raw_line, item_text) in candidates:
+                # File may have already been deleted by an earlier iteration in
+                # this same loop (two different new insights both superseding
+                # the same existing file), or unlinked externally between the
+                # candidate scan and here. Skip cleanly instead of crashing the
+                # whole extraction run on a stale-file race.
+                if not md_file.exists():
+                    log(f"   ⏭️  Contradiction check: {md_file.name} already gone (handled earlier this run)")
+                    continue
                 # Per-item files store one item as the whole body. If the item
                 # line is the only content line, delete the file outright instead
                 # of leaving an orphan frontmatter-only file. Legacy multi-item
@@ -1334,4 +1382,23 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    _lock_fh = _acquire_extract_lock()
+    if _lock_fh is None:
+        sys.exit(0)
+    try:
+        main()
+    except Exception as _e:
+        # Belt-and-suspenders: an unhandled exception mid-run (e.g. a stale-
+        # file race, transient I/O error) would otherwise leave the status
+        # file stale/missing, making the orchestrator fall back to the old
+        # blanket "FAILED" wording even though most of the batch likely
+        # succeeded and the backlog will keep draining next run. Log it
+        # loudly (so it's still visible/debuggable) but don't let the
+        # process die silently without a status write.
+        log(f"⚠️  Unhandled exception during extraction: {_e}")
+        import traceback as _tb
+        log(_tb.format_exc())
+        _write_status(ok=False, remaining=-1, note="crashed")
+        raise
+    finally:
+        _release_extract_lock(_lock_fh)
