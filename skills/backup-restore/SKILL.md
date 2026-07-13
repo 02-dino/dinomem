@@ -19,17 +19,17 @@ Run from the workspace root.
 
 **List available snapshots:**
 ```bash
-python3 procedures/workspace_backup.py --list
+python3 DINOMEM_WORKSPACE_PLACEHOLDER/procedures/workspace_backup.py --list
 ```
 
 **Restore an entire snapshot** (by index or name from `--list`; defaults to latest):
 ```bash
-python3 procedures/workspace_backup.py --restore [index|name] [--yes]
+python3 DINOMEM_WORKSPACE_PLACEHOLDER/procedures/workspace_backup.py --restore [index|name] [--yes]
 ```
 
 **Restore a single file** from a snapshot:
 ```bash
-python3 procedures/workspace_backup.py --restore [index|name] --file <relative/path>
+python3 DINOMEM_WORKSPACE_PLACEHOLDER/procedures/workspace_backup.py --restore [index|name] --file <relative/path>
 ```
 e.g. `--file memory/2026-06-01.md`
 

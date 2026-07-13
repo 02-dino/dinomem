@@ -361,6 +361,10 @@ if [ -d "$SKILL_DIR/skills" ]; then
       mkdir -p "$WS/skills"
       rm -rf "$_skdst"
       cp -r "$_sk" "$_skdst"
+      # Bake the real workspace path into skill bodies so script-call examples
+      # resolve at agent runtime (agent shell has no $WS). Matches the sed pass
+      # used for procedures/tools scripts above.
+      find "$_skdst" -name '*.md' -exec sed -i "s|DINOMEM_WORKSPACE_PLACEHOLDER|$WS|g" {} +
       ok "skills/$_skname/ copied"
     fi
   done
