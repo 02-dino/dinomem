@@ -454,7 +454,7 @@ if [ "$DO_CRON" = 1 ]; then
   fi
 
   # auto_session_reset — every 15 min (orchestrates session archive + memory extraction)
-  RESET_CRON="*/15 * * * * cd $WS && ${EMBED_ENV}python3 procedures/auto_session_reset.py >> logs/auto_reset.log 2>&1"
+  RESET_CRON="*/15 * * * * cd $WS && ${EMBED_ENV}${CHEAP_ENV}python3 procedures/auto_session_reset.py >> logs/auto_reset.log 2>&1"
   upsert_cron "auto_session_reset.py" "dinomem: auto session reset + memory extraction" "$RESET_CRON" "auto_session_reset cron (every 15 min)"
 
   # workspace_backup — weekly Sunday at 2:00 UTC (snapshot of memory + config files)
