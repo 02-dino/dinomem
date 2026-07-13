@@ -178,17 +178,25 @@ def _find_openclaw_bin():
             return c
     return "openclaw"  # fallback, let subprocess raise if missing
 
+# memory_review is a non-reasoning task (classify/prune, no chained inference).
+# Route it to the cheap model via the standard DINOMEM_CHEAP_MODEL tag (same
+# convention extract_memory.py uses). Unset -> OpenClaw default (default-safe).
+CHEAP_MODEL = os.environ.get("DINOMEM_CHEAP_MODEL", "").strip() or None
+
 def call_llm(prompt, max_tokens=4000):
-    """Call LLM via OpenClaw gateway."""
+    """Call LLM via OpenClaw gateway (cheap/non-reasoning path when DINOMEM_CHEAP_MODEL set)."""
     try:
+        _cmd = [
+            _find_openclaw_bin(),
+            "capability", "model", "run",
+            "--prompt", prompt,
+            "--gateway",
+            "--json",
+        ]
+        if CHEAP_MODEL:
+            _cmd += ["--model", CHEAP_MODEL]
         result = subprocess.run(
-            [
-                _find_openclaw_bin(),
-                "capability", "model", "run",
-                "--prompt", prompt,
-                "--gateway",
-                "--json",
-            ],
+            _cmd,
             capture_output=True,
             text=True,
             timeout=120,

@@ -442,6 +442,17 @@ if [ "$DO_CRON" = 1 ]; then
     ok "cron embed endpoint: $DINOMEM_EMBED_URL"
   fi
 
+  # Propagate the cheap/non-reasoning model into the LLM review cron.
+  # crond does not inherit the interactive shell, so an unpropagated
+  # DINOMEM_CHEAP_MODEL would be silently ignored on the scheduled run.
+  # Empty when unset -> OpenClaw default (default-safe, no change).
+  # (memory_cleanup is embedding-only, no LLM -> not injected there.)
+  CHEAP_ENV=""
+  if [ -n "${DINOMEM_CHEAP_MODEL:-}" ]; then
+    CHEAP_ENV="DINOMEM_CHEAP_MODEL=$DINOMEM_CHEAP_MODEL "
+    ok "cron cheap model: $DINOMEM_CHEAP_MODEL"
+  fi
+
   # auto_session_reset — every 15 min (orchestrates session archive + memory extraction)
   RESET_CRON="*/15 * * * * cd $WS && ${EMBED_ENV}python3 procedures/auto_session_reset.py >> logs/auto_reset.log 2>&1"
   upsert_cron "auto_session_reset.py" "dinomem: auto session reset + memory extraction" "$RESET_CRON" "auto_session_reset cron (every 15 min)"
@@ -459,7 +470,7 @@ if [ "$DO_CRON" = 1 ]; then
   upsert_cron "memory_cleanup.py" "dinomem: daily memory deduplication" "$CLEANUP_CRON" "memory_cleanup cron (daily 5:00 UTC)"
 
   # memory_review — daily at 5:30 UTC (batched, full cycle ~7 days)
-  REVIEW_CRON="30 5 * * * cd $WS && ${EMBED_ENV}python3 procedures/memory_review.py >> logs/memory_review.log 2>&1"
+  REVIEW_CRON="30 5 * * * cd $WS && ${EMBED_ENV}${CHEAP_ENV}python3 procedures/memory_review.py >> logs/memory_review.log 2>&1"
   upsert_cron "memory_review.py" "dinomem: daily batched memory review (LLM)" "$REVIEW_CRON" "memory_review cron (daily 5:30 UTC, batched)"
 
   # cleanup_startup_daily — daily at 2:05 UTC. Prunes bare YYYY-MM-DD.md files
