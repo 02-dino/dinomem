@@ -1347,7 +1347,6 @@ TOOLS_BODY=$(cat <<'DINOMEM_TOOLS_BODY'
       - overwrite_file
       - patch_section_by_key
       - remove_section_by_key
-    when_to_use: safe writer for agent root config files; routing map in config_tool.py docstring
     subcommands:
       append:
         usage: "config_tool.py append <file> <content>"
