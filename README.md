@@ -43,6 +43,7 @@ Most systems inject everything into context, or retrieve blindly. dinomem gives 
 - **Memory pinning** — tell your agent "remember this" and it saves a permanent `_pin_*.md`, protected from all cleanup. For todos and reminders, `_note_*.md` — auto-deleted once resolved.
 - **Memory cleanup** — daily dedup + daily batched LLM review keeps memory lean. Noise removed, contradictions flagged.
 - **Agent self-configuration** — tell your agent to change its tone, add a tool, or set a rule — it writes to the right file automatically
+- **Intent routing for scheduling & automation** — the same detect-intent-then-safe-write pattern extends to cron jobs ("remind me…", "every day at 9…") and event hooks ("whenever a message comes in…"). Cost-tiered so cheap deterministic work never wakes an LLM, and applied only through native `openclaw` surfaces — never by hand-editing `openclaw.json`.
 - **Weekly snapshot backup** — memory, config, and root files backed up automatically. Keep-3 rotation, never clutters disk. Restore anytime via `workspace_backup.py`.
 - **Zero-config install** — one script handles Docker, cron, and OpenClaw config patches
 
@@ -134,6 +135,33 @@ Not sure where to put something? Just tell your agent:
 > "I built a script that does Z, add it as a tool"
 
 dinomem includes a routing system that detects your intent and writes to the correct file automatically — `SOUL.md` for tone, `IDENTITY.md` for persona, `AGENTS.md` for rules and workflows, `TOOLS.md` for tools, `USER.md` for your preferences. Backs up before every write — auto-rotated, keeps last 3 per file, never clutters disk.
+
+The same **detect-intent → validate → safe-write** pattern powers two more routers, so scheduling and automation work the same way as "put this in the right file":
+
+### Scheduling (cron routing)
+
+> "Remind me to check funding every morning"
+> "Run the backup every 6 hours"
+> "Ping me when BTC funding flips negative"
+
+dinomem routes the request to the right cron primitive (`at:` one-shot, `every:` interval, `cron:` expression with timezone) and the right job type, then applies it through `openclaw cron` — never by hand-editing `openclaw.json`, never by faking timers with `sleep`. It is **cost-tiered** so you don't pay for scheduling you don't need:
+
+| Tier | What runs | LLM cost |
+| ---- | --------- | -------- |
+| **T0** | fixed system event / command | none |
+| **T1** | a deterministic **gate** fires first; the LLM (or a chat announce) is only woken on a real hit | ~zero on empty |
+| **T2** | LLM without reasoning — routed to your cheap model | low |
+| **T3** | LLM with reasoning — requires explicit confirmation + cost disclosure | on demand |
+
+Recurring jobs that would wake a reasoning LLM on every fire are **refused unless you confirm**, and portable gate scripts (`file-changed`, `threshold`, `diff-since-last`) ship ready to use so most "tell me when X" needs cost nothing until X actually happens.
+
+### Automation (hook routing)
+
+> "Whenever a message comes in, log the sender"
+> "Snapshot memory every time I run /new"
+> "Inject a reminder at every session start"
+
+dinomem classifies the request in two stages — first the **surface** (a react-only side effect → an internal hook; something that must *block/cancel/rewrite* → it tells you that needs a typed plugin hook instead), then the **event** from OpenClaw's closed set of lifecycle events. It scaffolds a vetted `handler.ts` + `HOOK.md` (you fill in only the gate/action logic — never hand-write the boilerplate), keeps a cheap deterministic check first so hooks stay near-zero-cost, and enables it through `openclaw hooks enable`. Every hook is confirm-before-write since all of them change runtime behavior.
 
 ---
 
@@ -236,7 +264,12 @@ After a session is archived and extracted, you'll see new files in `memory/` and
 │   ├── memory_review.py        # Daily batched LLM review (valid/invalidated/noise)
 │   └── workspace_backup.py     # Weekly snapshot backup (keep 3, auto-rotate)
 ├── tools/
-│   └── config_tool.py          # Safe writer for root config files (agent self-config)
+│   ├── config_tool.py          # Safe writer for root config files (agent self-config)
+│   ├── cron_tool.py            # Intent router + safe writer for cron jobs (via `openclaw cron`)
+│   ├── hook_tool.py            # Intent router + scaffolder for event hooks (via `openclaw hooks`)
+│   └── gate/                   # Portable pure-shell T1 gates (file-changed, threshold, diff-since-last)
+├── templates/
+│   └── hook.handler.ts.tmpl    # Vetted hook scaffold (fill gate/action blanks only)
 ├── logs/
 └── memory/
     ├── _pin_*.md               # Permanent user-pinned memories (never deleted)
