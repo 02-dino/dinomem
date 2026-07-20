@@ -264,24 +264,41 @@ if [ "$PURGE" = 1 ]; then
   done
 fi
 
-# ── OpenClaw cron (Daily Note Review) ────────────────────────────────────────
-hr "OpenClaw cron"
+# ── OpenClaw crons (gate + all base-registered workers) ──────────────────────
+# Base registers these OpenClaw crons (NOT crontab lines): the shared "Note Cron
+# Gate" (command-cron) plus the agentTurn workers it drives. crontab pattern
+# removal above never touches them, so remove them here BY NAME. Neuron may have
+# extended the same gate with its own lanes — we still remove the gate (a base
+# uninstall means base is going away; neuron's own uninstaller, run via
+# --with-base or standalone, removes its worker lanes). Matching is exact
+# (case-insensitive) against a known-name allowlist so we never nuke unrelated
+# user crons.
+hr "OpenClaw crons"
 python3 - <<PYEOF
 import subprocess, json
+# Known base-owned OpenClaw cron names (exact, case-insensitive).
+BASE_CRON_NAMES = {
+    "note cron gate",          # shared zero-LLM gate (base creates it)
+    "daily note review",       # note janitor worker
+    "pending note reminder",   # task_bound reminder worker
+}
 try:
     r = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)
     jobs = json.loads(r.stdout) if r.returncode == 0 else []
     job_list = jobs if isinstance(jobs, list) else jobs.get('jobs', {}).get('jobs', [])
-    targets = [j for j in job_list if 'note' in j.get('name','').lower() and 'review' in j.get('name','').lower()]
+    targets = [j for j in job_list if (j.get('name','') or '').strip().lower() in BASE_CRON_NAMES]
     if not targets:
-        print("  \033[33m[skip]\033[0m Daily Note Review cron not found")
+        print("  \033[33m[skip]\033[0m no base OpenClaw crons found")
     else:
         for j in targets:
             jid = j.get('id') or j.get('jobId')
-            subprocess.run(['openclaw', 'cron', 'remove', jid], capture_output=True, timeout=10)
-            print(f"  \033[32m[ok]\033[0m   removed OpenClaw cron: {j.get('name')} ({jid})")
+            rr = subprocess.run(['openclaw', 'cron', 'remove', jid], capture_output=True, text=True, timeout=10)
+            if rr.returncode == 0:
+                print(f"  \033[32m[ok]\033[0m   removed OpenClaw cron: {j.get('name')} ({jid})")
+            else:
+                print(f"  \033[33m[warn]\033[0m could not remove {j.get('name')} ({jid}): {rr.stderr.strip()[:120]}")
 except Exception as e:
-    print(f"  \033[33m[warn]\033[0m Could not remove OpenClaw cron: {e}")
+    print(f"  \033[33m[warn]\033[0m Could not remove OpenClaw crons: {e}")
 PYEOF
 
 # ── Purge data: logs + snapshots (safe, no memory) ───────────────────────────
