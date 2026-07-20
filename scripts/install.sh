@@ -483,10 +483,25 @@ if [ "$DO_CRON" = 1 ]; then
   STATS_CRON="0 9 * * 0 python3 $SKILL_DIR/scripts/weekly_stats.py --workspace $WS >> $WS/logs/weekly_stats.log 2>&1"
   upsert_cron "weekly_stats.py" "dinomem: weekly stats card (Sunday 09:00, no LLM)" "$STATS_CRON" "weekly_stats cron (Sunday 09:00)"
 
-  # note_review — daily via OpenClaw cron (LLM judges resolved _note_*.md and deletes them)
-  # Registered via OpenClaw cron API, not crontab
+  # ── Note-janitor crons: Daily Note Review + Pending Note Reminder ────────────
+  # ZERO-LLM GATE DESIGN (shared with dinomem-neuron): both are agentTurn crons
+  # whose only job most ticks is to decide "nothing to do" — which naively still
+  # pays for a full LLM turn every fire. Instead we register BOTH DISABLED and
+  # drive them from ONE command-kind cron, "Note Cron Gate" (*/15, $0 LLM in the
+  # Gateway process), which runs cheap check scripts and only `cron run`s a worker
+  # when its check reports real work.
+  #
+  # SINGLE CANONICAL GATE: the gate is named "Note Cron Gate" in BOTH base and
+  # neuron. neuron's installer FINDS this same gate by name and EXTENDS its env
+  # with the project-trio lanes — it never creates a second gate. So a neuron box
+  # ends up with ONE gate driving all lanes (no double-dispatch). cron_gate.sh is
+  # the shared superset file; neuron overwrites it with the identical 5-lane copy.
+  #
+  # FALLBACK: if the gateway refuses command-kind crons (operator.admin), we
+  # RE-ENABLE both workers on their own schedules (pre-gate behavior) so nothing
+  # breaks — with a loud warning that that path costs LLM on idle ticks.
   if [ "$DRY_RUN" = 1 ]; then
-    plan "register/refresh OpenClaw cron: Daily Note Review (daily 6:00 UTC)"
+    plan "register (disabled) Daily Note Review + Pending Note Reminder, then create/extend 'Note Cron Gate' (*/15, zero-LLM)"
   else
     python3 - <<PYEOF
 import subprocess, json
@@ -604,6 +619,56 @@ def upsert_selfsched(job, label):
     except Exception as e:
         print(f"  \033[33m[warn]\033[0m {label} upsert failed: {e}")
 
+import os
+
+def _find_cron(name):
+    try:
+        lr = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)
+        if lr.returncode != 0:
+            return ''
+        data = json.loads(lr.stdout)
+        joblist = data if isinstance(data, list) else data.get('jobs', {}).get('jobs', data.get('jobs', []))
+        for j in (joblist or []):
+            if j.get('name','').strip().lower() == name.strip().lower():
+                return j.get('id','')
+    except Exception:
+        return ''
+    return ''
+
+def upsert_gated_worker(job, label):
+    """Register a gate-driven agentTurn worker: created/kept DISABLED (never
+    self-fires), returns its job id (or '' on failure). Upgrade-safe: if it exists,
+    refresh the prompt AND force it disabled (an older install may have left it
+    self-scheduled). The gate wiring + fallback is handled by the caller."""
+    name = job['name']
+    existing_id = _find_cron(name)
+    jid = ''
+    try:
+        if existing_id:
+            jid = existing_id
+            msg = job.get('payload', {}).get('message', '')
+            subprocess.run(['openclaw', 'cron', 'edit', existing_id, '--message', msg],
+                           capture_output=True, text=True, timeout=15)
+            print(f"  \033[32m[ok]\033[0m   {label} OpenClaw cron updated (prompt refreshed)")
+        else:
+            j2 = dict(job); j2['enabled'] = False
+            ar = subprocess.run(_cron_add_argv(j2), capture_output=True, text=True, timeout=15)
+            if ar.returncode != 0:
+                print(f"  \033[33m[warn]\033[0m Could not register {label} cron: {ar.stderr[:120]}")
+                return ''
+            try:
+                jid = json.loads(ar.stdout).get('id','')
+            except Exception:
+                jid = _cron_verify(name)
+            if not jid:
+                print(f"  \033[31m[FAIL]\033[0m  {label} cron did NOT persist. Add it manually. Install continues.")
+                return ''
+            print(f"  \033[32m[ok]\033[0m   {label} OpenClaw cron registered (disabled) \u2713 verified")
+    except Exception as e:
+        print(f"  \033[33m[warn]\033[0m {label} upsert failed: {e}")
+        return ''
+    return jid
+
 # Daily Note Review is verification + rubric-driven GC (run locally-checkable
 # done_when conditions, flip/delete on the result) — not deep reasoning. Pin it
 # to the cheap/non-reasoning model when DINOMEM_CHEAP_MODEL is set; unset ->
@@ -621,7 +686,101 @@ job = {
     "sessionTarget": "isolated",
     "delivery": {"mode": "none"}
 }
-upsert_selfsched(job, "note_review")
+DNR_ID = upsert_gated_worker(job, "note_review")
+
+# Pending Note Reminder — same cheap-model rationale. delivery: announce (it
+# messages the user with the reminder). Gated too: check_pending_notes.py is the
+# zero-LLM prefilter, run by the gate BEFORE any LLM turn is spent.
+job = {
+    "name": "Pending Note Reminder",
+    "schedule": {"kind": "cron", "expr": "0 9 */3 * *"},
+    "payload": {
+        "kind": "agentTurn",
+        **({"model": _cheap} if _cheap else {}),
+        "message": "Run: python3 $WS/scripts/check_pending_notes.py\n\nIf exit code is 1 (no output) -> NO_REPLY, stop here, zero LLM cost.\n\nIf exit code is 0 (JSON output) -> for each note in the JSON:\n1. Read the full note file\n2. Evaluate done_when — run any shell command if verifiable, or reason from context\n3. If done -> update status to done in the file, report which ones closed\n4. If not done -> include in reminder summary to user\n\nSend reminder only if there are notes still pending after evaluation. Format: brief list with note title + stale_after date.",
+        "timeoutSeconds": 600
+    },
+    "sessionTarget": "isolated",
+    "delivery": {"mode": "announce"}
+}
+PNR_ID = upsert_gated_worker(job, "pending_note_reminder")
+
+# ── Note Cron Gate (command cron, */15, ZERO LLM) ───────────────────────────
+# One canonical gate. If it already exists (e.g. a prior run, or neuron created
+# it), MERGE our two lane ids into its existing env (never clobber neuron's trio
+# ids). --command-env REPLACES the whole env set, so we always re-send the full
+# merged dict. If the gate cannot be created (command crons refused), fall back
+# to re-enabling both workers on their own schedules.
+WS = os.environ.get("OPENCLAW_WORKSPACE", "$WS")
+GATE_NAME = "Note Cron Gate"
+
+def _gate_env(gate_id):
+    try:
+        g = subprocess.run(['openclaw', 'cron', 'get', gate_id, '--json'], capture_output=True, text=True, timeout=15)
+        if g.returncode == 0:
+            return (json.loads(g.stdout).get('payload', {}) or {}).get('env', {}) or {}
+    except Exception:
+        pass
+    return {}
+
+def _fallback_selfsched():
+    print("  \033[33m[WARN]\033[0m Note Cron Gate could not be installed (command crons refused?).")
+    print("  \033[33m[WARN]\033[0m Falling back: re-enabling Daily Note Review + Pending Note Reminder on their own schedules.")
+    print("  \033[33m[WARN]\033[0m That path COSTS an LLM turn on every idle fire. Allow command crons (operator.admin) + re-run for the free path.")
+    for jid in (DNR_ID, PNR_ID):
+        if jid:
+            subprocess.run(['openclaw', 'cron', 'enable', jid], capture_output=True, text=True, timeout=15)
+
+if not (DNR_ID or PNR_ID):
+    print("  \033[33m[warn]\033[0m No worker ids captured — skipping Note Cron Gate wiring.")
+else:
+    lane_env = {}
+    if DNR_ID: lane_env["GATE_DAILY_NOTE_REVIEW_ID"] = DNR_ID
+    if PNR_ID: lane_env["GATE_PENDING_REMINDER_ID"] = PNR_ID
+    gate_id = _find_cron(GATE_NAME)
+    if gate_id:
+        # Gate exists — MERGE our lanes into its env (preserve any neuron lanes).
+        env = _gate_env(gate_id); env["OPENCLAW_WORKSPACE"] = env.get("OPENCLAW_WORKSPACE", WS); env.update(lane_env)
+        args = ['openclaw', 'cron', 'edit', gate_id]
+        for k, v in env.items():
+            args += ['--command-env', f'{k}={v}']
+        subprocess.run(args, capture_output=True, text=True, timeout=15)
+        subprocess.run(['openclaw', 'cron', 'enable', gate_id], capture_output=True, text=True, timeout=15)
+        print(f"  \033[32m[ok]\033[0m   Note Cron Gate found — merged base lanes into its env (gate-driven, zero idle LLM)")
+    else:
+        gate = {
+            "name": GATE_NAME,
+            "description": "Zero-LLM dispatcher: runs cheap note checks every 15min, force-runs a worker only when it reports work.",
+            "schedule": {"kind": "cron", "expr": "*/15 * * * *", "tz": "UTC"},
+            "payload": {
+                "kind": "command",
+                "argv": ["sh", "-lc", "bash " + WS + "/scripts/cron_gate.sh"],
+                "cwd": WS,
+                "env": {"OPENCLAW_WORKSPACE": WS, **lane_env},
+            },
+            "delivery": {"mode": "none"},
+        }
+        ar = subprocess.run(_cron_add_argv(gate), capture_output=True, text=True, timeout=15)
+        gid = ''
+        try:
+            gid = json.loads(ar.stdout).get('id','')
+        except Exception:
+            gid = _cron_verify(GATE_NAME)
+        # Confirm the gateway stored a REAL command-kind job (some builds downgrade).
+        kind_ok = False
+        if gid:
+            try:
+                g = subprocess.run(['openclaw', 'cron', 'get', gid, '--json'], capture_output=True, text=True, timeout=15)
+                if g.returncode == 0:
+                    kind_ok = (json.loads(g.stdout).get('payload', {}) or {}).get('kind') == 'command'
+            except Exception:
+                kind_ok = False
+        if gid and kind_ok:
+            print(f"  \033[32m[ok]\033[0m   Note Cron Gate registered (*/15 command cron, zero-LLM) — drives note janitor lanes")
+        else:
+            if gid:
+                subprocess.run(['openclaw', 'cron', 'remove', gid], capture_output=True, text=True, timeout=15)
+            _fallback_selfsched()
 PYEOF
   fi
 
