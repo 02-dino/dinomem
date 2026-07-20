@@ -92,6 +92,17 @@ steps:
 resume_state: <paths/decisions/assumptions the next turn needs to resume blind>
 ```
 
+**⚠️ A project note is born `status: in_progress`, NOT `pending`.** Do not copy the
+`pending | done` schema from the task_bound/time_bound section above — that's for
+todos/reminders only. Only two project statuses are valid: `in_progress` → `done`.
+A project born `pending` gets orphaned from the Project Advancer (the gate wakes
+on `in_progress`; it also matches `pending` as a defensive safety net, but that's
+a fallback for mistakes, not the intended birth state), so write `in_progress`
+from creation. NOTE the inbound boundary: `project` = digital/verifiable steps the
+Advancer CAN drive. Real-world / physical / non-verifiable tasks ("pick flowers",
+anything off-machine) are `type: task_bound` (inbound) — the Advancer cannot do
+them, so they never become projects.
+
 After **every** step, rewrite `resume_state` so the note is self-sufficient — a
 fresh session (or the open-notes bootstrap hook) can jump straight to
 `current_step` and resume with no reliance on chat history. This is the
