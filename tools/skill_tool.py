@@ -112,14 +112,28 @@ def _append_trigger(slug, trigger):
     AGENTS_FILE.write_text(out, encoding="utf-8")
     return "appended"
 
+def _agent_id():
+    """Resolve target agent id so install never leaks to a cwd-inferred workspace.
+    Priority: DINOMEM_AGENT env -> 'workspace-<id>' dir-name convention -> None (cli default)."""
+    env = os.environ.get("DINOMEM_AGENT", "").strip()
+    if env:
+        return env
+    name = WORKSPACE.name
+    if name.startswith("workspace-"):
+        return name[len("workspace-"):] or None
+    return None
+
 def _install(skill_dir):
+    cmd = ["openclaw", "skills", "install", str(skill_dir), "--force"]
+    agent = _agent_id()
+    if agent:
+        cmd += ["--agent", agent]
     try:
-        r = subprocess.run(["openclaw", "skills", "install", str(skill_dir), "--force"],
-                           capture_output=True, text=True, timeout=120)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
         ok = r.returncode == 0
         return ok, (r.stdout or r.stderr or "").strip()[-400:]
     except Exception as e:
-        return False, f"install-skipped: {e} (skill is on disk; run `openclaw skills install {skill_dir}`)"
+        return False, f"install-skipped: {e} (skill is on disk; run `{' '.join(cmd)}`)"
 
 def list_skills(substr=None):
     if not SKILLS_DIR.exists():
