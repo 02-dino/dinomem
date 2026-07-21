@@ -136,7 +136,20 @@ Not sure where to put something? Just tell your agent:
 
 dinomem includes a routing system that detects your intent and writes to the correct file automatically — `SOUL.md` for tone, `IDENTITY.md` for persona, `AGENTS.md` for rules and workflows, `TOOLS.md` for tools, `USER.md` for your preferences. Backs up before every write — auto-rotated, keeps last 3 per file, never clutters disk.
 
-The same **detect-intent → validate → safe-write** pattern powers two more routers, so scheduling and automation work the same way as "put this in the right file":
+### Surface arbiter (which mechanism, not just which file)
+
+Before any write, `tools/route.py` decides **which surface** the request belongs to — because root files are injected into context on **every single turn**, so they are the most expensive place to put behavior. The arbiter is **cost-ordered** and picks the cheapest surface that fits:
+
+| Priority | Surface | Fires when | Always-on cost |
+| -------- | ------- | ---------- | -------------- |
+| 1 | **cron** | it runs on a schedule/interval/date | none (schedule-gated) |
+| 2 | **hook** | it reacts to a gateway event | none (event-gated) |
+| 3 | **skill** | it's on-demand procedure needed *sometimes* | ~1-line trigger + on-demand body |
+| 4 | **root file** | it's always-on identity/style/pref/rule with **no trigger** | full — injected every turn |
+
+Within root, the order is `IDENTITY.md → SOUL.md → USER.md → TOOLS.md → AGENTS.md`, and **`AGENTS.md` is the last resort** — a rule only lands there if it's genuinely unconditional and can't be expressed as a cron, hook, or skill. "What's your name" is clearly `IDENTITY.md`; "log every inbound message" is a **hook**, not an always-injected rule. The arbiter reasons through ordered discriminators (time trigger → event trigger → on-demand body → identity/style → user fact → tool spec → unconditional rule) and routes to exactly one leaf tool. It's write-free — it only emits the machine-readable decision schema (`route.py classify`) for the agent to reason over.
+
+The same **detect-intent → validate → safe-write** pattern powers the leaf routers below, so scheduling, automation, and teaching new procedures all work the same way as "put this in the right file":
 
 ### Scheduling (cron routing)
 
@@ -264,9 +277,11 @@ After a session is archived and extracted, you'll see new files in `memory/` and
 │   ├── memory_review.py        # Daily batched LLM review (valid/invalidated/noise)
 │   └── workspace_backup.py     # Weekly snapshot backup (keep 3, auto-rotate)
 ├── tools/
+│   ├── route.py               # Surface arbiter — cost-ordered decision schema (cron>hook>skill>root); write-free
 │   ├── config_tool.py          # Safe writer for root config files (agent self-config)
 │   ├── cron_tool.py            # Intent router + safe writer for cron jobs (via `openclaw cron`)
 │   ├── hook_tool.py            # Intent router + scaffolder for event hooks (via `openclaw hooks`)
+│   ├── skill_tool.py          # Intent router + scaffolder for skills (SKILL.md + thin trigger, via `openclaw skills`)
 │   └── gate/                   # Portable pure-shell T1 gates (file-changed, threshold, diff-since-last)
 ├── templates/
 │   └── hook.handler.ts.tmpl    # Vetted hook scaffold (fill gate/action blanks only)

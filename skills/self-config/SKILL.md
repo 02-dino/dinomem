@@ -9,6 +9,12 @@ When the user asks to change the agent's behavior, rules, workflow, persona,
 tools, or preferences, route the edit to the correct workspace bootstrap file
 using `tools/config_tool.py`.
 
+## Route first
+
+Run `tools/route.py classify` and confirm the arbiter selected **root** (discriminators 4-7).
+A schedule -> cron-config; a gateway event -> hook-config; on-demand procedure -> skill-config.
+Root files load EVERY turn — AGENTS.md is the LAST resort. Only unconditional, always-on config lands here.
+
 ## When to use
 
 The user implies changing behavior / rules / workflows / persona / tools /

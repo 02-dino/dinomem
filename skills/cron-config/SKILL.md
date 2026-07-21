@@ -10,6 +10,11 @@ delayed follow-up, automation on a timer — route the request through
 `tools/cron_tool.py`. Never hand-edit `openclaw.json`, never emulate timers
 with sleep/poll loops.
 
+## Route first
+
+Run `tools/route.py classify` and confirm the arbiter selected **cron** (discriminator 1).
+A gateway event -> hook-config; on-demand procedure -> skill-config; always-on rule -> self-config.
+
 ## When to use
 
 The user implies scheduling / reminding / recurring work / delayed

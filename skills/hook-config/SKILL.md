@@ -10,6 +10,11 @@ When the user asks to run logic when something happens inside the gateway —
 "on gateway restart" — route it through `tools/hook_tool.py`. Never hand-edit
 `openclaw.json`.
 
+## Route first
+
+Run `tools/route.py classify` and confirm the arbiter selected **hook** (discriminator 2).
+A schedule -> cron-config; on-demand procedure -> skill-config; always-on rule -> self-config.
+
 ## When to use
 
 The user implies reacting to a gateway event / lifecycle moment — "every time",
