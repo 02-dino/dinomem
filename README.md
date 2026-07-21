@@ -136,24 +136,7 @@ Not sure where to put something? Just tell your agent:
 
 dinomem includes a routing system that detects your intent and writes to the correct file automatically — `SOUL.md` for tone, `IDENTITY.md` for persona, `AGENTS.md` for rules and workflows, `TOOLS.md` for tools, `USER.md` for your preferences. Backs up before every write — auto-rotated, keeps last 3 per file, never clutters disk.
 
-### Surface arbiter (which mechanism, not just which file)
-
-Before any write, `tools/route.py` decides **which surface** the request belongs to. The rule is simple: **put behavior where its trigger lives, and only fall back to a root file when the behavior has no trigger** — because root files are injected into context on *every single turn*, so they're the most expensive home. The arbiter doesn't rank surfaces; it **matches the request to the surface that fits it**, and root files are the fallback of last resort:
-
-| If the request… | …it belongs to | Always-on cost |
-| --------------- | -------------- | -------------- |
-| runs on a schedule/interval/date | **cron** | none (schedule-gated) |
-| reacts to a gateway event | **hook** | none (event-gated) |
-| is on-demand procedure needed *sometimes* | **skill** | ~1-line trigger + on-demand body |
-| is always-on with **no trigger** — identity, style, a user fact, a tool spec, or an unconditional rule | **root file** *(fallback)* | full — injected every turn |
-
-The first three are trigger-gated, so they cost nothing until their trigger actually fires — that's *why* they're preferred whenever a request has a trigger, not because they outrank root files in importance. Only when a request has no schedule, no event, and isn't on-demand does it belong in a root file at all.
-
-**Inside the root-file fallback**, there's a further order: `IDENTITY.md → SOUL.md → USER.md → TOOLS.md → AGENTS.md`, with **`AGENTS.md` dead last** — a rule lands there only if it's genuinely unconditional and can't be a cron, hook, or skill. "What's your name" is obviously `IDENTITY.md`, not a rule. "Log every inbound message" is a **hook**, not an always-injected rule. "Never reveal secrets" — no trigger, must hold every turn — is a real `AGENTS.md` case.
-
-The arbiter reasons through ordered discriminators (time trigger → event trigger → on-demand body → identity/style → user fact → tool spec → unconditional rule) and routes to exactly one leaf tool. It's write-free — it only emits the machine-readable decision schema (`route.py classify`) for the agent to reason over.
-
-The same **detect-intent → validate → safe-write** pattern powers the leaf routers below, so scheduling, automation, and teaching new procedures all work the same way as "put this in the right file":
+The same **detect-intent → validate → safe-write** pattern powers three more leaf routers, so scheduling, automation, and teaching new procedures all work the same way as "put this in the right file":
 
 ### Scheduling (cron routing)
 
@@ -179,6 +162,31 @@ Recurring jobs that would wake a reasoning LLM on every fire are **refused unles
 > "Inject a reminder at every session start"
 
 dinomem classifies the request in two stages — first the **surface** (a react-only side effect → an internal hook; something that must *block/cancel/rewrite* → it tells you that needs a typed plugin hook instead), then the **event** from OpenClaw's closed set of lifecycle events. It scaffolds a vetted `handler.ts` + `HOOK.md` (you fill in only the gate/action logic — never hand-write the boilerplate), keeps a cheap deterministic check first so hooks stay near-zero-cost, and enables it through `openclaw hooks enable`. Every hook is confirm-before-write since all of them change runtime behavior.
+
+### Teaching procedures (skill routing)
+
+> "Here's how I want you to review a PR — remember this method"
+> "When someone asks for a market recap, follow these steps"
+> "Learn this deployment checklist and use it whenever I say deploy"
+
+Procedural knowledge that's only needed *sometimes* doesn't belong in a root file (which loads every turn) — it belongs in a **skill**, read on-demand when its task appears. dinomem scaffolds a `SKILL.md` (name + a `description` that acts as the trigger + a machine-readable body) and, only if the description alone is too weak to fire reliably, adds **one line** to `AGENTS.md` as a hard pointer. The body stays in the skill, loaded on-demand — never inlined into a root file. Installed through `openclaw skills install`, pinned to the resolved agent so it never leaks into the wrong workspace. Confirm-before-write, since a skill changes what the agent can do.
+
+### Surface arbiter (which mechanism, not just which file)
+
+The four routers above overlap at the edges — "always log X" could be a hook *or* an AGENTS.md rule; "do Y every morning" is a cron, not a rule. So before any write, `tools/route.py` decides **which surface** the request belongs to. The rule is simple: **put behavior where its trigger lives, and only fall back to a root file when the behavior has no trigger** — because root files are injected into context on *every single turn*, so they're the most expensive home. The arbiter doesn't rank surfaces by importance; it **matches the request to the surface that fits it**, and root files are the fallback of last resort:
+
+| If the request… | …it belongs to | Always-on cost |
+| --------------- | -------------- | -------------- |
+| runs on a schedule/interval/date | **cron** | none (schedule-gated) |
+| reacts to a gateway event | **hook** | none (event-gated) |
+| is on-demand procedure needed *sometimes* | **skill** | ~1-line trigger + on-demand body |
+| is always-on with **no trigger** — identity, style, a user fact, a tool spec, or an unconditional rule | **root file** *(fallback)* | full — injected every turn |
+
+The first three are trigger-gated, so they cost nothing until their trigger actually fires — that's *why* they're preferred whenever a request has a trigger, not because they outrank root files in importance. Only when a request has no schedule, no event, and isn't on-demand does it belong in a root file at all.
+
+**Inside the root-file fallback**, there's a further order: `IDENTITY.md → SOUL.md → USER.md → TOOLS.md → AGENTS.md`, with **`AGENTS.md` dead last** — a rule lands there only if it's genuinely unconditional and can't be a cron, hook, or skill. "What's your name" is obviously `IDENTITY.md`, not a rule. "Log every inbound message" is a **hook**, not an always-injected rule. "Never reveal secrets" — no trigger, must hold every turn — is a real `AGENTS.md` case.
+
+The arbiter reasons through ordered discriminators (time trigger → event trigger → on-demand body → identity/style → user fact → tool spec → unconditional rule) and routes to exactly one leaf tool. It's write-free — it only emits the machine-readable decision schema (`route.py classify`) for the agent to reason over.
 
 ---
 
