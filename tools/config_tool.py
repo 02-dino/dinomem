@@ -19,12 +19,13 @@ Usage (import):
 Root files load EVERY turn. Before writing one, run `tools/route.py classify` and confirm the
 surface is genuinely ROOT (not cron/hook/skill). If the behavior has a schedule -> cron_tool.py;
 an event trigger -> hook_tool.py; is on-demand procedure -> skill_tool.py. Only unconditional,
-always-on config lands here. AGENTS.md is the LAST resort within root (most expensive: re-read every turn).
+always-on config lands here. Among root files there is NO ranking — pick the file that matches
+the content type. AGENTS.md is the CORRECT home for SOPs/rules/when_to_use, not a last resort.
 
-## ROUTING MAP (classify intent → select target file; ROOT surface only)
+## ROUTING MAP (classify intent → select target file; ROOT surface only; equal-weight homes)
 SOUL.md:     tone, verbosity, style, personality
 IDENTITY.md: name, role, persona, avatar
-AGENTS.md:   unconditional rule/constraint with NO event/schedule + thin skill when_to_use triggers [LAST resort]
+AGENTS.md:   SOP, rule/constraint, workflow, when_to_use (with NO event/schedule) + thin skill triggers
 TOOLS.md:    new_tool, script_spec, capability
 USER.md:     user_pref, user_context, user_info
 docs/<slug>: long_doc, contract, book, legal → docs_ingest.py

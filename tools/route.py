@@ -19,9 +19,10 @@ selected leaf tool. Keeping it write-free avoids duplicating any leaf-tool logic
   cron   : fires on a SCHEDULE only        -> zero always-on context cost
   hook   : fires on a GATEWAY EVENT only   -> zero always-on context cost
   skill  : loaded ON-DEMAND when relevant  -> ~1 line always-on (thin AGENTS.md trigger) + body only when read
-  root   : injected EVERY turn             -> full always-on context cost -> LAST RESORT
-           within root: IDENTITY/SOUL/TOOLS/USER before AGENTS.md; AGENTS.md is the most expensive
-           because behavioral rules there are re-read every single turn.
+  root   : injected EVERY turn             -> full always-on context cost -> the FALLBACK
+           (only when the behavior has NO trigger). Among root files there is NO ranking:
+           they are equal-weight homes for different content types (see discriminators 4-7).
+           SOP/rule/when_to_use -> AGENTS.md is the CORRECT home, not a last resort.
 
 ## DISCRIMINATORS (ask in order; first hit wins; semantic, not keyword; multilingual)
   1. TIME TRIGGER   -> does it run on a clock/interval/date? ("every day", "in 2h",
@@ -40,18 +41,19 @@ selected leaf tool. Keeping it write-free avoids duplicating any leaf-tool logic
                        call them, timezone, context ................. root(USER.md)
   6. TOOL SPEC      -> a callable tool/script the agent invokes (path,
                        inputs, capability)? .......................... root(TOOLS.md)
-  7. ALWAYS-ON RULE -> an unconditional behavioral rule/constraint/SOP that
-                       must hold EVERY turn AND cannot be expressed as a
-                       trigger-gated surface above ................... root(AGENTS.md) [LAST]
+  7. SOP / RULE     -> an SOP, behavioral rule/constraint, workflow, or
+                       when_to_use with NO time/event trigger .......... root(AGENTS.md)
 
-## ANTI-AGENTS.md PRESSURE (the whole point)
-  A request lands on AGENTS.md ONLY after 1-6 all miss. Before writing AGENTS.md, re-test:
-    - Can a HOOK enforce it on the event it actually cares about? (e.g. "always X on inbound"
-      -> message:received hook, not an always-injected rule) -> prefer hook.
-    - Is it only needed for a specific TASK class? -> prefer skill (thin trigger + on-demand body).
-    - Is it really identity/preference wearing a "rule" costume? -> route to IDENTITY/SOUL/USER.
-  Genuine AGENTS.md cases (keep): cross-cutting constraints with NO single event/schedule and
-  needed on essentially every turn (e.g. "never reveal secrets", "match user language").
+  NOTE: 4-7 are NOT a priority ladder — they are equal-weight content homes. Pick the file
+  that matches the content type. AGENTS.md is the RIGHT home for SOPs/rules/when_to_use.
+
+## TRIGGER RE-CHECK (only about surface, not about avoiding any root file)
+  The single hierarchy is trigger-gated (cron/hook/skill) vs always-on (root). Before routing
+  to ANY root file, re-test whether the behavior actually has a trigger that fits it better:
+    - reacts to a gateway event? (e.g. "always X on inbound" -> message:received hook) -> hook
+    - needed only for a specific TASK class? -> skill (thin trigger + on-demand body)
+    - runs on a schedule? -> cron
+  If none fit, it's genuinely always-on -> route to the matching root file by content type.
 
 ## SKILL SPECIAL CASE (trigger vs body split)
   A skill is NOT fully root-free: it needs a SHORT trigger so the agent knows WHEN to read it.
@@ -86,12 +88,12 @@ SCHEMA = {
         {"id": 4, "test": "identity_or_style_always_true",  "surface": "root", "file": ["IDENTITY.md", "SOUL.md"], "leaf": "tools/config_tool.py"},
         {"id": 5, "test": "durable_user_fact_or_pref",      "surface": "root", "file": ["USER.md"], "leaf": "tools/config_tool.py"},
         {"id": 6, "test": "callable_tool_spec",             "surface": "root", "file": ["TOOLS.md"], "leaf": "tools/config_tool.py"},
-        {"id": 7, "test": "unconditional_rule_no_trigger",  "surface": "root", "file": ["AGENTS.md"], "leaf": "tools/config_tool.py", "last_resort": True},
+        {"id": 7, "test": "sop_or_rule_or_when_to_use_no_trigger", "surface": "root", "file": ["AGENTS.md"], "leaf": "tools/config_tool.py"},
     ],
-    "anti_agents_recheck": [
-        "hook_can_enforce_on_its_event -> prefer hook",
+    "trigger_recheck_before_root": [
+        "could_it_be_a_hook_on_its_event -> prefer hook",
         "needed_only_for_task_class -> prefer skill",
-        "identity_or_pref_in_disguise -> IDENTITY/SOUL/USER",
+        "runs_on_a_schedule -> prefer cron",
     ],
     "skill_split": {"trigger": "one_line AGENTS.md when_to_use OR skill description", "body": "SKILL.md on-demand"},
     "tie_break": "trigger_wins_for_placement; steps go in payload/handler/skill; never duplicate into root",

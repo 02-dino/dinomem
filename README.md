@@ -184,7 +184,7 @@ The four routers above overlap at the edges — "always log X" could be a hook *
 
 The first three are trigger-gated, so they cost nothing until their trigger actually fires — that's *why* they're preferred whenever a request has a trigger, not because they outrank root files in importance. Only when a request has no schedule, no event, and isn't on-demand does it belong in a root file at all.
 
-**Inside the root-file fallback**, there's a further order: `IDENTITY.md → SOUL.md → USER.md → TOOLS.md → AGENTS.md`, with **`AGENTS.md` dead last** — a rule lands there only if it's genuinely unconditional and can't be a cron, hook, or skill. "What's your name" is obviously `IDENTITY.md`, not a rule. "Log every inbound message" is a **hook**, not an always-injected rule. "Never reveal secrets" — no trigger, must hold every turn — is a real `AGENTS.md` case.
+**Inside the root-file fallback**, the five files carry **equal weight** — there's no ranking among them, just the right home for each content type: name/role → `IDENTITY.md`, tone/style → `SOUL.md`, user facts → `USER.md`, tool specs → `TOOLS.md`, and **SOPs / rules / `when_to_use` → `AGENTS.md`** (its correct, first-choice home, not a last resort). "What's your name" is `IDENTITY.md`; "log every inbound message" is a **hook**, not a rule; "never reveal secrets" — no trigger, an unconditional rule — belongs in `AGENTS.md`, exactly where it should.
 
 The arbiter reasons through ordered discriminators (time trigger → event trigger → on-demand body → identity/style → user fact → tool spec → unconditional rule) and routes to exactly one leaf tool. It's write-free — it only emits the machine-readable decision schema (`route.py classify`) for the agent to reason over.
 
