@@ -558,7 +558,7 @@ status:           provisional → trusted
 | **Automatic notes** | The agent writes `_note_` files from its own commitments and task follow-ups — not only when you ask |
 | **Project execution** | Large builds become step-by-step plans the agent works through one step at a time across sessions, advancing on its own and pausing for approval on anything risky |
 | **Self-improving closer** | When a project finishes, the agent reviews its own work, makes a safe, behavior-preserving improvement if one helps (or confirms none is needed), then retires the completed note automatically — the workspace cleans up after itself |
-| **Behavior Promotion** | Reusable patterns distilled from completed projects, memory patterns, and best practices — then routed to the right surface: an on-demand procedure becomes a **skill** (auto-written), an event-driven pattern becomes a **hook**, a scheduled one becomes a **cron** (both staged for confirmation, and safety-validated first so a promoted hook can't loop or silently break the agent) |
+| **Behavior Promotion** | Reusable patterns distilled from completed projects, memory patterns, and best practices — then routed to the right surface: an on-demand procedure becomes a **skill** (auto-written), an event-driven pattern becomes a **hook**, a scheduled one becomes a **cron** (both staged for confirmation, safety-validated so a promoted hook can't loop or silently break the agent, and deduped against what's already installed so nothing double-fires) |
 | **Session deep recall** | When memory summary is thin, searches raw archived sessions (7-day window) for the exact exchange — sharper, more detailed recall for recent context |
 
 ---
