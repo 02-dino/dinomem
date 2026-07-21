@@ -138,16 +138,20 @@ dinomem includes a routing system that detects your intent and writes to the cor
 
 ### Surface arbiter (which mechanism, not just which file)
 
-Before any write, `tools/route.py` decides **which surface** the request belongs to — because root files are injected into context on **every single turn**, so they are the most expensive place to put behavior. The arbiter is **cost-ordered** and picks the cheapest surface that fits:
+Before any write, `tools/route.py` decides **which surface** the request belongs to. The rule is simple: **put behavior where its trigger lives, and only fall back to a root file when the behavior has no trigger** — because root files are injected into context on *every single turn*, so they're the most expensive home. The arbiter doesn't rank surfaces; it **matches the request to the surface that fits it**, and root files are the fallback of last resort:
 
-| Priority | Surface | Fires when | Always-on cost |
-| -------- | ------- | ---------- | -------------- |
-| 1 | **cron** | it runs on a schedule/interval/date | none (schedule-gated) |
-| 2 | **hook** | it reacts to a gateway event | none (event-gated) |
-| 3 | **skill** | it's on-demand procedure needed *sometimes* | ~1-line trigger + on-demand body |
-| 4 | **root file** | it's always-on identity/style/pref/rule with **no trigger** | full — injected every turn |
+| If the request… | …it belongs to | Always-on cost |
+| --------------- | -------------- | -------------- |
+| runs on a schedule/interval/date | **cron** | none (schedule-gated) |
+| reacts to a gateway event | **hook** | none (event-gated) |
+| is on-demand procedure needed *sometimes* | **skill** | ~1-line trigger + on-demand body |
+| is always-on with **no trigger** — identity, style, a user fact, a tool spec, or an unconditional rule | **root file** *(fallback)* | full — injected every turn |
 
-Within root, the order is `IDENTITY.md → SOUL.md → USER.md → TOOLS.md → AGENTS.md`, and **`AGENTS.md` is the last resort** — a rule only lands there if it's genuinely unconditional and can't be expressed as a cron, hook, or skill. "What's your name" is clearly `IDENTITY.md`; "log every inbound message" is a **hook**, not an always-injected rule. The arbiter reasons through ordered discriminators (time trigger → event trigger → on-demand body → identity/style → user fact → tool spec → unconditional rule) and routes to exactly one leaf tool. It's write-free — it only emits the machine-readable decision schema (`route.py classify`) for the agent to reason over.
+The first three are trigger-gated, so they cost nothing until their trigger actually fires — that's *why* they're preferred whenever a request has a trigger, not because they outrank root files in importance. Only when a request has no schedule, no event, and isn't on-demand does it belong in a root file at all.
+
+**Inside the root-file fallback**, there's a further order: `IDENTITY.md → SOUL.md → USER.md → TOOLS.md → AGENTS.md`, with **`AGENTS.md` dead last** — a rule lands there only if it's genuinely unconditional and can't be a cron, hook, or skill. "What's your name" is obviously `IDENTITY.md`, not a rule. "Log every inbound message" is a **hook**, not an always-injected rule. "Never reveal secrets" — no trigger, must hold every turn — is a real `AGENTS.md` case.
+
+The arbiter reasons through ordered discriminators (time trigger → event trigger → on-demand body → identity/style → user fact → tool spec → unconditional rule) and routes to exactly one leaf tool. It's write-free — it only emits the machine-readable decision schema (`route.py classify`) for the agent to reason over.
 
 The same **detect-intent → validate → safe-write** pattern powers the leaf routers below, so scheduling, automation, and teaching new procedures all work the same way as "put this in the right file":
 
