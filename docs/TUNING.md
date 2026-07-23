@@ -10,7 +10,7 @@ Not patched automatically — skipping these hurts cost, performance, response s
 
 **`keepRecentTokens`** — set to 10% of `min(contextWindow, 200000)`. Minimum tokens preserved from the most recent window during compaction — protects immediate context continuity.
 
-**`model`** — compaction (summarizing session context) is a **no-reasoning bulk task**, the same tier as dinomem's `extract_memory` / `memory_review`. Set `agents.defaults.compaction.model` to the **same cheap, high-context model** you'd use for [`DINOMEM_CHEAP_MODEL`](#model-selection). One model, both jobs: cheap where it's bulk, default where it's reasoning. If unset, OpenClaw uses your default model for compaction too (works, just costs more). dinomem does not set this for you — you (or your install agent) pick it, since the right model depends entirely on what you have.
+**`model`** — compaction (summarizing session context) is a **no-reasoning bulk task**, the same tier as dinomem's `extract_memory` / `memory_review`. Set `agents.defaults.compaction.model` to your cheap, high-context model — this is now **the single anchor**: dinomem's [`DINOMEM_CHEAP_MODEL`](#model-selection) resolution auto-follows whatever you set here, so one change here routes every non-reasoning dinomem script too, no separate export needed. If unset, OpenClaw uses your default model for compaction too (works, just costs more). dinomem does not set this for you — you (or your install agent) pick it, since the right model depends entirely on what you have.
 
 **`memoryFlush.model`** — the silent memory-flush turn (reads the session tail, writes the bare daily `memory/YYYY-MM-DD.md` that feeds `startupContext`) is the **same no-reasoning bulk tier** as compaction. By default it runs on whatever your **live session model** is — so on a reasoning-heavy default (e.g. an Opus/Pro tier) every flush burns your most expensive model on a write-to-disk chore. Set `agents.defaults.compaction.memoryFlush.model` to the **same cheap, high-context model** as `compaction.model` (and `DINOMEM_CHEAP_MODEL`). The override is exact — it does **not** inherit the session fallback chain. Caveat: the flush turn decides what's worth keeping; a cheap model is fine for extract-and-write, but if flushed notes ever look thin, bump it up a tier.
 
@@ -29,7 +29,7 @@ model.
 |------|---------|-------------------|-----|
 | No-reasoning (bulk) | `extract_memory`, `memory_review`, **+ OpenClaw compaction & memoryFlush** | Cheapest model with the **highest context window** you have | High-volume text ops (extraction, summarization, context compaction, daily-file flush). Context window matters more than reasoning depth. Use the **same** model for `DINOMEM_CHEAP_MODEL`, `compaction.model`, and `compaction.memoryFlush.model`. |
 
-**Tested models (mine).** For the **non-reasoning** tier, I tested **Haiku 4.5** and it works very well. For the **reasoning** tier (neuron), I tested **Opus 4.8, Sonnet 5, Sonnet 4.6, and MiMo 2.5 Pro** — all work very well.
+**Tested models (mine).** For the **non-reasoning** tier, I tested **Haiku 4.5** and it works very well. For the **reasoning** tier (neuron), I tested **Opus 4.8 and Kimi K3** — both work very well.
 
 **Default behavior:** every script uses your OpenClaw default model (`agents.defaults.model.primary`). Nothing to configure.
 
