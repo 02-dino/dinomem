@@ -39,8 +39,15 @@ selected leaf tool. Keeping it write-free avoids duplicating any leaf-tool logic
                        tone/verbosity/personality -> SOUL.md ............. root(identity)
   5. USER FACT      -> a durable fact/preference ABOUT the human? name to
                        call them, timezone, context ................. root(USER.md)
-  6. TOOL SPEC      -> a callable tool/script the agent invokes (path,
-                       inputs, capability)? .......................... root(TOOLS.md)
+  6. TOOL SPEC      -> an ON-DEMAND tool the AGENT ITSELF invokes at will
+                       (path, inputs, capability)? .................. root(TOOLS.md)
+                       PRINCIPLE: TOOLS.md documents ONLY on-demand tools the
+                       LLM calls directly, and ONLY their SPEC + how-to-use.
+                       EXCLUDE anything invoked purely by another script, a
+                       cron, a hook, or an internal tool (operator/plumbing) —
+                       those are NOT agent-facing and do not belong in TOOLS.md.
+                       No operator runbooks, no cron/poller internals, no impl
+                       detail — spec + invocation only.
   7. SOP / RULE     -> an SOP, behavioral rule/constraint, workflow, or
                        when_to_use with NO time/event trigger .......... root(AGENTS.md)
 
@@ -101,7 +108,8 @@ SCHEMA = {
         {"id": 3, "test": "procedural_knowledge_needed_sometimes", "surface": "skill", "leaf": "tools/skill_tool.py"},
         {"id": 4, "test": "identity_or_style_always_true",  "surface": "root", "file": ["IDENTITY.md", "SOUL.md"], "leaf": "tools/config_tool.py"},
         {"id": 5, "test": "durable_user_fact_or_pref",      "surface": "root", "file": ["USER.md"], "leaf": "tools/config_tool.py"},
-        {"id": 6, "test": "callable_tool_spec",             "surface": "root", "file": ["TOOLS.md"], "leaf": "tools/config_tool.py"},
+        {"id": 6, "test": "on_demand_tool_agent_invokes_directly", "surface": "root", "file": ["TOOLS.md"], "leaf": "tools/config_tool.py",
+         "principle": "TOOLS.md = ON-DEMAND agent-facing tools ONLY; spec + how-to-use ONLY. EXCLUDE script/cron/hook/internal-tool-only invocations (operator plumbing) and any non-spec impl detail."},
         {"id": 7, "test": "sop_or_rule_or_when_to_use_no_trigger", "surface": "root", "file": ["AGENTS.md"], "leaf": "tools/config_tool.py"},
     ],
     "cron_backend_subroute": {
