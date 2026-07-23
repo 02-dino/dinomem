@@ -39,7 +39,10 @@ AXIS 4 — runtime_cost_tier (decide FIRST; pick cheapest meeting goal):
 ## COST RULES (enforced)
   T0 preferred: deterministic goal -> --command/--system-event, never --message.
   no unconditional recurring --message: recurring + message + no gate -> REJECT unless --confirmed (T3).
-  model downgrade = approval: T2 requires --no-reasoning + --model (or DINOMEM_CHEAP_MODEL); never auto-picks.
+  model downgrade = approval: T2 requires --no-reasoning + a cheap model source:
+    --model, or DINOMEM_CHEAP_MODEL env, or agents.defaults.compaction.model (the
+    single anchor). Never auto-picks a downgrade without one of these present.
+    The cheap model auto-follows compaction.model via procedures/_cheap_model.py.
 
 ## CONFIRM TIER (writer refuses without --confirmed)
   main + system-event (reminder)   -> direct
@@ -71,6 +74,27 @@ TARGETS = {"main", "isolated"}
 TIERS = {"T0", "T1", "T2", "T3"}
 DELIVERY = {"none", "announce", "webhook"}
 
+
+def _cheap_model_resolved():
+    """Resolve the T2 cheap model from the single compaction anchor.
+
+    Delegates to procedures/_cheap_model.py: DINOMEM_CHEAP_MODEL env ->
+    agents.defaults.compaction.model -> legacy env -> "". So T2 crons follow the
+    same anchor as every other cheap lane; change compaction.model and the next
+    T2 add picks it up. Falls back to the raw env if the helper is unavailable.
+    """
+    try:
+        import importlib.util as _ilu
+        _hp = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "procedures", "_cheap_model.py",
+        )
+        _spec = _ilu.spec_from_file_location("_cheap_model", _hp)
+        _cm = _ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(_cm)
+        return (_cm.cheap_model() or "").strip()
+    except Exception:
+        return os.environ.get("DINOMEM_CHEAP_MODEL", "").strip()
 
 def _fail(msg):
     print(json.dumps({"ok": False, "error": msg}))
@@ -189,8 +213,8 @@ def cmd_add(args):
         if tier == "T2":
             if not no_reasoning:
                 _fail("T2 = llm_no_reasoning: pass --no-reasoning")
-            if not model and not os.environ.get("DINOMEM_CHEAP_MODEL"):
-                _fail("T2 requires a cheap model: pass --model <alias> or set DINOMEM_CHEAP_MODEL (approval-gated, never auto)")
+            if not model and not _cheap_model_resolved():
+                _fail("T2 requires a cheap model: pass --model <alias>, set DINOMEM_CHEAP_MODEL, or set agents.defaults.compaction.model (the anchor) — approval-gated, never auto")
     if tier == "T1" and not gate:
         _fail("T1 = deterministic-gate: pass --gate <script>; without a gate this is T0 or T3")
     if gate and command:
@@ -226,7 +250,11 @@ def cmd_add(args):
         argv += ["--command", command]
     else:  # message -> agentTurn
         argv += ["--session", "isolated", "--message", message]
-        chosen_model = model or os.environ.get("DINOMEM_CHEAP_MODEL")
+        # T2 cheap model: explicit --model wins, else the compaction anchor
+        # (via _cheap_model helper: DINOMEM_CHEAP_MODEL env -> compaction.model
+        # -> legacy env). ONE anchor drives every cheap lane; change
+        # agents.defaults.compaction.model and T2 crons follow on next add.
+        chosen_model = model or _cheap_model_resolved()
         if chosen_model and tier == "T2":
             argv += ["--model", chosen_model]
         if no_reasoning:

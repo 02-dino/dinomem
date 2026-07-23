@@ -179,9 +179,21 @@ def _find_openclaw_bin():
     return "openclaw"  # fallback, let subprocess raise if missing
 
 # memory_review is a non-reasoning task (classify/prune, no chained inference).
-# Route it to the cheap model via the standard DINOMEM_CHEAP_MODEL tag (same
-# convention extract_memory.py uses). Unset -> OpenClaw default (default-safe).
-CHEAP_MODEL = os.environ.get("DINOMEM_CHEAP_MODEL", "").strip() or None
+# Route it to the CHEAP tier, AUTO-LINKED to agents.defaults.compaction.model via
+# the shared _cheap_model helper (single anchor: change compaction.model -> this
+# follows). Precedence: DINOMEM_CHEAP_MODEL env -> compaction.model -> legacy env
+# -> "" (caller uses OpenClaw default, default-safe).
+def _resolve_cheap_model():
+    try:
+        import importlib.util as _ilu
+        _hp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_cheap_model.py")
+        _spec = _ilu.spec_from_file_location("_cheap_model", _hp)
+        _cm = _ilu.module_from_spec(_spec); _spec.loader.exec_module(_cm)
+        return _cm.cheap_model() or None
+    except Exception:
+        return os.environ.get("DINOMEM_CHEAP_MODEL", "").strip() or None
+
+CHEAP_MODEL = _resolve_cheap_model()
 
 def call_llm(prompt, max_tokens=4000):
     """Call LLM via OpenClaw gateway (cheap/non-reasoning path when DINOMEM_CHEAP_MODEL set)."""

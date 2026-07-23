@@ -271,9 +271,24 @@ LLM_API_KEY = os.environ.get("LLM_API_KEY") or get_api_key_from_openclaw(LLM_MOD
 LLM_API_BASE = os.environ.get("LLM_API_BASE") or get_api_base_from_model(LLM_MODEL)
 LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "3000"))
 LLM_ENABLED = bool(LLM_MODEL)
-# Optional cost lever (opt-in): no-reasoning (reasoning=False) calls route to this
-# model if set. Reasoning calls always use the OpenClaw default. Unset = no change.
-CHEAP_MODEL = os.environ.get("DINOMEM_CHEAP_MODEL", "").strip() or None
+# Cost lever: no-reasoning (reasoning=False) calls route to the CHEAP tier.
+# AUTO-LINKED to agents.defaults.compaction.model via the shared _cheap_model
+# helper (single anchor: change compaction.model -> every cheap call follows).
+# Precedence inside the helper: DINOMEM_CHEAP_MODEL env -> compaction.model ->
+# legacy env -> "". Empty -> caller uses OpenClaw default (default-safe). Reasoning
+# calls always use the OpenClaw default regardless.
+def _resolve_cheap_model():
+    try:
+        import importlib.util as _ilu
+        _hp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_cheap_model.py")
+        _spec = _ilu.spec_from_file_location("_cheap_model", _hp)
+        _cm = _ilu.module_from_spec(_spec); _spec.loader.exec_module(_cm)
+        return _cm.cheap_model() or None
+    except Exception:
+        # helper unavailable -> fall back to the raw env (old behavior)
+        return os.environ.get("DINOMEM_CHEAP_MODEL", "").strip() or None
+
+CHEAP_MODEL = _resolve_cheap_model()
 # Thinking level passed to the gateway for reasoning=True calls.
 REASONING_THINKING = os.environ.get("DINOMEM_REASONING_THINKING", "high").strip() or "high"
 

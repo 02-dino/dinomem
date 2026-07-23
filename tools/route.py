@@ -47,6 +47,20 @@ selected leaf tool. Keeping it write-free avoids duplicating any leaf-tool logic
   NOTE: 4-7 are NOT a priority ladder — they are equal-weight content homes. Pick the file
   that matches the content type. AGENTS.md is the RIGHT home for SOPs/rules/when_to_use.
 
+## CRON SUB-ROUTE (once surface=cron): linux crontab vs openclaw cron
+  Two cron BACKENDS exist; pick by whether the job needs the gateway/agent:
+    - LINUX CRONTAB  -> pure-script infra that MUST run even if the OpenClaw
+      gateway is down (memory extraction, backups, session reset, cleanup).
+      Zero gateway context cost; survives gateway restarts/outages. This is
+      how dinomem's OWN install-time infra crons are registered (install.sh).
+    - OPENCLAW CRON  -> anything that needs agent context, model routing,
+      delivery, or an agentTurn/message payload (T2/T3), OR a gated worker.
+      Managed by the gateway; this is what tools/cron_tool.py writes.
+  RULE: deterministic script that must survive gateway-down -> linux crontab.
+        needs agent/model/delivery (T1 gate worker, T2/T3 message) -> openclaw cron.
+  Default for USER-requested scheduling -> openclaw cron (via cron_tool.py). Only
+  base-infra plumbing chooses linux crontab, and that choice is made at install.
+
 ## TRIGGER RE-CHECK (only about surface, not about avoiding any root file)
   The single hierarchy is trigger-gated (cron/hook/skill) vs always-on (root). Before routing
   to ANY root file, re-test whether the behavior actually has a trigger that fits it better:
@@ -90,6 +104,12 @@ SCHEMA = {
         {"id": 6, "test": "callable_tool_spec",             "surface": "root", "file": ["TOOLS.md"], "leaf": "tools/config_tool.py"},
         {"id": 7, "test": "sop_or_rule_or_when_to_use_no_trigger", "surface": "root", "file": ["AGENTS.md"], "leaf": "tools/config_tool.py"},
     ],
+    "cron_backend_subroute": {
+        "linux_crontab": "pure-script infra that must run even if gateway is down (extract/backup/reset/cleanup); zero gateway cost; install-time only",
+        "openclaw_cron": "needs agent context / model routing / delivery / agentTurn payload (T1 gate, T2 cheap, T3 default); written by tools/cron_tool.py",
+        "rule": "survives-gateway-down deterministic -> linux crontab; needs-agent-or-model-or-delivery -> openclaw cron",
+        "default_for_user_requests": "openclaw cron",
+    },
     "trigger_recheck_before_root": [
         "could_it_be_a_hook_on_its_event -> prefer hook",
         "needed_only_for_task_class -> prefer skill",

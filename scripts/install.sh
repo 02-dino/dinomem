@@ -270,7 +270,7 @@ done
 
 # ── 2) Copy scripts ───────────────────────────────────────────────────────────
 hr "Copying scripts"
-for f in procedures/session_reset.py procedures/auto_session_reset.py procedures/extract_memory.py procedures/workspace_backup.py; do
+for f in procedures/_cheap_model.py procedures/session_reset.py procedures/auto_session_reset.py procedures/extract_memory.py procedures/workspace_backup.py; do
   dst="$WS/$f"
   if [ -f "$dst" ] && [ "$FORCE" = 0 ]; then
     skip "$f (exists, use --force to overwrite)"
@@ -934,6 +934,51 @@ PYEOF
   TEI_CRON="$TEI_CRON" # assigned above
     upsert_cron "docker-compose.tei.yml" "dinomem: TEI auto-start on reboot" "$TEI_CRON" "TEI @reboot cron"
   fi
+fi
+
+# ── 4b) Cheap-model advisory (non-blocking, human-must-see) ───────────────────
+# dinomem's non-reasoning LLM lanes (extract + review) now AUTO-FOLLOW your
+# agents.defaults.compaction.model. If that anchor is unset, those lanes fall
+# back to your (expensive) default model on EVERY 15-min extract + daily review.
+# We do NOT block the install (noob-seamless) — but the human MUST see this, and
+# if an AI agent is running the installer, it must RELAY this to its human.
+#
+# Resolve what the cheap tier currently resolves to (empty => unset => default).
+cheap_now=""
+if command -v python3 >/dev/null 2>&1 && [ -f "$SKILL_DIR/procedures/_cheap_model.py" ]; then
+  cheap_now="$(OPENCLAW_CONFIG="${OPENCLAW_JSON:-$HOME/.openclaw/openclaw.json}" python3 "$SKILL_DIR/procedures/_cheap_model.py" 2>/dev/null || true)"
+fi
+if [ -z "$cheap_now" ]; then
+  # Marker file: an AI agent running this installer is instructed (README +
+  # this marker) to read it and DELIVER the advisory to its human operator.
+  CHEAP_WARN_MARKER="${TMPDIR:-/tmp}/dinomem_cheap_model_advisory.txt"
+  {
+    echo "DINOMEM COST ADVISORY — no cheap model set"
+    echo ""
+    echo "dinomem's non-reasoning work (memory extraction every 15 min + daily"
+    echo "review) has NO cheap model configured, so it will run on your DEFAULT"
+    echo "(reasoning) model. That is the most expensive way to run bulk memory work."
+    echo ""
+    echo "Fix (recommended): set a cheap high-context model as the anchor —"
+    echo "  openclaw config set agents.defaults.compaction.model <cheap-model-id>"
+    echo "Everything (extraction, review, and any cheap-tagged crons) auto-follows it."
+    echo ""
+    echo "Nothing is broken — this is a cost note, not an error. Install continued."
+  } > "$CHEAP_WARN_MARKER" 2>/dev/null || true
+  printf '\n\033[1;33m'
+  printf '╔══════════════════════════════════════════════════════════════════╗\n'
+  printf '║  ⚠  DINOMEM COST ADVISORY — READ THIS (no cheap model set)        ║\n'
+  printf '╚══════════════════════════════════════════════════════════════════╝\033[0m\n'
+  printf '  dinomem'\''s bulk memory work (extract every 15 min + daily review)\n'
+  printf '  has NO cheap model set, so it runs on your DEFAULT (reasoning) model —\n'
+  printf '  the most expensive option for high-volume, no-reasoning work.\n\n'
+  printf '  \033[1mRecommended:\033[0m set a cheap high-context model as the single anchor:\n'
+  printf '    \033[36mopenclaw config set agents.defaults.compaction.model <cheap-model-id>\033[0m\n'
+  printf '  Extraction, review, and cheap crons all auto-follow it.\n\n'
+  printf '  Nothing is broken. Install continues. (Advisory saved: %s)\n' "${CHEAP_WARN_MARKER}"
+  printf '\033[1;33m  → If an AI agent ran this install: DELIVER this advisory to your human.\033[0m\n\n'
+else
+  ok "cheap model resolves to: $cheap_now (auto-linked to compaction.model)"
 fi
 
 # ── 5) Patch openclaw.json config ─────────────────────────────────────────────
