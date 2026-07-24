@@ -784,6 +784,41 @@ else:
 PYEOF
   fi
 
+  # ── Log rotation for the cron logs dinomem writes ───────────────────────────
+  # Every dinomem cron appends to logs/*.log with NO rotation. On a busy box the
+  # */15 auto_session_reset + extraction logs grow unbounded (observed: 175MB+
+  # auto_reset.log, 161MB session_reset.log) until they threaten disk. We drop a
+  # logrotate config generated from $WS. Prefer the system dir (/etc/logrotate.d)
+  # when writable; otherwise write a workspace-local config the operator can wire
+  # into their own logrotate (documented in the warning). copytruncate is used so
+  # append-mode crons keep writing without a restart.
+  if [ "$DRY_RUN" = 1 ]; then
+    plan "install logrotate config for $WS/logs/*.log (size 10M, keep 3, compress, copytruncate)"
+  else
+    LOGROTATE_BODY="$WS/logs/*.log {
+    size 10M
+    rotate 3
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+}"
+    if [ -d /etc/logrotate.d ] && [ -w /etc/logrotate.d ]; then
+      LR_DST="/etc/logrotate.d/dinomem-$AGENT_ID"
+      printf '%s\n' "$LOGROTATE_BODY" > "$LR_DST" 2>/dev/null \
+        && ok "logrotate installed: $LR_DST (10M x3, copytruncate)" \
+        || warn "could not write $LR_DST — logs/*.log will not auto-rotate"
+    else
+      LR_DST="$WS/logs/logrotate.conf"
+      mkdir -p "$WS/logs" 2>/dev/null || true
+      printf '%s\n' "$LOGROTATE_BODY" > "$LR_DST" 2>/dev/null || true
+      warn "no writable /etc/logrotate.d — wrote $LR_DST instead."
+      warn "  Wire it in yourself, e.g. add to root crontab:"
+      warn "  0 3 * * * /usr/sbin/logrotate --state $WS/logs/.logrotate.state $LR_DST"
+    fi
+  fi
+
   # TEI @reboot
   # pending_note_reminder — every 3 days via OpenClaw cron (zero LLM pre-filter + LLM evaluate)
   if [ "$DRY_RUN" = 1 ]; then
