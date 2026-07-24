@@ -19,7 +19,7 @@ from datetime import datetime, timedelta
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
-ARCHIVE_MAX_AGE_DAYS = 7
+ARCHIVE_MAX_AGE_DAYS = 14  # widened 7->14: session_search backstop (coupled w/ session_ingest.MAX_AGE_DAYS)
 ORPHAN_MAX_AGE_HOURS = 48
 MIN_MESSAGE_LENGTH = 15
 MAX_SESSION_AGE_DAYS = 7
