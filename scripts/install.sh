@@ -264,13 +264,13 @@ fi
 
 # ── 1) Create workspace directories ──────────────────────────────────────────
 hr "Directories"
-for d in procedures tools logs memory .memory_archive; do
+for d in procedures tools logs memory memory/peers .memory_archive; do
   if [ -d "$WS/$d" ]; then skip "$d/ (exists)"; elif [ "$DRY_RUN" = 1 ]; then plan "create dir $d/"; else mkdir -p "$WS/$d"; ok "$d/"; fi
 done
 
 # ── 2) Copy scripts ───────────────────────────────────────────────────────────
 hr "Copying scripts"
-for f in procedures/_cheap_model.py procedures/session_reset.py procedures/auto_session_reset.py procedures/extract_memory.py procedures/workspace_backup.py; do
+for f in procedures/_cheap_model.py procedures/session_reset.py procedures/auto_session_reset.py procedures/extract_memory.py procedures/extract_user.py procedures/extract_user_test.py procedures/workspace_backup.py templates/peer_rep.md.tmpl; do
   dst="$WS/$f"
   if [ -f "$dst" ] && [ "$FORCE" = 0 ]; then
     skip "$f (exists, use --force to overwrite)"

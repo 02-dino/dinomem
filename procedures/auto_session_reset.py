@@ -135,6 +135,14 @@ def _run_main():
     # Step 2: Memory extraction (non-critical — can fail independently)
     memory_ok = run_script("extract_memory.py")
 
+    # Step 2b: Peer/user derivation (non-critical, fail-open — second head on the
+    # same archive scan). Only runs if the deriver is installed (BASE peer-rep
+    # feature). extract_user.py NEVER breaks the pipeline: any error -> it exits 0.
+    user_ok = None
+    user_script = Path(__file__).parent / "extract_user.py"
+    if user_script.exists():
+        user_ok = run_script("extract_user.py")
+
     # Step 3: Session ingest (optional — only if neuron is installed)
     ingest_script = Path(__file__).parent / "session_ingest.py"
     ingest_ok = None
@@ -147,6 +155,8 @@ def _run_main():
     log("📋 ORCHESTRATOR SUMMARY")
     log(f"   • Session reset: {'✅ OK' if session_ok else '❌ FAILED'}")
     log(f"   • Memory extraction: {_memory_extraction_status_line(memory_ok)}")
+    if user_ok is not None:
+        log(f"   • Peer derivation: {'✅ OK' if user_ok else '⚠️ FAILED (fail-open, non-critical)'}")
     if ingest_ok is not None:
         log(f"   • Session ingest: {'✅ OK' if ingest_ok else '⚠️ FAILED'}")
     log("=" * 60)

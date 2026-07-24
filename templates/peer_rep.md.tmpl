@@ -1,0 +1,37 @@
+---
+type: peer
+platform: PLATFORM
+platform_id: PLATFORM_ID
+person_ref:            # nullable. NEURON Layer-2 identity-linking hook. Leave blank in BASE.
+name: NAME
+handle: HANDLE
+first_seen: FIRST_SEEN
+last_updated: LAST_UPDATED
+tags: []
+---
+
+# Peer Rep — NAME (PLATFORM:PLATFORM_ID)
+
+<!--
+  Composite-key file: peers/<platform>_<platform_id>.md  (NEVER bare id — ids collide across platforms).
+  This file is INDEXED by memory_search but NOT auto-injected (subdir = retrieved, not injected).
+  PRIVACY: may enter context ONLY when active-speaker (platform,platform_id) matches this rep,
+  OR the owner explicitly asks about this person. Never write person A into person B's rep.
+  Each fact carries confidence + timestamp. Contradiction => supersede-in-place w/ provenance.
+  Staleness => confidence DECAY, never deletion. File deletion only on owner purge.
+-->
+
+## FACTS
+<!-- stated / hard identity facts. schema: - <fact>  (conf: 0.0-1.0, ts: YYYY-MM-DD) -->
+
+## BEAT
+<!-- revealed behavior / theory-of-mind inferences. schema: - <inference>  (conf: 0.0-1.0, ts: YYYY-MM-DD) -->
+
+## RELATIONS
+<!-- BASE: leave empty. NEURON emits peer:<platform>:<id> -> verb -> object into peers_graph.json. -->
+
+## LEDGER
+<!-- this person's track-record slice (their calls/outcomes as seen by us). schema: - <event>  (ts: YYYY-MM-DD) -->
+
+## PROVENANCE
+<!-- superseded facts kept for audit. schema: - [SUPERSEDED YYYY-MM-DD] <old fact> -> <new fact> -->
