@@ -960,6 +960,13 @@ def _cosine_sim(a, b):
     nb = sum(x * x for x in b) ** 0.5
     return dot / (na * nb) if na and nb else 0.0
 
+# Module-level sink so _contradiction_check_items (which runs BEFORE the diff
+# logger exists in write_memory_file) can hand merge/delete events to the diff
+# recorder. write_memory_file drains this after instantiating MemoryDiff.
+# Entries: ('merge', file, before_text, after_text) | ('delete', file, deleted_text)
+_MERGE_SINK = []
+
+
 def _contradiction_check_items(new_items, memory_dir, threshold=0.85):
     """
     For each new item, find semantically similar items in existing memory.
@@ -1019,12 +1026,15 @@ Existing similar items in memory:
 {candidate_texts}
 
 Classify the relationship. Reply with JSON only:
-{{"verdict": "same" | "update" | "contradiction" | "unrelated", "reason": "one sentence"}}
+{{"verdict": "same" | "merge" | "update" | "contradiction" | "unrelated", "reason": "one sentence", "merged": "only if verdict=merge: the single combined item text"}}
 
 - same: new item is equivalent to an existing one (skip new)
+- merge: new item adds a detail/nuance to an existing one that is NOT a conflict — combine both into one richer item (keep the merged text, drop the separate new item)
 - update: new item supersedes existing (delete old, keep new)
 - contradiction: new item conflicts with existing (delete old, keep new)
-- unrelated: different enough to coexist (keep both)"""
+- unrelated: different enough to coexist (keep both)
+
+Prefer `merge` over `update` when the existing item is still TRUE and the new item just enriches it; prefer `update` only when the existing item is now STALE/WRONG."""
 
         success, response = call_llm(prompt, max_tokens=100, reasoning=False)
         if not success:
@@ -1041,6 +1051,46 @@ Classify the relationship. Reply with JSON only:
 
         if verdict == 'same':
             log(f"   ⏭️  Contradiction check: skipped duplicate item")
+            continue
+        elif verdict == 'merge':
+            # Fold the new item's detail INTO the single best-matching existing
+            # file, in place. Keep the existing file (preserves its date/frontmatter
+            # provenance); drop the standalone new item so we don't duplicate.
+            merged_text = (result.get('merged') or '').strip()
+            if not merged_text:
+                # LLM said merge but gave no merged text -> safest fallback is to
+                # keep both (never lose data). Treat as unrelated.
+                log(f"   ℹ️  Contradiction check: merge verdict without merged text -> keeping both")
+                kept_new.append(new_item)
+                continue
+            # Merge into the TOP candidate only (highest-similarity is candidates[0]
+            # by scan order is not guaranteed; pick the first existing that still exists).
+            target = next(((mf, li, rl, it) for (mf, li, rl, it) in candidates if mf.exists()), None)
+            if target is None:
+                kept_new.append(new_item)
+                continue
+            mf, li, rl, it = target
+            try:
+                lines = mf.read_text(encoding='utf-8').split('\n')
+                if li < len(lines):
+                    # Preserve any leading [type] tag + trailing meta tags on the
+                    # existing line; replace the human text body with merged_text.
+                    tag_m = re.match(r'^(\s*-?\s*\[[a-z_]+\]\s*)', lines[li])
+                    lead = tag_m.group(1) if tag_m else ''
+                    meta_m = re.search(r'(\s*\[(?:expires|ctx):[^\]]*\]\s*)+$', lines[li])
+                    trail = meta_m.group(0) if meta_m else ''
+                    lines[li] = f"{lead}{merged_text}{trail}"
+                    mf.write_text('\n'.join(lines), encoding='utf-8')
+                    log(f"   🔗 Contradiction check: merged new detail into {mf.name}")
+                    # signal the merge to the diff logger via a module-level sink
+                    try:
+                        _MERGE_SINK.append((mf, it, lines[li]))
+                    except Exception:
+                        pass
+                    continue  # drop standalone new item (folded in)
+            except Exception as _me:
+                log(f"   ⚠️  merge failed on {mf.name} ({_me}) -> keeping both")
+            kept_new.append(new_item)
             continue
         elif verdict in ('update', 'contradiction'):
             for (md_file, line_idx, raw_line, item_text) in candidates:
@@ -1087,6 +1137,42 @@ def _slugify(text, max_len=40):
     text = text.strip('-')
     return text[:max_len]
 
+def _tiered_sections(item_type, clean_text, item_text, context_snippet, topics):
+    """
+    Build L0/L1/L2 tiered content sections (ported concept from OpenViking's
+    L0-abstract/L1-overview/L2-detail loading model).
+
+    Constraint (verified): OpenClaw's native memory_search chunks files at
+    400 tok/80 overlap and embeds per-chunk -- it does NOT read a special
+    'abstract-only' field, so we cannot force 'index L0 only'. Instead the
+    win is: (1) L0 leads the file, so the FIRST chunk a chunker produces is
+    the highest-signal one-liner, improving both BM25 and vector match on
+    short queries; (2) memory_get callers who only need the gist can read
+    just the first ~15 lines instead of the whole file; (3) L1 gives a
+    human/agent a quick navigation cue before deciding to read L2 in full.
+    L2 IS the existing item_text -- zero loss, this is purely additive.
+
+    Returns (l0, l1, l2) strings. Never raises -- falls back to plain text
+    on any error so extraction can never break because of this.
+    """
+    try:
+        l0 = clean_text.strip()
+        # L0 hard cap ~100 tokens (~400 chars) -- matches OpenViking's L0 budget.
+        if len(l0) > 400:
+            l0 = l0[:397].rsplit(' ', 1)[0] + "..."
+        topic_hint = (', '.join(t.lstrip('#') for t in topics[:3])) if topics else ""
+        l1_bits = [l0]
+        if context_snippet:
+            l1_bits.append(f"Context: {context_snippet.strip()}")
+        if topic_hint:
+            l1_bits.append(f"Topics: {topic_hint}")
+        l1 = ' | '.join(l1_bits)
+        l2 = item_text.strip()
+        return l0, l1, l2
+    except Exception:
+        return clean_text, clean_text, item_text
+
+
 def _write_item_file(memory_dir, date_str, item_type, item_text, topics, context_snippet):
     """Write a single memory item as its own .md file with YAML frontmatter."""
     # Build slug from first 40 chars of item text (strip tags first)
@@ -1124,6 +1210,15 @@ def _write_item_file(memory_dir, date_str, item_type, item_text, topics, context
         frontmatter_lines.append(f"session_ctx: {context_snippet[:80].replace(chr(10), ' ')}")
     frontmatter_lines.append("---")
     frontmatter_lines.append("")
+    # Tiered L0/L1/L2 body (additive -- L2 preserves the exact original single-
+    # line item body so any code/tool that greps/reads the bare item text
+    # keeps working unchanged; L0/L1 are new sections above it).
+    l0, l1, l2 = _tiered_sections(item_type, clean_text, item_text, context_snippet, topics)
+    frontmatter_lines.append(f"L0: {l0}")
+    frontmatter_lines.append("")
+    if l1 and l1 != l0:
+        frontmatter_lines.append(f"L1: {l1}")
+        frontmatter_lines.append("")
     frontmatter_lines.append(item_text)
     frontmatter_lines.append("")
     filepath.write_text('\n'.join(frontmatter_lines), encoding='utf-8')
@@ -1132,6 +1227,30 @@ def _write_item_file(memory_dir, date_str, item_type, item_text, topics, context
 def write_memory_file(summary, dedup=True):
     """Write memory summary as per-item files: memory/YYYY-MM-DD_<type>_<slug>.md"""
     today = summary.get('date', datetime.now().strftime("%Y-%m-%d"))
+    # Per-extraction memory-change audit log (adds/updates/deletes). Fail-open:
+    # a diff-logging failure must NEVER break extraction. Base-owned shared helper.
+    _diff = None
+    try:
+        from _memory_diff import MemoryDiff
+        _diff = MemoryDiff(MEMORY_DIR, date_str=today, log_fn=log)
+        # Drain any merge/delete events _contradiction_check_items() queued
+        # earlier in this run (it runs before this function, on a module-level
+        # sink, since it has no MemoryDiff instance of its own).
+        global _MERGE_SINK
+        for kind, *rest in _MERGE_SINK:
+            try:
+                if kind == 'merge':
+                    mf, before, after = rest
+                    _diff.record_update(mf, 'merge', before, after)
+                elif kind == 'delete':
+                    mf, deleted = rest
+                    _diff.record_delete(mf, 'contradiction', deleted)
+            except Exception:
+                pass
+        _MERGE_SINK = []
+    except Exception as _de:
+        log(f"   ⚠️  memory_diff unavailable (non-fatal): {_de}")
+        _diff = None
     context = summary.get('context', '').strip()
     insights = summary.get('insights', [])
     source_scores = summary.get('source_scores', [])
@@ -1193,8 +1312,13 @@ def write_memory_file(summary, dedup=True):
             if ok:
                 written += 1
                 log(f"   ✅ [{item_type}] → {fpath.name}")
+                if _diff is not None:
+                    _diff.record_add(fpath, item_type, item)
             else:
                 skipped += 1
+
+    if _diff is not None:
+        _diff.flush()
 
     if written == 0 and skipped == 0:
         log(f"   ℹ️  Nothing to write for {today}")
