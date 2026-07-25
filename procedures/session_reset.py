@@ -4,7 +4,7 @@ Session Reset Script
 
 Resets analysis agent sessions:
   - Archives orphaned session files (>48h old)
-  - Deletes old archives (>7 days)
+  - Deletes old archives (>21 days)
   - Resets tracked sessions (chat >7 days, cron/isolated >1 day, compaction generations >=2)
   - Cleans JSONL content before archiving
 
@@ -19,7 +19,7 @@ from datetime import datetime, timedelta
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
-ARCHIVE_MAX_AGE_DAYS = 14  # widened 7->14: session_search backstop (coupled w/ session_ingest.MAX_AGE_DAYS)
+ARCHIVE_MAX_AGE_DAYS = 21  # widened 7->14->21: session_search backstop (coupled w/ neuron session_ingest.MAX_AGE_DAYS)
 ORPHAN_MAX_AGE_HOURS = 48
 MIN_MESSAGE_LENGTH = 15
 MAX_SESSION_AGE_DAYS = 7
