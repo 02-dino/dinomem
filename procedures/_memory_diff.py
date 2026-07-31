@@ -45,6 +45,13 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Optional git-backing (support-only). If git_history isn't importable or git
+# isn't present, everything below degrades to the exact original behavior.
+try:
+    import git_history as _gh
+except Exception:
+    _gh = None
+
 DIFF_DIRNAME = ".diffs"
 # Keep the audit trail bounded so it never becomes the bloat it audits.
 # Default retention: keep the most recent N diff files, prune older ones on flush.
@@ -56,6 +63,13 @@ MAX_CONTENT_CHARS = int(os.environ.get("DINOMEM_DIFF_MAX_CHARS", "8000") or "800
 def _now_iso():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+
+def _basename(uri):
+    """Bare filename from a uri/path (e.g. 'memory/foo.md' -> 'foo.md')."""
+    try:
+        return Path(str(uri)).name
+    except Exception:
+        return str(uri)
 
 def _rel(memory_dir, path):
     """Store a workspace-relative-ish uri (memory/<name>) for portability."""
@@ -124,6 +138,52 @@ class MemoryDiff:
     def has_changes(self):
         return bool(self.adds or self.updates or self.deletes)
 
+    # ---- ADDITIVE git cross-reference (support-only, fail-open) ------------
+    def _git_ref(self):
+        """Return an optional git_ref block, or None if git isn't backing this.
+
+        This NEVER changes the primary audit log. It only ATTACHES, when git is
+        present, a small block letting a reader:
+          - pin the exact commit this run's memory state corresponds to
+            (for true `git checkout` recovery beyond the stored before/after),
+          - cross-check whether git SAW the same memory files change this run
+            (drift detection between the hand-rolled log and git's byte truth).
+        Absent git / any error -> None (log stays exactly as before).
+        """
+        if _gh is None:
+            return None
+        repo = str(self.memory_dir)
+        if not _gh.available(repo):
+            return None
+        block = {"backed_by_git": True}
+        # Current commit (recovery anchor).
+        try:
+            head = _gh._run(repo, ["rev-parse", "HEAD"])
+            if head:
+                block["head"] = head.strip()
+        except Exception:
+            pass
+        # Cross-check: which memory files git sees changed since the previous
+        # commit, vs what this run recorded. Pure diagnostic; no authority.
+        try:
+            recorded = {
+                _basename(x.get("uri", ""))
+                for x in (self.adds + self.updates + self.deletes)
+            }
+            git_changed = {
+                _basename(c["path"])
+                for c in _gh.diff_since(repo, "HEAD", pathspec=".")
+            }
+            if recorded or git_changed:
+                block["cross_check"] = {
+                    "recorded_files": sorted(recorded),
+                    "git_uncommitted_files": sorted(git_changed),
+                    "in_sync": recorded == git_changed if git_changed else None,
+                }
+        except Exception:
+            pass
+        return block
+
     # ---- flush ------------------------------------------------------------
     def flush(self):
         """Write the diff JSON. Fail-open: never raises. Returns path or None."""
@@ -148,6 +208,17 @@ class MemoryDiff:
                     "total_deletes": len(self.deletes),
                 },
             }
+            # --- ADDITIVE git cross-reference (support-only, fail-open) ---------
+            # The JSON above is UNCHANGED and remains authoritative. This only
+            # ATTACHES an optional git_ref block so the hand-rolled diff can be
+            # cross-checked against git's byte-exact record and pointed at a
+            # commit for true `git checkout` recovery. Absent git -> omitted.
+            try:
+                gref = self._git_ref()
+                if gref:
+                    payload["git_ref"] = gref
+            except Exception as e:
+                self._log(f"   ℹ️  memory_diff.git_ref skipped (non-fatal): {e}")
             out = diff_dir / f"{self.run_id}.json"
             tmp = diff_dir / f".{self.run_id}.json.tmp"
             tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
