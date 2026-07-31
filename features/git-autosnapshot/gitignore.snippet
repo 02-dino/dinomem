@@ -1,0 +1,31 @@
+
+# >>> dinomem git-autosnapshot ignores >>>
+# Runtime state that churns constantly and is never useful in git history.
+# Agent runtime state (auto-generated)
+agents/*/agent/models.json
+agents/*/agent/plugins/*/catalog.json
+agents/*/agent/*.sqlite
+agents/*/agent/*.sqlite-shm
+agents/*/agent/*.sqlite-wal
+agents/*/agent/*.sqlite-journal
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite-journal
+*.sqlite.tmp-*
+*.sqlite.migrated
+*.migrated
+# Cron/gate last-run markers
+scripts/.*.last_run
+workspace-*/scripts/.*.last_run
+# Cache/tee spill
+memory/cache/
+workspace-*/memory/cache/
+logs/
+# Vector DB / models / big runtime data (regenerable, huge)
+kb/vector_db/
+workspace-*/kb/vector_db/
+models/
+workspace-*/models/
+# git-autosnapshot's own log
+logs/git-autosnapshot.log
+# <<< dinomem git-autosnapshot ignores <<<

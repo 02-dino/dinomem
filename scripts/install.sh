@@ -4,7 +4,7 @@
 # Idempotent: safe to run multiple times.
 #
 # Usage:
-#   bash scripts/install.sh [--workspace DIR] [--agent-id ID] [--no-docker] [--no-cron] [--no-backup-cron] [--no-smart-cache] [--force] [--dry-run]
+#   bash scripts/install.sh [--workspace DIR] [--agent-id ID] [--no-docker] [--no-cron] [--no-backup-cron] [--no-smart-cache] [--git-snapshot] [--force] [--dry-run]
 #
 # Options:
 #   --workspace DIR   Path to agent workspace (default: $OPENCLAW_WORKSPACE or ~/.openclaw/workspace)
@@ -22,6 +22,10 @@
 #                     (2) wiring the jobs via your own scheduler (systemd timers, etc.).
 #   --no-backup-cron  Skip weekly backup cron (if you have your own backup system)
 #   --no-smart-cache  Skip bundling the smart-cache-pro (compression-only) plugin
+#   --git-snapshot    Enable local git auto-snapshot safety net for ~/.openclaw:
+#                     a timer commits all non-ignored changes every 15 min
+#                     (disk-aware cleanup, lfs media handling, history retention).
+#                     Opt-IN. See features/git-autosnapshot/README.md.
 #   --force           Overwrite existing files
 #   --dry-run         Preview every change without writing anything (no files,
 #                     no crons, no Docker, no config patch). Idempotency-aware:
@@ -35,6 +39,7 @@ DO_DOCKER=1
 DO_CRON=1
 DO_BACKUP_CRON=1
 DO_SMART_CACHE=1
+DO_GIT_SNAPSHOT=0   # opt-IN: local git auto-snapshot safety net (see features/git-autosnapshot)
 FORCE=0
 DRY_RUN=0
 
@@ -50,6 +55,7 @@ while [ $# -gt 0 ]; do
     --no-cron)         DO_CRON=0; shift ;;
     --no-backup-cron)  DO_BACKUP_CRON=0; shift ;;
     --no-smart-cache)  DO_SMART_CACHE=0; shift ;;
+    --git-snapshot)    DO_GIT_SNAPSHOT=1; shift ;;
     --force)      FORCE=1; shift ;;
     --dry-run)    DRY_RUN=1; shift ;;
     --agree)      shift ;;  # no-op: base has no license gate; neuron passes this through after the human accepted the neuron license. Accept+ignore so neuron auto-base install doesn't die on 'unknown arg'.
@@ -1453,6 +1459,31 @@ PYEOF
       warn "openclaw.json not found at $OPENCLAW_JSON — clone done but plugin not wired"
     fi
   fi
+fi
+
+# ── 5b) git-autosnapshot feature (opt-in via --git-snapshot) ─────────────────
+# Local git auto-snapshot safety net for the whole ~/.openclaw repo: a timer
+# commits all non-ignored changes every 15 min, with disk-aware cleanup, lfs
+# media handling, and history retention. Self-contained under features/.
+if [ "$DO_GIT_SNAPSHOT" = 1 ]; then
+  hr "git-autosnapshot (local safety net)"
+  GS_INSTALLER="$SKILL_DIR/features/git-autosnapshot/install.sh"
+  GS_REPO="$OPENCLAW_DIR"   # the ~/.openclaw root (parent of the workspace)
+  if [ ! -f "$GS_INSTALLER" ]; then
+    warn "features/git-autosnapshot/install.sh not found — skipping"
+  elif [ "$DRY_RUN" = 1 ]; then
+    plan "run git-autosnapshot installer against $GS_REPO (every 15 min, disk-aware)"
+  else
+    GS_ARGS=(--repo "$GS_REPO")
+    [ "$FORCE" = 1 ] && GS_ARGS+=(--force)
+    if bash "$GS_INSTALLER" "${GS_ARGS[@]}"; then
+      ok "git-autosnapshot installed (repo: $GS_REPO)"
+    else
+      warn "git-autosnapshot installer returned non-zero — check output above"
+    fi
+  fi
+else
+  skip "git-autosnapshot (opt-in: pass --git-snapshot to enable)"
 fi
 
 # ── 6) Wire AGENTS.md ──────────────────────────────────────────────

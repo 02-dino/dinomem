@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.3.0
+
+**New feature: `git-autosnapshot` — local git safety net (opt-in).** A self-contained feature (`features/git-autosnapshot/`) that auto-commits all non-ignored changes in your `~/.openclaw` repo on a timer, so work is always recoverable. Local-only by default — no remote, nothing leaves the box. Enable during install with `--git-snapshot`, or run `bash features/git-autosnapshot/install.sh --repo ~/.openclaw` standalone.
+
+### Added
+- **Timer-driven auto-commit** (systemd timer, cron fallback). Default every 15 min. Captures tracked mods/deletions AND brand-new files, with a per-file size guard (default 10 MB) so a stray model/image/video dump can't bloat `.git`.
+- **git-lfs media handling** — images/video/pdf/fonts route through lfs so history stays small regardless of binary count. `.gitattributes` template + `git lfs install --local` wired by the installer (skipped with `--no-lfs` or when git-lfs is absent).
+- **Disk-aware cleanup** — housekeeping escalates by live disk %: `<80%` light hourly `gc`/`lfs prune`; `80–89%` `gc --prune=now` + `lfs prune` + history retention every tick; `≥90%` reflog-expire + aggressive `gc` + `lfs prune --force` + 7-day retention every tick. Escalations logged to `logs/git-autosnapshot.log`.
+- **History retention** — old `auto-snapshot` commits collapse into a baseline when disk is tight, bounding `.git` growth from ~35k snapshots/year. Only `auto-snapshot` commits are ever collapsed; hand-written commits are permanent at any age. Backup ref before any rewrite; failed rewrite auto-restores; bails on dirty tree; skips below a 50-commit floor.
+- **Scale config** — installer enables `core.fsmonitor`, `core.untrackedcache`, `feature.manyFiles` so staging stays sub-second into six-figure file counts.
+- **`.gitignore` block** — appends runtime-noise ignores (sqlite-wal/shm, models.json, catalog.json, `*.migrated`, vector DB, logs) so `git status` only surfaces real changes.
+- Generalized (no hardcoded paths) — all config via `AUTOSNAP_*` env / installer flags. Idempotent installer with `--dry-run` and `--uninstall` (removes scheduler only; keeps commits/scripts/.gitignore).
+
 ## Unreleased
 
 Multilingual embeddings by default. **Recommended for anyone whose notes/queries aren't purely English.** The local TEI embedding server now ships `intfloat/multilingual-e5-small` instead of the English-centric `all-MiniLM-L6-v2` — same 384-dim vectors and comparable footprint (~0.45 GB, 118M params, XLM-RoBERTa), but strong retrieval across 100+ languages (English, Indonesian, Arabic, Chinese, French, Italian, Russian, Spanish, …) and double the context (512 vs 256 tokens).
