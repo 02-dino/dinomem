@@ -29,6 +29,15 @@ from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
 
+# Optional git-backing (support-only). The .memory_archive/ side-copy of removed
+# lines below stays the authoritative recovery path. Git only ADDS a pre-dedup
+# whole-file recovery anchor (the archive keeps removed LINES, not the pre-merge
+# whole-file state — git closes that gap). Absent git -> unchanged behavior.
+try:
+    import git_history as _gh
+except Exception:
+    _gh = None
+
 # Workspace resolution (priority): DINOMEM_WORKSPACE env var > install-time sed
 # substitution of DINOMEM_WORKSPACE_PLACEHOLDER > self-locate from this file's
 # location. Self-locate fallback keeps the script working if install-time sed
@@ -247,6 +256,21 @@ def cleanup():
                        and not BARE_DAILY_RE.match(f.name)])
     removed_count = 0
     bootcheck_removed = 0
+
+    # ── Pass 0 (ADDITIVE, support-only): git pre-dedup recovery anchor ──
+    # Semantic dedup below is destructive (merges clusters, rewrites files). The
+    # .memory_archive/ copy captures removed LINES, but NOT the pre-merge
+    # whole-file state. If git is backing the memory dir, log the current HEAD as
+    # a recovery anchor so a bad merge can be fully reverted via
+    # `git checkout <head> -- memory/`. Purely a log line; fail-open; no behavior
+    # change if git is absent.
+    try:
+        if _gh is not None and _gh.available(str(MEMORY_DIR)):
+            _head = _gh._run(str(MEMORY_DIR), ["rev-parse", "HEAD"])
+            if _head:
+                print(f"git pre-dedup anchor: {_head.strip()[:12]} — recover a bad merge via 'git checkout {_head.strip()[:12]} -- memory/'")
+    except Exception:
+        pass
 
     # ── Pass 1: Semantic dedup across ALL files ──
     all_items = extract_all_items(md_files)
