@@ -25,6 +25,15 @@ import urllib.request
 from pathlib import Path
 from datetime import datetime, timedelta
 
+# Optional git-backing (support-only). Extraction already logs everything it
+# writes; git only ADDS a provenance line at the end of a run (what this
+# extraction actually changed in memory/, per git). Absent git -> no extra line,
+# extraction behaves exactly as before. Never a hard dep.
+try:
+    import git_history as _gh
+except Exception:
+    _gh = None
+
 # ─── Configuration ────────────────────────────────────────────────────────────
 
 # OpenClaw's CLI needs Node >= this. Cron PATH may resolve `node` to an old
@@ -1504,6 +1513,20 @@ def main():
     log(f"   • Empty sessions skipped: {empty_count}")
     log(f"   • Memory write failures: {failed_count}")
     log(f"   • Deduplication tracking: {len(load_processed_set())} archives tracked")
+    # ADDITIVE git provenance (support-only, fail-open). If git is backing the
+    # memory dir, report what THIS extraction actually changed there per git —
+    # a second, byte-exact view alongside the counters above. Pure log line; no
+    # behavior change; silent if git absent or nothing changed.
+    try:
+        if _gh is not None and stored_count > 0 and _gh.available(str(MEMORY_DIR)):
+            _changes = _gh.diff_since(str(MEMORY_DIR), "HEAD~1")
+            if _changes:
+                _a = sum(1 for c in _changes if c.get("status") == "A")
+                _m = sum(1 for c in _changes if c.get("status") == "M")
+                _d = sum(1 for c in _changes if c.get("status") == "D")
+                log(f"   • Git provenance (vs HEAD~1): {_a} added / {_m} modified / {_d} deleted file(s) in memory/")
+    except Exception:
+        pass
     log("=" * 60)
 
     # Backlog remaining after this run. If the attempted batch itself came up
