@@ -42,6 +42,14 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Optional git-backing (support-only). Absent git -> review behaves exactly as
+# before. Git is used ONLY to enrich the LLM prompt with edit-freshness context;
+# it NEVER changes the review schedule, buckets, dedup, or graduation.
+try:
+    import git_history as _gh
+except Exception:
+    _gh = None
+
 # Workspace resolution (priority): DINOMEM_WORKSPACE env var > install-time sed
 # substitution of DINOMEM_WORKSPACE_PLACEHOLDER > self-locate from this file's
 # location (procedures/ is one level under the workspace root). The self-locate
@@ -233,11 +241,32 @@ def review_file_with_llm(filepath, age):
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     file_date = filepath.stem
 
+    # --- ADDITIVE git freshness context (support-only, fail-open) -----------
+    # Filename date = when the file was CREATED. Git can tell the LLM when it was
+    # last EDITED and how many times it's been touched (a reinforcement signal).
+    # This only ENRICHES the prompt; it never alters the review gate/schedule.
+    # Absent git / any error -> line omitted, prompt identical to before.
+    git_context = ""
+    try:
+        if _gh is not None and _gh.available(str(MEMORY_DIR)):
+            lt = _gh.file_last_touched(str(MEMORY_DIR), filepath.name)
+            cc = _gh.commit_count(str(MEMORY_DIR), filepath.name)
+            if lt is not None:
+                edited_days = (datetime.now(timezone.utc) - lt).days
+                git_context = (
+                    f"\nGit edit history: last edited {edited_days} days ago, "
+                    f"touched in {cc} commit(s). A file edited recently despite an "
+                    f"old creation date is actively maintained — weigh its entries "
+                    f"as more likely still-relevant."
+                )
+    except Exception:
+        git_context = ""
+
     prompt = f"""You are reviewing a memory file for an AI agent.
 
 File date: {file_date}
 Review date: {today}
-File age: {age} days
+File age: {age} days{git_context}
 
 Memory file content:
 ---
