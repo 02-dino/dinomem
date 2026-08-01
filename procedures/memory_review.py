@@ -36,29 +36,28 @@ BATCH_SIZE is adaptive: scales with total file count so full cycle stays ~7 days
 
 import json
 import math
-import os
 import subprocess
+import sys
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Optional git-backing (support-only). Absent git -> review behaves exactly as
-# before. Git is used ONLY to enrich the LLM prompt with edit-freshness context;
-# it NEVER changes the review schedule, buckets, dedup, or graduation.
+# Optional git-backing (support-only, base-owned shared helper). git_history.py
+# ships in base's procedures/. Used here ONLY to enrich the review prompt with a
+# real edit-timeline hint ("last touched in git N days ago") so the LLM can weigh
+# recent reinforcement when judging [valid] vs [noise]. Additive prompt context
+# only — it never changes the review/freeze/delete control flow. FAIL-OPEN: any
+# import/git error → no hint line, prompt is exactly as before.
 try:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
     import git_history as _gh
 except Exception:
     _gh = None
 
-# Workspace resolution (priority): DINOMEM_WORKSPACE env var > install-time sed
-# substitution of DINOMEM_WORKSPACE_PLACEHOLDER > self-locate from this file's
-# location (procedures/ is one level under the workspace root). The self-locate
-# fallback keeps the script working if the install-time sed was skipped/failed
-# (manual copy, partial install, moved workspace dir).
-_WS_DEFAULT = "DINOMEM_WORKSPACE_PLACEHOLDER"
-if _WS_DEFAULT.startswith("DINOMEM_"):  # sed did not run
-    _WS_DEFAULT = str(Path(__file__).resolve().parent.parent)
-WORKSPACE = Path(os.environ.get("DINOMEM_WORKSPACE", _WS_DEFAULT))
+# Self-locating: workspace is the parent of the directory containing this script
+# (procedures/memory_review.py -> workspace root). Overridable via MEMORY_REVIEW_WORKSPACE.
+import os
+WORKSPACE = Path(os.environ.get("MEMORY_REVIEW_WORKSPACE", str(Path(__file__).resolve().parent.parent)))
 MEMORY_DIR = WORKSPACE / "memory"
 REVIEW_TRACKER = MEMORY_DIR / ".review_tracker.json"
 REVIEW_CURSOR = MEMORY_DIR / ".review_cursor.json"
@@ -79,18 +78,15 @@ AGE_BUCKETS = [
     (120, "review"),
 ]
 
-# Terminal review bucket. Surviving this bucket with an all-[valid] verdict
-# graduates a file to FROZEN (immortal, no more scheduled review). This bounds
-# per-entry review cost to its first ~120 days regardless of archive size.
+# Terminal review bucket. Surviving this with an all-[valid] verdict graduates a
+# file to FROZEN (immortal, no more scheduled review). Bounds per-entry review
+# cost to its first ~120 days. Must match base memory_review.py.
 TERMINAL_BUCKET = 120
 
-# Inline frozen marker. Lives as the first line of the file (self-contained,
-# survives file moves, greppable by the deterministic deleter — no sidecar
-# desync risk). A frozen file is skipped by scheduled review forever; only
-# semantic dedup / manual edits can still touch it (frozen != _pin_).
+# Inline frozen marker (first line). Self-contained, greppable by the
+# deterministic deleter (memory_retention.py), no sidecar desync. frozen != _pin_.
 FROZEN_MARKER = "<!-- frozen: true -->"
 
-# Per-entry verdict tag prefixes the review writes at line start.
 VERDICT_TAGS = ("[valid]", "[invalidated]", "[uncertain]", "[noise]")
 
 
@@ -109,11 +105,7 @@ def is_frozen(filepath):
 
 
 def all_entries_valid(reviewed_text):
-    """True if every verdict-tagged entry in the reviewed output is [valid].
-
-    Only lines that carry a verdict tag are considered (blank lines, headers,
-    and untagged prose are ignored). Returns False if there are zero tagged
-    entries (nothing to graduate on)."""
+    """True iff every verdict-tagged entry is [valid] (and there is >=1 tagged)."""
     saw_tagged = False
     for raw in reviewed_text.splitlines():
         s = raw.strip().lstrip("-").strip()
@@ -160,8 +152,13 @@ def get_batch_size(total_files):
 
 
 def get_file_age(filepath):
-    """Age is based on filename date (YYYY-MM-DD), not mtime."""
-    file_date = filepath.stem
+    """Age is based on filename date (YYYY-MM-DD), not mtime.
+
+    Files are named either a bare date ("YYYY-MM-DD.md") or the
+    extract_memory.py format ("YYYY-MM-DD_type_slug.md") — the date is
+    always the leading 10 chars, so parse a prefix, not the full stem.
+    """
+    file_date = filepath.stem[:10]
     try:
         file_dt = datetime.strptime(file_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
         today = datetime.now(timezone.utc)
@@ -186,37 +183,34 @@ def _find_openclaw_bin():
             return c
     return "openclaw"  # fallback, let subprocess raise if missing
 
-# memory_review is a non-reasoning task (classify/prune, no chained inference).
-# Route it to the CHEAP tier, AUTO-LINKED to agents.defaults.compaction.model via
-# the shared _cheap_model helper (single anchor: change compaction.model -> this
-# follows). Precedence: DINOMEM_CHEAP_MODEL env -> compaction.model -> legacy env
-# -> "" (caller uses OpenClaw default, default-safe).
-def _resolve_cheap_model():
-    try:
-        import importlib.util as _ilu
-        _hp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_cheap_model.py")
-        _spec = _ilu.spec_from_file_location("_cheap_model", _hp)
-        _cm = _ilu.module_from_spec(_spec); _spec.loader.exec_module(_cm)
-        return _cm.cheap_model() or None
-    except Exception:
-        return os.environ.get("DINOMEM_CHEAP_MODEL", "").strip() or None
-
-CHEAP_MODEL = _resolve_cheap_model()
+# memory_review is a non-reasoning task (dedup/cleanup judgment) -> cheap tier.
+# Cheap tier AUTO-LINKED to agents.defaults.compaction.model via _cheap_model
+# helper. One anchor: change compaction.model -> this follows. Precedence:
+# DINOMEM_CHEAP_MODEL env override -> compaction anchor -> haiku fallback.
+try:
+    import sys as _sys, os as _os2
+    _sys.path.insert(0, _os2.path.dirname(_os2.path.abspath(__file__)))
+    from _cheap_model import cheap_model as _cheap_model_fn
+    NO_REASONING_MODEL = _cheap_model_fn()
+except Exception:
+    NO_REASONING_MODEL = (
+        os.environ.get("DINOMEM_CHEAP_MODEL", "").strip()
+        or os.environ.get("DINOMEM_NO_REASONING_MODEL", "").strip()
+        or "ninerouter/cc/claude-haiku-4-5-20251001"
+    )
 
 def call_llm(prompt, max_tokens=4000):
-    """Call LLM via OpenClaw gateway (cheap/non-reasoning path when DINOMEM_CHEAP_MODEL set)."""
+    """Call LLM via OpenClaw gateway (cheap no-reasoning model)."""
     try:
-        _cmd = [
-            _find_openclaw_bin(),
-            "capability", "model", "run",
-            "--prompt", prompt,
-            "--gateway",
-            "--json",
-        ]
-        if CHEAP_MODEL:
-            _cmd += ["--model", CHEAP_MODEL]
         result = subprocess.run(
-            _cmd,
+            [
+                _find_openclaw_bin(),
+                "capability", "model", "run",
+                "--prompt", prompt,
+                "--gateway",
+                "--json",
+                "--model", NO_REASONING_MODEL,
+            ],
             capture_output=True,
             text=True,
             timeout=120,
@@ -230,6 +224,23 @@ def call_llm(prompt, max_tokens=4000):
     return None
 
 
+def _git_timeline_hint(filepath):
+    """One-line git edit-timeline hint for the review prompt, or '' (fail-open).
+    'Last edited in git N days ago' lets the LLM weigh RECENT reinforcement when
+    judging [valid] vs [noise] — a recently re-touched entry is being actively
+    used. Additive context only; empty string if git_history absent or git errors.
+    """
+    if _gh is None:
+        return ""
+    try:
+        last = _gh.file_last_touched(MEMORY_DIR, filepath.name)
+        if last is None:
+            return ""
+        days = (datetime.now(timezone.utc) - last).days
+        return f"\nLast edited in git: {days} days ago (recent edits = actively reinforced; lean toward keeping)"
+    except Exception:
+        return ""
+
 def review_file_with_llm(filepath, age):
     """Send file to LLM for full review. Returns reviewed content or None if failed."""
     with open(filepath, "r", encoding="utf-8") as f:
@@ -240,33 +251,13 @@ def review_file_with_llm(filepath, age):
 
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     file_date = filepath.stem
+    git_line = _git_timeline_hint(filepath)
 
-    # --- ADDITIVE git freshness context (support-only, fail-open) -----------
-    # Filename date = when the file was CREATED. Git can tell the LLM when it was
-    # last EDITED and how many times it's been touched (a reinforcement signal).
-    # This only ENRICHES the prompt; it never alters the review gate/schedule.
-    # Absent git / any error -> line omitted, prompt identical to before.
-    git_context = ""
-    try:
-        if _gh is not None and _gh.available(str(MEMORY_DIR)):
-            lt = _gh.file_last_touched(str(MEMORY_DIR), filepath.name)
-            cc = _gh.commit_count(str(MEMORY_DIR), filepath.name)
-            if lt is not None:
-                edited_days = (datetime.now(timezone.utc) - lt).days
-                git_context = (
-                    f"\nGit edit history: last edited {edited_days} days ago, "
-                    f"touched in {cc} commit(s). A file edited recently despite an "
-                    f"old creation date is actively maintained — weigh its entries "
-                    f"as more likely still-relevant."
-                )
-    except Exception:
-        git_context = ""
-
-    prompt = f"""You are reviewing a memory file for an AI agent.
+    prompt = f"""You are reviewing a memory file for a market analyst AI that covers ALL asset classes (crypto, equities, macro, commodities, forex).
 
 File date: {file_date}
 Review date: {today}
-File age: {age} days{git_context}
+File age: {age} days{git_line}
 
 Memory file content:
 ---
@@ -280,7 +271,7 @@ Instructions:
    - [uncertain] — cannot verify. Keep as [uncertain] with original text.
    - [noise] — low-signal, vague, no actionable insight, or just chitchat. REMOVE it (do not include in output).
 
-2. Be AGGRESSIVE about noise removal. If an entry is not useful to this agent, remove it.
+2. Be AGGRESSIVE about noise removal. If an entry is not useful to a market analyst, remove it.
    Examples of noise: generic commentary, vague predictions without specifics, restatements of known facts without new insight, social chat, "interesting" observations that don't affect decisions.
 
 3. If ALL entries are redundant or noise, return exactly: ALL_REDUNDANT
@@ -288,11 +279,11 @@ Instructions:
 4. Return ONLY the reviewed entries. One per line. Format:
    - [status] original text
 
-5. For invalidated entries: briefly note why — what changed, what actually happened, or why it's no longer true.
+5. For invalidated market claims: include the outcome (e.g., "pump did not sustain, dropped 40% from $X to $Y"; "earnings beat but stock sold off"; "rate cut priced in, no further move").
 
-6. For expired time-sensitive entries: note the expiry and what actually happened if known.
+6. For expired predictions or time-sensitive calls: note the expiry and what actually happened if known.
 
-7. For framework/workflow facts that appear in newer files: they are redundant. Omit them.
+7. For framework/workflow facts (e.g. workflow_market, analysis_template) that appear in newer files: they are redundant. Omit them.
 
 8. Be concise. Do not add commentary outside the tagged lines.
 
@@ -302,8 +293,7 @@ Instructions:
 
 
 # ── Embedding pre-filter ─────────────────────────────────────────────────────
-# Override with DINOMEM_EMBED_URL for a remote / non-Docker TEI-compatible server.
-TEI_URL = os.environ.get("DINOMEM_EMBED_URL", "http://localhost:8080/v1/embeddings")
+TEI_URL = "http://localhost:8080/v1/embeddings"
 # Cosine similarity threshold — files above this are "similar enough" to need conflict check
 PREFILTER_SIM_THRESHOLD = 0.82
 
@@ -311,12 +301,6 @@ def get_embeddings_for_files(filepaths):
     """
     Get TEI embeddings for a list of files.
     Returns dict {filepath: vector} or None if TEI unavailable.
-
-    Intentionally unprefixed/symmetric: this is a file<->file similarity pre-filter
-    for conflict detection, not asymmetric query->doc retrieval, so no query:/passage:
-    prefix is applied here -- not a bug. (The DINOMEM_EMBED_PREFIX asymmetric-prefixing
-    convention exists for retrieval callsites elsewhere, e.g. dinomem-neuron's
-    tools/_embed.py.)
     """
     if not filepaths:
         return {}
@@ -340,6 +324,9 @@ def get_embeddings_for_files(filepaths):
     try:
         for i in range(0, len(texts), EMBED_BATCH):
             chunk = texts[i:i + EMBED_BATCH]
+            # e5 asymmetric: symmetric similarity task -> uniform 'query: ' prefix (env-gated).
+            if os.environ.get("DINOMEM_EMBED_PREFIX", "1") != "0":
+                chunk = ["query: " + t for t in chunk]
             payload = json.dumps({"input": chunk, "model": ""}).encode()
             req = urllib.request.Request(
                 TEI_URL, data=payload,
@@ -481,11 +468,9 @@ def review():
             save_tracker(tracker)
             continue
 
-        # GRADUATION: at the terminal bucket, if the file survived with an
-        # all-[valid] verdict, freeze it (prepend the inline marker). Frozen
-        # files are immortal to scheduled review; the deterministic deleter
-        # (memory_retention.py) also honors the marker and never age-deletes
-        # them. Cost is thus bounded to each entry's first ~120 days.
+        # GRADUATION: at the terminal bucket, an all-[valid] survivor freezes
+        # (prepend inline marker). Frozen files are immortal to scheduled review
+        # and honored (skipped) by memory_retention.py.
         graduate = (
             applicable_bucket >= TERMINAL_BUCKET
             and all_entries_valid(llm_output)

@@ -41,21 +41,26 @@ neuron-only pre-pass, not this file's concern.
 import argparse
 import os
 import re
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Optional git-backing (support-only). Absent git -> everything below is the
-# exact original filename-date behavior.
+# Optional git-backing (support-only, base-owned shared helper). git_history.py
+# ships in base's procedures/. Used here as a KEEP-BIASED reprieve ONLY: at
+# terminal age, if git shows a file was RECENTLY reinforced (touched inside a
+# grace window), spare it one cycle instead of unlinking. Git can only RESCUE a
+# file, NEVER condemn one — the filename-date rule stays the sole delete trigger.
+# FAIL-OPEN: any import/git error → git plays no part, behavior is exactly as
+# before (filename date decides everything).
 try:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
     import git_history as _gh
 except Exception:
     _gh = None
 
-# Git keep-guard: if a file was touched in git within this many days, it is
-# treated as actively-maintained and RESCUED from terminal-age deletion even if
-# its filename date is old. Git can only ever SAVE a file here, never delete one.
-# Set 0 to disable the guard.
-_GIT_KEEP_GUARD_DAYS = int(os.environ.get("DINOMEM_GIT_KEEP_GUARD_DAYS", "14"))
+# Grace window: a terminal-age file touched in git within this many days is
+# considered "reinforced" and spared one retention cycle. Keep-biased only.
+GIT_REINFORCE_GRACE_DAYS = int(os.environ.get("DINOMEM_GIT_REINFORCE_GRACE_DAYS", "30") or "30")
 
 # Workspace resolution mirrors memory_review.py: env override > install-time sed
 # > self-locate (procedures/ is one level under the workspace root).
@@ -103,9 +108,14 @@ def is_frozen(filepath: Path) -> bool:
 
 
 def get_file_age(filepath: Path):
-    """Age in days from filename YYYY-MM-DD. None if not a dated filename."""
+    """Age in days from filename YYYY-MM-DD. None if not a dated filename.
+
+    Files are named either a bare date ("YYYY-MM-DD.md") or the
+    extract_memory.py format ("YYYY-MM-DD_type_slug.md") — the date is
+    always the leading 10 chars, so parse a prefix, not the full stem.
+    """
     try:
-        file_dt = datetime.strptime(filepath.stem, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        file_dt = datetime.strptime(filepath.stem[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc)
     except ValueError:
         return None
     return (datetime.now(timezone.utc) - file_dt).days
@@ -121,6 +131,22 @@ def _line_is_entry(line: str) -> bool:
     """True if the line is an entry (tagged or a bullet). Untagged bullet = not-valid."""
     return bool(_ENTRY_RE.match(line)) or bool(_UNTAGGED_ENTRY_RE.match(line))
 
+
+def _git_recently_reinforced(filepath: Path) -> bool:
+    """True if git shows this file was last touched inside the grace window.
+    KEEP-BIASED + FAIL-OPEN: returns False on any git absence/error, so a missing
+    or broken git can NEVER cause a deletion (worst case = original behavior).
+    """
+    if _gh is None:
+        return False
+    try:
+        last = _gh.file_last_touched(MEMORY_DIR, filepath.name)
+        if last is None:
+            return False
+        age_days = (datetime.now(timezone.utc) - last).days
+        return age_days <= GIT_REINFORCE_GRACE_DAYS
+    except Exception:
+        return False
 
 def prune_file(filepath: Path, dry_run: bool = False):
     """
@@ -157,6 +183,14 @@ def prune_file(filepath: Path, dry_run: bool = False):
         kept_lines.append(line)
 
     if valid_count == 0:
+        # KEEP-BIASED GIT REPRIEVE (support-only, fail-open): before unlinking a
+        # fully-dead file, ask git if it was RECENTLY reinforced (re-touched inside
+        # the grace window). Filename date says "terminal age" but a recent edit
+        # means the content is being actively worked/re-surfaced — spare it one
+        # cycle. Git can ONLY rescue here, never condemn; no git → original behavior.
+        if _git_recently_reinforced(filepath):
+            return {"action": "keep", "removed_entries": 0, "kept_entries": 0,
+                    "reprieve": "git-reinforced"}
         # Nothing earned keeping -> unlink whole file.
         if not dry_run:
             try:
@@ -208,27 +242,6 @@ def run(dry_run: bool = False, terminal_age: int = TERMINAL_AGE_DAYS):
             continue
         if age < terminal_age:
             continue
-
-        # --- ADDITIVE git keep-guard (support-only, fail-open) --------------
-        # Filename-date says this file is terminal-age. But if git shows it was
-        # RECENTLY touched (reinforced/edited) despite the old filename, it's
-        # actively maintained -> rescue it. Git can ONLY save here, never delete.
-        # Absent git / any error -> guard is inert, original behavior unchanged.
-        if _GIT_KEEP_GUARD_DAYS > 0 and _gh is not None:
-            try:
-                if _gh.available(str(MEMORY_DIR)):
-                    lt = _gh.file_last_touched(str(MEMORY_DIR), filepath.name)
-                    if lt is not None:
-                        touched_days = (datetime.now(timezone.utc) - lt).days
-                        if touched_days < _GIT_KEEP_GUARD_DAYS:
-                            files_skipped += 1
-                            changes.append(
-                                f"GIT-RESCUE: {name} (filename age {age}d but git-touched "
-                                f"{touched_days}d ago < {_GIT_KEEP_GUARD_DAYS}d guard -> kept)"
-                            )
-                            continue
-            except Exception:
-                pass  # fail-open: guard never blocks the original path
 
         res = prune_file(filepath, dry_run=dry_run)
         action = res.get("action")

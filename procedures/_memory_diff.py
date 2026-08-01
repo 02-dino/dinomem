@@ -45,9 +45,13 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Optional git-backing (support-only). If git_history isn't importable or git
-# isn't present, everything below degrades to the exact original behavior.
+# Optional git-backing (support-only, base-owned shared helper). git_history.py
+# ships in base's procedures/. If present, we stamp the HEAD sha at flush time so
+# a recovery tool can do a TRUE byte-exact `git checkout` of a deleted/mutated
+# note, instead of trusting the clipped audit content. FAIL-OPEN: any import or
+# git error leaves restore_ref null and the audit log writes exactly as before.
 try:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
     import git_history as _gh
 except Exception:
     _gh = None
@@ -63,13 +67,13 @@ MAX_CONTENT_CHARS = int(os.environ.get("DINOMEM_DIFF_MAX_CHARS", "8000") or "800
 def _now_iso():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-
 def _basename(uri):
     """Bare filename from a uri/path (e.g. 'memory/foo.md' -> 'foo.md')."""
     try:
         return Path(str(uri)).name
     except Exception:
         return str(uri)
+
 
 def _rel(memory_dir, path):
     """Store a workspace-relative-ish uri (memory/<name>) for portability."""
@@ -137,6 +141,21 @@ class MemoryDiff:
 
     def has_changes(self):
         return bool(self.adds or self.updates or self.deletes)
+
+    def _git_restore_ref(self):
+        """HEAD sha at flush time, so a recovery tool can `git checkout <ref> -- <path>`
+        to restore a deleted/mutated note byte-exact instead of trusting the clipped
+        audit content. FAIL-OPEN: returns None if git_history is absent or git errors.
+        """
+        if _gh is None:
+            return None
+        try:
+            if not _gh.available(self.memory_dir):
+                return None
+            out = _gh._run(self.memory_dir, ["rev-parse", "HEAD"])
+            return out.strip() if out and out.strip() else None
+        except Exception:
+            return None
 
     # ---- ADDITIVE git cross-reference (support-only, fail-open) ------------
     def _git_ref(self):
@@ -207,18 +226,15 @@ class MemoryDiff:
                     "total_updates": len(self.updates),
                     "total_deletes": len(self.deletes),
                 },
+                # git-backed byte-exact recovery anchor (null when git absent).
+                # A recovery tool can `git checkout <restore_ref> -- <uri>` to get
+                # the exact pre-change bytes, superseding the clipped before/deleted
+                # content above. Support-only; the audit log stands on its own.
+                "restore_ref": self._git_restore_ref(),
+                # ADDITIVE git cross-reference block (drift detection: does git see
+                # the same files this run recorded?). None when git absent.
+                "git_ref": self._git_ref(),
             }
-            # --- ADDITIVE git cross-reference (support-only, fail-open) ---------
-            # The JSON above is UNCHANGED and remains authoritative. This only
-            # ATTACHES an optional git_ref block so the hand-rolled diff can be
-            # cross-checked against git's byte-exact record and pointed at a
-            # commit for true `git checkout` recovery. Absent git -> omitted.
-            try:
-                gref = self._git_ref()
-                if gref:
-                    payload["git_ref"] = gref
-            except Exception as e:
-                self._log(f"   ℹ️  memory_diff.git_ref skipped (non-fatal): {e}")
             out = diff_dir / f"{self.run_id}.json"
             tmp = diff_dir / f".{self.run_id}.json.tmp"
             tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

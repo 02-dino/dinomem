@@ -23,17 +23,22 @@ Run: python3 procedures/memory_cleanup.py
 import json
 import os
 import re
+import sys
 import time
 import urllib.request
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
 
-# Optional git-backing (support-only). The .memory_archive/ side-copy of removed
-# lines below stays the authoritative recovery path. Git only ADDS a pre-dedup
-# whole-file recovery anchor (the archive keeps removed LINES, not the pre-merge
-# whole-file state — git closes that gap). Absent git -> unchanged behavior.
+# Optional git-backing (support-only, base-owned shared helper). git_history.py
+# ships in this same procedures/ dir. Used here ONLY to stamp a byte-exact
+# PRE-CLEANUP recovery anchor (the HEAD sha before any destructive dedup/merge/
+# unlink pass) so a bad semantic merge can be reverted with a single git checkout,
+# superseding the drift-prone .memory_archive/ line copies. It never alters the
+# cleanup control flow. FAIL-OPEN: any import/git error → no anchor line, cleanup
+# runs exactly as before.
 try:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
     import git_history as _gh
 except Exception:
     _gh = None
@@ -50,10 +55,8 @@ MEMORY_DIR = WORKSPACE / "memory"
 ARCHIVE_DIR = WORKSPACE / ".memory_archive"
 MEMORY_INDEX = WORKSPACE / "MEMORY.md"
 
-# Retention for .memory_archive/: pre-dedup snapshots are continuity-only (rollback +
-# audit), NOT live-indexed by memory_search. Prune files older than this so the
-# archive can't grow unbounded across the install's lifetime. Plain markdown, tiny
-# volume, but a hard cap keeps every install clean without manual intervention.
+# Retention for .memory_archive/: continuity-only snapshots, NOT live-indexed.
+# Prune past this window so the archive can't grow unbounded.
 ARCHIVE_RETENTION_DAYS = 180
 
 # Sessions dir for recency section
@@ -95,10 +98,7 @@ def _resolve_max_index_chars(default_cap: int = 20000, floor: int = 18000) -> in
         return floor
 
 MAX_INDEX_CHARS = _resolve_max_index_chars()  # 90% of LIVE bootstrapMaxChars (>=18000 floor)
-# Embedding endpoint. Defaults to the local TEI server (Docker). Override with
-# DINOMEM_EMBED_URL to point at a remote / non-Docker TEI-compatible server
-# (this is what makes install.sh --no-docker usable for non-local embed servers).
-TEI_URL = os.environ.get("DINOMEM_EMBED_URL", "http://localhost:8080/v1/embeddings")
+TEI_URL = "http://localhost:8080/v1/embeddings"
 ALL_ITEM_TAGS = r'\[factual\]|\[pattern\]|\[operational\]|\[decision\]|\[correction\]|\[preference\]|\[uncertain\]|\[lesson\]|\[prediction\]'
 # Bare daily files (memory/YYYY-MM-DD.md) are written by OpenClaw memoryFlush
 # solely to feed startupContext. They are flush-owned, untagged prose, and
@@ -131,15 +131,11 @@ def is_duplicate(text, seen_facts):
 
 # ── Semantic Dedup via TEI ────────────────────────────────────────────────────────────
 def get_embeddings(texts):
-    """Get embeddings from TEI. Returns list of vectors or None if unavailable.
-
-    Intentionally unprefixed/symmetric: this is item<->item similarity clustering
-    for dedup, not asymmetric query->doc retrieval, so no query:/passage: prefix is
-    applied here -- not a bug. (The DINOMEM_EMBED_PREFIX asymmetric-prefixing
-    convention exists for retrieval callsites elsewhere, e.g. dinomem-neuron's
-    tools/_embed.py.)
-    """
+    """Get embeddings from TEI. Returns list of vectors or None if unavailable."""
     try:
+        # e5 asymmetric: symmetric dedup task -> uniform 'query: ' prefix (env-gated).
+        if os.environ.get("DINOMEM_EMBED_PREFIX", "1") != "0":
+            texts = ["query: " + t for t in texts]
         payload = json.dumps({"input": texts, "model": ""}).encode()
         req = urllib.request.Request(TEI_URL, data=payload,
                                      headers={"Content-Type": "application/json"}, method="POST")
@@ -206,38 +202,14 @@ def semantic_dedup_items(items):
     removed = len(items) - len(result)
     return result, removed
 
-# Frozen marker (must match memory_review.py / memory_retention.py). A frozen
-# file has graduated (all entries [valid] survived every review bucket) and is
-# immortal — semantic dedup MUST NOT drop its entries in favor of a lower-value
-# twin. We exclude frozen files from dedup entirely (self-contained + safe).
-FROZEN_MARKER = "<!-- frozen: true -->"
-
-def is_frozen(filepath):
-    """Frozen if the first non-empty line is the frozen marker."""
-    try:
-        with open(filepath, "r", encoding="utf-8") as f:
-            for line in f:
-                s = line.strip()
-                if not s:
-                    continue
-                return s == FROZEN_MARKER
-    except Exception:
-        return False
-    return False
-
 def extract_all_items(md_files):
     """
     Extract all tagged items across all memory files.
     Returns list of (file_path, line_index, raw_line, item_text).
-
-    Frozen files are skipped: their entries are immortal keepers and must never
-    be dropped as a near-twin of a non-frozen (lower-value) item.
     """
     all_items = []
     item_pattern = re.compile(r'^\s*-\s*(' + ALL_ITEM_TAGS + r')\s*(.+?)$')
     for md_file in md_files:
-        if is_frozen(md_file):
-            continue
         lines = md_file.read_text(encoding='utf-8').split('\n')
         for i, line in enumerate(lines):
             m = item_pattern.match(line)
@@ -245,10 +217,31 @@ def extract_all_items(md_files):
                 all_items.append((md_file, i, line, line.strip()))
     return all_items
 
+def _git_precleanup_anchor():
+    """Print a byte-exact PRE-CLEANUP recovery anchor (HEAD sha before any
+    destructive pass). One `git checkout <sha> -- memory/` reverts a bad dedup/
+    merge, superseding the drift-prone .memory_archive/ line copies. Support-only,
+    FAIL-OPEN: no-op if git_history absent or git errors.
+    """
+    if _gh is None:
+        return
+    try:
+        if not _gh.available(MEMORY_DIR):
+            return
+        out = _gh._run(MEMORY_DIR, ["rev-parse", "HEAD"])
+        sha = out.strip() if out and out.strip() else None
+        if sha:
+            print(f"Pre-cleanup recovery anchor: {sha}  "
+                  f"(undo this run: git checkout {sha} -- memory/)")
+    except Exception:
+        return
+
 def cleanup():
     today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     today_display = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
     ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+    # Stamp a git recovery point BEFORE any destructive dedup/merge/unlink.
+    _git_precleanup_anchor()
 
     md_files = sorted([f for f in MEMORY_DIR.glob("*.md")
                        if f.name != "MEMORY.md"
@@ -256,21 +249,6 @@ def cleanup():
                        and not BARE_DAILY_RE.match(f.name)])
     removed_count = 0
     bootcheck_removed = 0
-
-    # ── Pass 0 (ADDITIVE, support-only): git pre-dedup recovery anchor ──
-    # Semantic dedup below is destructive (merges clusters, rewrites files). The
-    # .memory_archive/ copy captures removed LINES, but NOT the pre-merge
-    # whole-file state. If git is backing the memory dir, log the current HEAD as
-    # a recovery anchor so a bad merge can be fully reverted via
-    # `git checkout <head> -- memory/`. Purely a log line; fail-open; no behavior
-    # change if git is absent.
-    try:
-        if _gh is not None and _gh.available(str(MEMORY_DIR)):
-            _head = _gh._run(str(MEMORY_DIR), ["rev-parse", "HEAD"])
-            if _head:
-                print(f"git pre-dedup anchor: {_head.strip()[:12]} — recover a bad merge via 'git checkout {_head.strip()[:12]} -- memory/'")
-    except Exception:
-        pass
 
     # ── Pass 1: Semantic dedup across ALL files ──
     all_items = extract_all_items(md_files)
@@ -356,8 +334,7 @@ def cleanup():
 
 
 def prune_archive():
-    """Delete .memory_archive/ files older than ARCHIVE_RETENTION_DAYS (by mtime).
-    Continuity-only snapshots; safe to GC once past the retention window."""
+    """Delete .memory_archive/ files older than ARCHIVE_RETENTION_DAYS (by mtime)."""
     if not ARCHIVE_DIR.exists():
         return 0
     cutoff = time.time() - ARCHIVE_RETENTION_DAYS * 86400
@@ -431,10 +408,8 @@ def get_recent_flush_context():
                 if m and m.group(1) not in paths:
                     paths.append(m.group(1))
 
-            # No hard cap — trim_memory_index() handles MEMORY.md size.
-            # Recent Context is at top so it survives trimming (recency wins).
-            paths = list(dict.fromkeys(named_repos + paths))
-            decisions = list(dict.fromkeys(decisions))
+            paths = list(dict.fromkeys(named_repos[:3] + paths))[:6]
+            decisions = list(dict.fromkeys(decisions))[:4]
 
             if paths or decisions:
                 lines_out.append(f'### {date_str}')

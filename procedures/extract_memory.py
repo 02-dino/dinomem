@@ -25,16 +25,16 @@ import urllib.request
 from pathlib import Path
 from datetime import datetime, timedelta
 
-# Optional git-backing (support-only). Extraction already logs everything it
-# writes; git only ADDS a provenance line at the end of a run (what this
-# extraction actually changed in memory/, per git). Absent git -> no extra line,
-# extraction behaves exactly as before. Never a hard dep.
+# Optional git-backing (support-only, base-owned shared helper). git_history.py
+# ships in this same procedures/ dir. Used here ONLY to print a diff-provenance
+# line at end of a run (which memory files THIS extraction touched, via
+# diff_since HEAD). Additive log output; never alters extraction control flow.
+# FAIL-OPEN: any import/git error → no provenance line, extraction runs as before.
 try:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
     import git_history as _gh
 except Exception:
     _gh = None
-
-# ─── Configuration ────────────────────────────────────────────────────────────
 
 # OpenClaw's CLI needs Node >= this. Cron PATH may resolve `node` to an old
 # version (multiple installs on host) -> CLI hard-exits -> LLM calls fail ->
@@ -82,7 +82,9 @@ def _resolve_node_dir():
     _RESOLVED_NODE_DIR = ""
     return None
 
-SESSIONS_DIR = Path("DINOMEM_AGENT_SESSIONS_PLACEHOLDER")
+# ─── Configuration ────────────────────────────────────────────────────────────
+
+SESSIONS_DIR = Path("/root/.openclaw/agents/analyst/sessions")
 MEMORY_DIR = Path(__file__).parent.parent / "memory"
 PROCESSED_LOG = MEMORY_DIR / ".processed_archives.json"
 COMPACTION_LOG = MEMORY_DIR / ".compaction_counts.json"
@@ -280,26 +282,27 @@ LLM_API_KEY = os.environ.get("LLM_API_KEY") or get_api_key_from_openclaw(LLM_MOD
 LLM_API_BASE = os.environ.get("LLM_API_BASE") or get_api_base_from_model(LLM_MODEL)
 LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "3000"))
 LLM_ENABLED = bool(LLM_MODEL)
-# Cost lever: no-reasoning (reasoning=False) calls route to the CHEAP tier.
-# AUTO-LINKED to agents.defaults.compaction.model via the shared _cheap_model
-# helper (single anchor: change compaction.model -> every cheap call follows).
-# Precedence inside the helper: DINOMEM_CHEAP_MODEL env -> compaction.model ->
-# legacy env -> "". Empty -> caller uses OpenClaw default (default-safe). Reasoning
-# calls always use the OpenClaw default regardless.
-def _resolve_cheap_model():
-    try:
-        import importlib.util as _ilu
-        _hp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_cheap_model.py")
-        _spec = _ilu.spec_from_file_location("_cheap_model", _hp)
-        _cm = _ilu.module_from_spec(_spec); _spec.loader.exec_module(_cm)
-        return _cm.cheap_model() or None
-    except Exception:
-        # helper unavailable -> fall back to the raw env (old behavior)
-        return os.environ.get("DINOMEM_CHEAP_MODEL", "").strip() or None
-
-CHEAP_MODEL = _resolve_cheap_model()
+# Optional cost lever (opt-in): no-reasoning (reasoning=False) calls route to this
+# model if set. Reasoning calls always use the OpenClaw default. Unset = no change.
+# [ANALYST LOCAL HARDCODE — preserved across the 2026-07-20 dinomem re-sync]
+# Analyst historically routed cheap-tier (reasoning=False) extraction to haiku.
+# dinomem's upstream default is unset -> rides the OpenClaw agent default (pricier).
+# Pin analyst's prior behavior here so the re-sync is cost-neutral. Override via env.
+# Cheap tier is AUTO-LINKED to agents.defaults.compaction.model in openclaw.json
+# via the shared _cheap_model helper. ONE anchor: change compaction.model ->
+# every cheap call follows. Precedence: DINOMEM_CHEAP_MODEL env override ->
+# compaction.model anchor -> haiku fallback.
+try:
+    import sys as _sys, os as _os2
+    _sys.path.insert(0, _os2.path.dirname(_os2.path.abspath(__file__)))
+    from _cheap_model import cheap_model as _cheap_model_fn
+    CHEAP_MODEL = _cheap_model_fn()
+except Exception:
+    CHEAP_MODEL = os.environ.get("DINOMEM_CHEAP_MODEL", "").strip() or "ninerouter/cc/claude-haiku-4-5-20251001"
 # Thinking level passed to the gateway for reasoning=True calls.
 REASONING_THINKING = os.environ.get("DINOMEM_REASONING_THINKING", "high").strip() or "high"
+# No-reasoning model = same auto-linked cheap tier (compaction anchor).
+NO_REASONING_MODEL = CHEAP_MODEL
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -546,23 +549,28 @@ def _make_llm_request(model, api_key, api_base, prompt, max_tokens, reasoning=Fa
         return False, str(e)
 
 
-def call_llm(prompt, max_tokens=None, reasoning=False):
-    """Call LLM via OpenClaw gateway. Falls back to OpenRouter."""
+def call_llm(prompt, max_tokens=None, reasoning=False, model=None):
+    """Call LLM via OpenClaw gateway. Falls back to OpenRouter.
+
+    model: optional explicit model override for this call. When set (and
+    reasoning is False) it takes precedence over the module-level CHEAP_MODEL.
+    """
     max_tokens = max_tokens or LLM_MAX_TOKENS
     full_prompt = prompt
     if max_tokens and max_tokens < 3000:
         full_prompt = f"[Respond in {max_tokens} tokens or less]\n\n{prompt}"
     # Route model by task type (opt-in, default = no change):
     #   reasoning=True  -> OpenClaw default model + thinking level (quality path)
-    #   reasoning=False -> DINOMEM_CHEAP_MODEL if set, else OpenClaw default
+    #   reasoning=False -> explicit model arg, else DINOMEM_CHEAP_MODEL, else OpenClaw default
     _gw_cmd = ["capability", "model", "run",
                "--prompt", full_prompt, "--gateway", "--json"]
+    _no_reason_model = model or CHEAP_MODEL
     if reasoning:
         _gw_cmd += ["--thinking", REASONING_THINKING]
         _route = f"default+thinking={REASONING_THINKING}"
-    elif CHEAP_MODEL:
-        _gw_cmd += ["--model", CHEAP_MODEL]
-        _route = f"cheap={CHEAP_MODEL}"
+    elif _no_reason_model:
+        _gw_cmd += ["--model", _no_reason_model]
+        _route = f"cheap={_no_reason_model}"
     else:
         _route = "default"
     # Try OpenClaw gateway first
@@ -601,12 +609,12 @@ def call_llm(prompt, max_tokens=None, reasoning=False):
     # dependency). Only fires if the gateway is unreachable.
     log(f"   🔄 Falling back to direct provider API...")
     fallback_model, fallback_key, fallback_base = get_fallback_config()
-    # No-reasoning + cheap model set: prefer cheap model on the fallback too.
-    if (not reasoning) and CHEAP_MODEL:
-        _ck = get_api_key_from_openclaw(CHEAP_MODEL)
-        _cb = get_api_base_from_model(CHEAP_MODEL)
+    # No-reasoning: prefer explicit model arg, else cheap model, on the fallback too.
+    if (not reasoning) and _no_reason_model:
+        _ck = get_api_key_from_openclaw(_no_reason_model)
+        _cb = get_api_base_from_model(_no_reason_model)
         if _ck and _cb:
-            fallback_model = CHEAP_MODEL
+            fallback_model = _no_reason_model
             fallback_key = _ck
             fallback_base = _cb
     if fallback_key and fallback_model and fallback_base:
@@ -885,7 +893,7 @@ Rules:
 - Focus on RECALLABLE knowledge, not operational logs
 - JSON only, no explanation outside the JSON"""
     log(f"   🔄 Analyzing {archive_filename}...")
-    success, response = call_llm(prompt, max_tokens=1500, reasoning=False)
+    success, response = call_llm(prompt, max_tokens=1500, reasoning=False, model=NO_REASONING_MODEL)
     if not success:
         log(f"   ⚠️  LLM failed for {archive_filename}: {response}")
         # Sentinel: transient LLM failure (retry next run) vs genuinely-empty
@@ -938,19 +946,125 @@ Rules:
         return None
 
 
+def extract_from_text(text, source_label="text", model=None):
+    """Extract a memory summary dict from an ARBITRARY TEXT BLOB (not a session
+    archive). Reuses the exact same schema + cheap no-reasoning LLM call as
+    process_single_archive, so the output is graph-ready (topics/relations/
+    entities/classification) and feeds write_memory_file() unchanged.
+
+    Used by the done-note distiller: pass the retiring _note_ body here to turn
+    it into proper schema memory entries before the note is deleted.
+
+    Returns a summary dict, None (nothing memorable), or "LLM_FAILED".
+    """
+    if not LLM_ENABLED:
+        return None
+    if not text or not text.strip():
+        return None
+
+    prompt = f"""You are an AI agent writing your own memory notes.
+Below is the content of a COMPLETED project/task note that is being retired.
+Extract ONLY the durable knowledge worth recalling later: what was built, the
+durable structural facts (repo names, file paths, tool names, pipeline design,
+config values), decisions made, and lessons learned. Distinguish the one-time
+EVENT ("we built X on this date") from durable FACTS ("X lives at path Y and
+works like Z") — emit each as its own entry so they can have different lifespans.
+
+Retiring note content:
+{text}
+
+If the note contains nothing worth remembering beyond "a task happened", return
+EMPTY arrays for all fields (a bare event with no reusable knowledge is fine to
+drop).
+
+Required JSON structure:
+{{
+  "context": "1-2 sentence overview of what this project/note accomplished, or empty string if nothing memorable",
+  "insights": [
+    "[factual] Verifiable structural fact or principle that holds true beyond this task",
+    "[pattern] Reusable relationship or mechanism that applies beyond this specific case",
+    "[lesson] Something learned from a mistake, outcome, or experiment during this build"
+  ],
+  "decisions": [
+    "[decision] Explicit choice made: what was chosen, what was rejected, and why"
+  ],
+  "operational": [
+    "[operational] Critical fact needed to act correctly later: repo names, file paths, tool names, config values, pipeline structure. Include the behavioral default where relevant."
+  ],
+  "topics": ["#hashtag topics covered, lowercase, no spaces"],
+  "relations": ["Subject → verb → Object"],
+  "entities": ["Name | type: person|project|tool|concept|org"]
+}}
+
+Rules:
+- EVERY insight MUST start with one of: [factual], [pattern], [lesson]
+- [factual]/[operational] = durable structural truths (paths, names, design), NOT the one-time event of building it
+- Capture the build EVENT itself as a single [factual] or context line ("built <feature> — <what it does>"), separate from the durable facts
+- [decision] items MUST capture what was chosen AND what was rejected
+- FILE PATHS MUST BE ABSOLUTE: store filesystem paths as full absolute paths (starting with /), NEVER workspace-relative — a relative path silently breaks when read from a different working directory in a later session.
+- EVERY [operational], [decision] item MUST end with a [ctx:...] tag (max 5 words). Example: [ctx:{source_label}]
+- [relation] = "Subject → verb → Object", only clear non-trivial relationships. Max 4.
+- [entity] = "Name | type: ...", proper nouns / named tools / projects only. Max 6.
+- Return empty arrays if nothing is worth remembering
+- No markdown inside JSON values, plain text only
+- JSON only, no explanation outside the JSON"""
+
+    log(f"   🔄 Distilling note content ({source_label})...")
+    success, response = call_llm(prompt, max_tokens=1500, reasoning=False,
+                                model=model or NO_REASONING_MODEL)
+    if not success:
+        log(f"   ⚠️  LLM failed for {source_label}: {response}")
+        return "LLM_FAILED"
+    try:
+        clean = response.strip()
+        if clean.startswith("```json"):
+            clean = clean[7:]
+        if clean.startswith("```"):
+            clean = clean[3:]
+        if clean.endswith("```"):
+            clean = clean[:-3]
+        clean = clean.strip()
+        llm_output = json.loads(clean)
+        today = datetime.now().strftime("%Y-%m-%d")
+        summary = {
+            "type": "agent_memory",
+            "date": today,
+            "context": llm_output.get("context", ""),
+            "insights": llm_output.get("insights", []),
+            "source_scores": [],
+            "decisions": llm_output.get("decisions", []),
+            "corrections": [],
+            "operational": llm_output.get("operational", []),
+            "user_preferences": [],
+            "topics": llm_output.get("topics", []),
+            "relations": llm_output.get("relations", []),
+            "entities": llm_output.get("entities", []),
+        }
+        has_content = (
+            summary["context"].strip()
+            or summary["insights"]
+            or summary["decisions"]
+            or summary["operational"]
+        )
+        if not has_content:
+            log(f"   ℹ️  Nothing memorable in {source_label}, skipping distill")
+            return None
+        log(f"   ✅ Distilled {len(summary['insights'])} insights, {len(summary['decisions'])} decisions, {len(summary['operational'])} operational from {source_label}")
+        return summary
+    except json.JSONDecodeError as e:
+        log(f"   ⚠️  JSON parse failed for {source_label}: {e}")
+        return None
+    except Exception as e:
+        log(f"   ⚠️  Error distilling {source_label}: {e}")
+        return None
+
+
 def _strip_meta_tags(text):
     """Strip [ctx:...] and [expires:...] tags for clean comparison/embedding."""
     return re.sub(r'\s*\[(ctx|expires):[^\]]*\]', '', text).strip()
 
 def _get_tei_embedding(text):
-    """Get single embedding from TEI. Returns vector or None.
-
-    Intentionally unprefixed/symmetric: this is a dedup/similarity comparison
-    (memory item vs memory item), not asymmetric query->doc retrieval, so no
-    query:/passage: prefix is applied here -- not a bug. (The DINOMEM_EMBED_PREFIX
-    asymmetric-prefixing convention exists for retrieval callsites elsewhere, e.g.
-    dinomem-neuron's tools/_embed.py.)
-    """
+    """Get single embedding from TEI. Returns vector or None."""
     try:
         import urllib.request as _ur
         payload = json.dumps({"input": [text], "model": ""}).encode()
@@ -969,10 +1083,6 @@ def _cosine_sim(a, b):
     nb = sum(x * x for x in b) ** 0.5
     return dot / (na * nb) if na and nb else 0.0
 
-# Module-level sink so _contradiction_check_items (which runs BEFORE the diff
-# logger exists in write_memory_file) can hand merge/delete events to the diff
-# recorder. write_memory_file drains this after instantiating MemoryDiff.
-# Entries: ('merge', file, before_text, after_text) | ('delete', file, deleted_text)
 _MERGE_SINK = []
 
 
@@ -1045,7 +1155,7 @@ Classify the relationship. Reply with JSON only:
 
 Prefer `merge` over `update` when the existing item is still TRUE and the new item just enriches it; prefer `update` only when the existing item is now STALE/WRONG."""
 
-        success, response = call_llm(prompt, max_tokens=100, reasoning=False)
+        success, response = call_llm(prompt, max_tokens=100, reasoning=False, model=NO_REASONING_MODEL)
         if not success:
             kept_new.append(new_item)
             continue
@@ -1062,18 +1172,11 @@ Prefer `merge` over `update` when the existing item is still TRUE and the new it
             log(f"   ⏭️  Contradiction check: skipped duplicate item")
             continue
         elif verdict == 'merge':
-            # Fold the new item's detail INTO the single best-matching existing
-            # file, in place. Keep the existing file (preserves its date/frontmatter
-            # provenance); drop the standalone new item so we don't duplicate.
             merged_text = (result.get('merged') or '').strip()
             if not merged_text:
-                # LLM said merge but gave no merged text -> safest fallback is to
-                # keep both (never lose data). Treat as unrelated.
                 log(f"   ℹ️  Contradiction check: merge verdict without merged text -> keeping both")
                 kept_new.append(new_item)
                 continue
-            # Merge into the TOP candidate only (highest-similarity is candidates[0]
-            # by scan order is not guaranteed; pick the first existing that still exists).
             target = next(((mf, li, rl, it) for (mf, li, rl, it) in candidates if mf.exists()), None)
             if target is None:
                 kept_new.append(new_item)
@@ -1082,8 +1185,6 @@ Prefer `merge` over `update` when the existing item is still TRUE and the new it
             try:
                 lines = mf.read_text(encoding='utf-8').split('\n')
                 if li < len(lines):
-                    # Preserve any leading [type] tag + trailing meta tags on the
-                    # existing line; replace the human text body with merged_text.
                     tag_m = re.match(r'^(\s*-?\s*\[[a-z_]+\]\s*)', lines[li])
                     lead = tag_m.group(1) if tag_m else ''
                     meta_m = re.search(r'(\s*\[(?:expires|ctx):[^\]]*\]\s*)+$', lines[li])
@@ -1091,12 +1192,11 @@ Prefer `merge` over `update` when the existing item is still TRUE and the new it
                     lines[li] = f"{lead}{merged_text}{trail}"
                     mf.write_text('\n'.join(lines), encoding='utf-8')
                     log(f"   🔗 Contradiction check: merged new detail into {mf.name}")
-                    # signal the merge to the diff logger via a module-level sink
                     try:
-                        _MERGE_SINK.append((mf, it, lines[li]))
+                        _MERGE_SINK.append(('merge', mf, it, lines[li]))
                     except Exception:
                         pass
-                    continue  # drop standalone new item (folded in)
+                    continue
             except Exception as _me:
                 log(f"   ⚠️  merge failed on {mf.name} ({_me}) -> keeping both")
             kept_new.append(new_item)
@@ -1123,8 +1223,13 @@ Prefer `merge` over `update` when the existing item is still TRUE and the new it
                 ]
                 if content_line_idxs == [line_idx]:
                     try:
+                        _deleted_content = md_file.read_text(encoding='utf-8')
                         md_file.unlink()
                         log(f"   🗑️  Contradiction check: deleted stale file {md_file.name} ({verdict})")
+                        try:
+                            _MERGE_SINK.append(('delete', md_file, _deleted_content))
+                        except Exception:
+                            pass
                     except Exception as _e:
                         log(f"   ⚠️  Could not delete {md_file.name}: {_e}")
                 elif line_idx < len(lines):
@@ -1147,26 +1252,12 @@ def _slugify(text, max_len=40):
     return text[:max_len]
 
 def _tiered_sections(item_type, clean_text, item_text, context_snippet, topics):
-    """
-    Build L0/L1/L2 tiered content sections (ported concept from OpenViking's
-    L0-abstract/L1-overview/L2-detail loading model).
-
-    Constraint (verified): OpenClaw's native memory_search chunks files at
-    400 tok/80 overlap and embeds per-chunk -- it does NOT read a special
-    'abstract-only' field, so we cannot force 'index L0 only'. Instead the
-    win is: (1) L0 leads the file, so the FIRST chunk a chunker produces is
-    the highest-signal one-liner, improving both BM25 and vector match on
-    short queries; (2) memory_get callers who only need the gist can read
-    just the first ~15 lines instead of the whole file; (3) L1 gives a
-    human/agent a quick navigation cue before deciding to read L2 in full.
-    L2 IS the existing item_text -- zero loss, this is purely additive.
-
-    Returns (l0, l1, l2) strings. Never raises -- falls back to plain text
-    on any error so extraction can never break because of this.
-    """
+    """L0/L1/L2 tiered content sections (ported concept from OpenViking's L0-
+    abstract/L1-overview/L2-detail loading model). See base repo's identical
+    helper for full rationale/constraints. Never raises -- falls back to plain
+    text on any error so extraction can never break because of this."""
     try:
         l0 = clean_text.strip()
-        # L0 hard cap ~100 tokens (~400 chars) -- matches OpenViking's L0 budget.
         if len(l0) > 400:
             l0 = l0[:397].rsplit(' ', 1)[0] + "..."
         topic_hint = (', '.join(t.lstrip('#') for t in topics[:3])) if topics else ""
@@ -1182,8 +1273,15 @@ def _tiered_sections(item_type, clean_text, item_text, context_snippet, topics):
         return clean_text, clean_text, item_text
 
 
-def _write_item_file(memory_dir, date_str, item_type, item_text, topics, context_snippet):
-    """Write a single memory item as its own .md file with YAML frontmatter."""
+def _write_item_file(memory_dir, date_str, item_type, item_text, topics, context_snippet, seed_verdict=None):
+    """Write a single memory item as its own .md file with YAML frontmatter.
+
+    seed_verdict: optional review verdict to stamp in frontmatter (e.g. "valid").
+    Used by the done-note distiller: a freshly-distilled entry has no review
+    verdict until its first 7d bucket; seeding `verdict: valid` protects it from
+    the deterministic deleter (which treats no-verdict as not-valid) until
+    review naturally re-judges it. It was JUST verified true = legitimately valid.
+    """
     # Build slug from first 40 chars of item text (strip tags first)
     clean_text = re.sub(r'\s*\[(ctx|expires|\w+):[^\]]*\]', '', item_text).strip()
     clean_text = re.sub(r'^\[(\w+)\]\s*', '', clean_text)  # strip leading [type] tag
@@ -1215,13 +1313,12 @@ def _write_item_file(memory_dir, date_str, item_type, item_text, topics, context
         frontmatter_lines.append(f"ctx: {ctx}")
     if topic_str:
         frontmatter_lines.append(f"topics: {topic_str}")
+    if seed_verdict:
+        frontmatter_lines.append(f"verdict: {seed_verdict}")
     if context_snippet:
         frontmatter_lines.append(f"session_ctx: {context_snippet[:80].replace(chr(10), ' ')}")
     frontmatter_lines.append("---")
     frontmatter_lines.append("")
-    # Tiered L0/L1/L2 body (additive -- L2 preserves the exact original single-
-    # line item body so any code/tool that greps/reads the bare item text
-    # keeps working unchanged; L0/L1 are new sections above it).
     l0, l1, l2 = _tiered_sections(item_type, clean_text, item_text, context_snippet, topics)
     frontmatter_lines.append(f"L0: {l0}")
     frontmatter_lines.append("")
@@ -1233,18 +1330,17 @@ def _write_item_file(memory_dir, date_str, item_type, item_text, topics, context
     filepath.write_text('\n'.join(frontmatter_lines), encoding='utf-8')
     return True, filepath
 
-def write_memory_file(summary, dedup=True):
-    """Write memory summary as per-item files: memory/YYYY-MM-DD_<type>_<slug>.md"""
+def write_memory_file(summary, dedup=True, seed_verdict=None):
+    """Write memory summary as per-item files: memory/YYYY-MM-DD_<type>_<slug>.md
+
+    seed_verdict: passed through to each item file's frontmatter (see
+    _write_item_file). Used by the distiller to stamp `verdict: valid`.
+    """
     today = summary.get('date', datetime.now().strftime("%Y-%m-%d"))
-    # Per-extraction memory-change audit log (adds/updates/deletes). Fail-open:
-    # a diff-logging failure must NEVER break extraction. Base-owned shared helper.
     _diff = None
     try:
         from _memory_diff import MemoryDiff
         _diff = MemoryDiff(MEMORY_DIR, date_str=today, log_fn=log)
-        # Drain any merge/delete events _contradiction_check_items() queued
-        # earlier in this run (it runs before this function, on a module-level
-        # sink, since it has no MemoryDiff instance of its own).
         global _MERGE_SINK
         for kind, *rest in _MERGE_SINK:
             try:
@@ -1317,12 +1413,12 @@ def write_memory_file(summary, dedup=True):
     skipped = 0
     for item_type, items in item_groups:
         for item in items:
-            ok, fpath = _write_item_file(MEMORY_DIR, today, item_type, item, topics, ctx_snippet)
+            ok, fpath = _write_item_file(MEMORY_DIR, today, item_type, item, topics, ctx_snippet, seed_verdict=seed_verdict)
             if ok:
                 written += 1
-                log(f"   ✅ [{item_type}] → {fpath.name}")
                 if _diff is not None:
                     _diff.record_add(fpath, item_type, item)
+                log(f"   ✅ [{item_type}] → {fpath.name}")
             else:
                 skipped += 1
 
@@ -1361,7 +1457,7 @@ Rules:
 - Keep the most recent phrasing if two items conflict
 - If a prediction has an outcome, note it as [factual]
 - JSON only, no markdown outside JSON"""
-    success, response = call_llm(prompt, max_tokens=2000, reasoning=False)
+    success, response = call_llm(prompt, max_tokens=2000, reasoning=False, model=NO_REASONING_MODEL)
     if not success:
         return None
     try:
@@ -1398,6 +1494,26 @@ Rules:
 # ═══════════════════════════════════════════════════════════════════════════════
 # MAIN
 # ═══════════════════════════════════════════════════════════════════════════════
+
+def _log_git_provenance():
+    """Log the memory files this extraction changed (diff_since HEAD). Provenance
+    only; FAIL-OPEN (no-op on git absence/error).
+    """
+    if _gh is None:
+        return
+    try:
+        mem_dir = SESSIONS_DIR.parent.parent / "workspace-analyst" / "memory"
+        # Resolve the memory dir robustly from the module's known MEMORY_DIR if set.
+        repo = MEMORY_DIR if "MEMORY_DIR" in globals() else mem_dir
+        if not _gh.available(repo):
+            return
+        changes = _gh.diff_since(repo, "HEAD", pathspec="memory/")
+        if changes:
+            log(f"   • git provenance: extraction touched {len(changes)} memory path(s) this run:")
+            for c in changes[:12]:
+                log(f"       {c.get('status','?')}  {c.get('path','?')}")
+    except Exception:
+        return
 
 def main():
     """Main entry point"""
@@ -1513,20 +1629,6 @@ def main():
     log(f"   • Empty sessions skipped: {empty_count}")
     log(f"   • Memory write failures: {failed_count}")
     log(f"   • Deduplication tracking: {len(load_processed_set())} archives tracked")
-    # ADDITIVE git provenance (support-only, fail-open). If git is backing the
-    # memory dir, report what THIS extraction actually changed there per git —
-    # a second, byte-exact view alongside the counters above. Pure log line; no
-    # behavior change; silent if git absent or nothing changed.
-    try:
-        if _gh is not None and stored_count > 0 and _gh.available(str(MEMORY_DIR)):
-            _changes = _gh.diff_since(str(MEMORY_DIR), "HEAD~1")
-            if _changes:
-                _a = sum(1 for c in _changes if c.get("status") == "A")
-                _m = sum(1 for c in _changes if c.get("status") == "M")
-                _d = sum(1 for c in _changes if c.get("status") == "D")
-                log(f"   • Git provenance (vs HEAD~1): {_a} added / {_m} modified / {_d} deleted file(s) in memory/")
-    except Exception:
-        pass
     log("=" * 60)
 
     # Backlog remaining after this run. If the attempted batch itself came up
@@ -1537,6 +1639,13 @@ def main():
     real_failure = failed_count > 0 and processed_now == 0
     if remaining_backlog > 0:
         log(f"   • Backlog remaining: {remaining_backlog} archive(s) not yet processed — will continue next run")
+
+    # git diff-provenance (support-only, fail-open): if this run stored anything,
+    # log which memory files it actually touched vs HEAD. Pure provenance output;
+    # no control-flow effect. No-op if git_history absent or git errors.
+    if stored_count > 0:
+        _log_git_provenance()
+
     _write_status(
         ok=not real_failure,
         remaining=remaining_backlog,
