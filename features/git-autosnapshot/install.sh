@@ -264,6 +264,21 @@ if [ "$DRY_RUN" != 1 ]; then
   hr "First snapshot"
   AUTOSNAP_REPO="$REPO" AUTOSNAP_GIT_DIR="$GIT_DIR" AUTOSNAP_MAX_MB="$MAX_MB" AUTOSNAP_RETAIN_DAYS="$RETAIN_DAYS" AUTOSNAP_BRANCH="$BRANCH" \
     "$BIN_DIR/auto-commit.sh" && ok "initial snapshot run complete" || warn "initial snapshot returned non-zero (check logs/git-autosnapshot.log)"
+
+  # Safety net (defense-in-depth): the snapshot store object DB lives INSIDE the
+  # work-tree. info/exclude is written BEFORE the first snapshot so its internals
+  # never get tracked -- but a hand-init, a reordered future edit, or a
+  # pre-existing store could slip them into the index. Once tracked, git ignore
+  # rules can't retroactively untrack them, and every tick would then see git
+  # internals as churn (a self-committing loop). This explicitly untracks any
+  # store internals that reached the index, so the invariant holds regardless of
+  # how the store was created. No-op on a clean install.
+  if git --git-dir="$GIT_DIR" --work-tree="$REPO" ls-files -- '.dinomem-snap.git/' 2>/dev/null | grep -q .; then
+    git --git-dir="$GIT_DIR" --work-tree="$REPO" rm -r --cached --quiet -- '.dinomem-snap.git' 2>/dev/null || true
+    git --git-dir="$GIT_DIR" --work-tree="$REPO" commit --quiet \
+      -m "chore: untrack snapshot store internals (self-ignore safety net)" 2>/dev/null || true
+    ok "untracked snapshot-store internals from index (self-tracking guard)"
+  fi
 fi
 
 echo
