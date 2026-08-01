@@ -1,5 +1,9 @@
 
 # >>> dinomem git-autosnapshot ignores >>>
+# The snapshot store itself (its own object DB lives inside the work-tree) —
+# MUST be ignored or every tick sees git internals as churn and self-commits.
+.dinomem-snap.git/
+.dinomem-snap.git
 # Runtime state that churns constantly and is never useful in git history.
 # Agent runtime state (auto-generated)
 agents/*/agent/models.json

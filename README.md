@@ -45,6 +45,7 @@ Most systems inject everything into context, or retrieve blindly. dinomem gives 
 - **Agent self-configuration** — tell your agent to change its tone, add a tool, or set a rule — it writes to the right file automatically
 - **Intent routing for scheduling & automation** — the same detect-intent-then-safe-write pattern extends to cron jobs ("remind me…", "every day at 9…") and event hooks ("whenever a message comes in…"). Cost-tiered so cheap deterministic work never wakes an LLM, and applied only through native `openclaw` surfaces — never by hand-editing `openclaw.json`.
 - **Weekly snapshot backup** — memory, config, and root files backed up automatically. Keep-3 rotation, never clutters disk. Restore anytime via `workspace_backup.py`.
+- **Git-versioned memory** *(on by default, isolated)* — a lightweight timer git-snapshots your memory + config on a 15-min cadence into a **separate store** (`.dinomem-snap.git`) that never touches your own repo, so any file is byte-exact reversible after a bad edit, dedup, or merge. Crucially, git also becomes a **live signal**: `git_history.py` lets cleanup read *last-touched* and *commit-count* per file, so recently-reinforced memories are protected from pruning and every destructive pass prints a one-command undo. Isolated, fail-open, disk-aware self-cleanup; opt out with `--no-git-snapshot`. See [git-versioned memory](#git-versioned-memory-git-autosnapshot).
 - **Zero-config install** — one script handles Docker, cron, and OpenClaw config patches
 
 
@@ -287,7 +288,10 @@ After a session is archived and extracted, you'll see new files in `memory/` and
 │   ├── extract_memory.py       # Extracts memories from archives via LLM
 │   ├── memory_cleanup.py       # Daily dedup of memory files
 │   ├── memory_review.py        # Daily batched LLM review (valid/invalidated/noise)
-│   └── workspace_backup.py     # Weekly snapshot backup (keep 3, auto-rotate)
+│   ├── workspace_backup.py     # Weekly snapshot backup (keep 3, auto-rotate)
+│   ├── git_history.py          # git-backed state API (last-touched, commit-count, content_at, restore) — read-only, fail-open
+│   ├── memory_retention.py     # git-aware age/reinforcement check — spares recently-touched files from pruning
+│   └── _memory_diff.py         # audit log + git restore_ref (byte-exact undo of any add/update/delete)
 ├── tools/
 │   ├── route.py               # Surface arbiter — cost-ordered decision schema (cron>hook>skill>root); write-free
 │   ├── config_tool.py          # Safe writer for root config files (agent self-config)
@@ -312,9 +316,67 @@ MEMORY.md                       # Searchable index (auto-generated, do not edit)
 | Time | Script | What runs |
 |------|--------|-----------|
 | Every 15 min | `auto_session_reset.py` | Session archive + memory extraction |
+| Every 15 min *(default-on, isolated)* | `git-autosnapshot/auto-commit.sh` | Git-snapshot memory + config into `.dinomem-snap.git`; disk-aware self-cleanup |
 | Daily 5:00 UTC | `memory_cleanup.py` | Dedup memory files |
 | Weekly Sun 2:00 UTC | `workspace_backup.py` | Snapshot backup (keep 3) |
 | Daily 5:30 UTC | `memory_review.py` | LLM review — batched, full cycle ~7 days |
+
+---
+
+## Git-versioned memory (git-autosnapshot)
+
+**On by default** *(opt out with `--no-git-snapshot`)*. Two things, one substrate: a git snapshot layer, and memory logic that **reads git as live truth**.
+
+> **Isolation — why it's safe to default on.** The snapshot object DB lives in a **separate git-dir**, `.dinomem-snap.git`, addressed via `--git-dir`/`--work-tree`. It **never touches your own repo**: it does *not* run `git init` in-place, does *not* drop a `.gitignore`/`.gitattributes` into your working tree (ignore rules go in the snapshot store's private `info/exclude`), and never reads or writes your `~/.openclaw/.git` if you keep one. You can `git init` and commit `~/.openclaw` yourself and never know ours is there. Because collision is impossible by construction, it earns default-on.
+
+### 1. The snapshot layer
+
+A lightweight timer runs `features/git-autosnapshot/auto-commit.sh` (every 15 min) and commits every non-ignored change — your `MEMORY.md`, `memory/*.md`, notes, pins, skills, and configs — **into the isolated store**. Runtime churn (`*.sqlite*`, `kb/vector_db/`, `memory/cache/`, `logs/`, `models/`) is ignored, so the store stays small.
+
+- **Byte-exact undo.** A bad edit, dedup, or semantic merge is reversible with one command: `git --git-dir=~/.openclaw/.dinomem-snap.git --work-tree=~/.openclaw checkout <ref> -- memory/`.
+- **Size guard.** New files over `AUTOSNAP_MAX_MB` (default 10) are refused from staging (they stay on disk) — a stray model/video dump can never bloat the store.
+- **Disk-aware self-cleanup.** Housekeeping escalates as the disk fills:
+
+  | Disk | Action |
+  |------|--------|
+  | `<80%` HEALTHY | light `gc --auto` + `lfs prune`, ~hourly |
+  | `80–89%` WARN | `gc --prune=now` + `lfs prune` + collapse snapshots older than `RETAIN_DAYS`, every tick |
+  | `≥90%` EMERGENCY | reflog expire + aggressive `gc` + force `lfs prune` + 7-day retention |
+
+- **Hand-written commits are permanent** — only `auto-snapshot` commits ever collapse into a baseline under retention.
+- **Local-only, fail-open.** No remote by default (add one for durability); every git call degrades to a benign no-op if git is missing.
+
+### 2. Git as a live signal (`git_history.py`)
+
+The payoff isn't just rollback. Once history exists, `procedures/git_history.py` exposes it through a tiny stdlib API (`file_first_seen`, `file_last_touched`, `commit_count`, `content_at`, `diff_since`, `restore`) — **read-only, fail-open, git-optional**. Memory components read git instead of remembering (or guessing) state:
+
+| Consumer | Uses git for |
+|----------|-------------|
+| `memory_retention.py` | Before pruning a file, checks `file_last_touched` — a **recently-reinforced** memory is spared. `commit_count` = a recurrence/importance signal. Replaces unreliable mtime. |
+| `_memory_diff.py` | Stamps each add/update/delete with a `restore_ref` (HEAD sha) → byte-exact reversible. |
+| `memory_cleanup.py` | After a dedup/merge pass, prints `undo this run: git checkout <sha> -- memory/`. |
+| `resolve_done_notes.py` | Snapshot-before-delete; a resolved note is recoverable via `git checkout <head>:memory/<note>`. |
+
+> **Design rule:** don't *remember* STATE — compute it from git live. "Did this ship? are two copies in sync? last-touched?" → `git log`/`diff`/`git_history.py`, never a stored note. Git can't go stale, because it's recomputed from reality on every read.
+
+So the memory-quality win is **retention**: hot notes stay, cold notes age out, and every destructive pass is reversible.
+
+### Install / uninstall
+
+The main installer sets it up **automatically** (default-on). To opt out:
+
+```bash
+bash scripts/install.sh --workspace ~/.openclaw/workspace-myagent --no-git-snapshot
+```
+
+Or manage the feature directly:
+
+```bash
+bash features/git-autosnapshot/install.sh --repo ~/.openclaw               # isolated store + timer
+bash features/git-autosnapshot/install.sh --repo ~/.openclaw --uninstall   # remove timer (store + your files kept)
+```
+
+`git_history.py` itself needs nothing enabled — it auto-detects the `.dinomem-snap.git` store and degrades cleanly when it's absent, so the retention/undo consumers work with or without the snapshot timer running.
 
 ---
 

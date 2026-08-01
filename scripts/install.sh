@@ -22,10 +22,14 @@
 #                     (2) wiring the jobs via your own scheduler (systemd timers, etc.).
 #   --no-backup-cron  Skip weekly backup cron (if you have your own backup system)
 #   --no-smart-cache  Skip bundling the smart-cache-pro (compression-only) plugin
-#   --git-snapshot    Enable local git auto-snapshot safety net for ~/.openclaw:
-#                     a timer commits all non-ignored changes every 15 min
+#   --no-git-snapshot Disable the git snapshot safety net (default: ON).
+#                     When on, an ISOLATED snapshot store (.dinomem-snap.git)
+#                     commits all non-ignored changes every 15 min
 #                     (disk-aware cleanup, lfs media handling, history retention).
-#                     Opt-IN. See features/git-autosnapshot/README.md.
+#                     It NEVER touches your own repo: separate git-dir, private
+#                     info/exclude, no .gitignore dropped in your tree.
+#                     (--git-snapshot still accepted; it's the default now.)
+#                     See features/git-autosnapshot/README.md.
 #   --force           Overwrite existing files
 #   --dry-run         Preview every change without writing anything (no files,
 #                     no crons, no Docker, no config patch). Idempotency-aware:
@@ -39,7 +43,7 @@ DO_DOCKER=1
 DO_CRON=1
 DO_BACKUP_CRON=1
 DO_SMART_CACHE=1
-DO_GIT_SNAPSHOT=0   # opt-IN: local git auto-snapshot safety net (see features/git-autosnapshot)
+DO_GIT_SNAPSHOT=1   # default-ON: ISOLATED git snapshot store (.dinomem-snap.git — never touches your own repo). Opt out with --no-git-snapshot. See features/git-autosnapshot
 FORCE=0
 DRY_RUN=0
 
@@ -56,6 +60,7 @@ while [ $# -gt 0 ]; do
     --no-backup-cron)  DO_BACKUP_CRON=0; shift ;;
     --no-smart-cache)  DO_SMART_CACHE=0; shift ;;
     --git-snapshot)    DO_GIT_SNAPSHOT=1; shift ;;
+    --no-git-snapshot) DO_GIT_SNAPSHOT=0; shift ;;
     --force)      FORCE=1; shift ;;
     --dry-run)    DRY_RUN=1; shift ;;
     --agree)      shift ;;  # no-op: base has no license gate; neuron passes this through after the human accepted the neuron license. Accept+ignore so neuron auto-base install doesn't die on 'unknown arg'.
@@ -1461,12 +1466,15 @@ PYEOF
   fi
 fi
 
-# ── 5b) git-autosnapshot feature (opt-in via --git-snapshot) ─────────────────
-# Local git auto-snapshot safety net for the whole ~/.openclaw repo: a timer
-# commits all non-ignored changes every 15 min, with disk-aware cleanup, lfs
-# media handling, and history retention. Self-contained under features/.
+# ── 5b) git-autosnapshot feature (default-ON; --no-git-snapshot to skip) ──────
+# ISOLATED git snapshot safety net for the whole ~/.openclaw repo: a timer
+# commits all non-ignored changes every 15 min into a SEPARATE git-dir
+# (.dinomem-snap.git), with disk-aware cleanup, lfs media handling, and history
+# retention. It NEVER touches the user's own repo — separate git-dir + private
+# info/exclude, no .gitignore/.gitattributes dropped into their working tree.
+# Because it's fully isolated it's safe to default ON. Self-contained under features/.
 if [ "$DO_GIT_SNAPSHOT" = 1 ]; then
-  hr "git-autosnapshot (local safety net)"
+  hr "git-autosnapshot (isolated snapshot store)"
   GS_INSTALLER="$SKILL_DIR/features/git-autosnapshot/install.sh"
   GS_REPO="$OPENCLAW_DIR"   # the ~/.openclaw root (parent of the workspace)
   if [ ! -f "$GS_INSTALLER" ]; then
@@ -1483,7 +1491,7 @@ if [ "$DO_GIT_SNAPSHOT" = 1 ]; then
     fi
   fi
 else
-  skip "git-autosnapshot (opt-in: pass --git-snapshot to enable)"
+  skip "git-autosnapshot (disabled via --no-git-snapshot)"
 fi
 
 # ── 6) Wire AGENTS.md ──────────────────────────────────────────────

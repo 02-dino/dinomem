@@ -36,13 +36,44 @@ _GIT_TIMEOUT = float(os.environ.get("DINOMEM_GIT_TIMEOUT", "8") or "8")
 _repo_cache = {}
 
 
+# Cache the resolved git base args (isolated git-dir vs plain -C) per repo.
+_gitbase_cache = {}
+
+# Isolated snapshot store: git-autosnapshot keeps its object DB in a SEPARATE
+# git-dir INSIDE the repo (default name below) so it never collides with a
+# user's own <repo>/.git. When that dir is present we address git via
+# --git-dir/--work-tree; otherwise fall back to the classic in-tree -C form.
+# Overridable via DINOMEM_SNAP_GITDIR (dir name or absolute path).
+_SNAP_GITDIR_NAME = os.environ.get("DINOMEM_SNAP_GITDIR", ".dinomem-snap.git")
+
+def _git_base(repo):
+    """Leading git args addressing THIS repo's history.
+    Prefers the isolated snapshot git-dir (<repo>/.dinomem-snap.git +
+    --work-tree=<repo>) when it exists; else classic -C <repo>. Cached.
+    Fail-open: on any doubt, returns the classic -C form.
+    """
+    key = str(repo)
+    if key in _gitbase_cache:
+        return _gitbase_cache[key]
+    base = ["-C", str(repo)]
+    try:
+        gd = _SNAP_GITDIR_NAME
+        gd_path = gd if os.path.isabs(gd) else os.path.join(str(repo), gd)
+        # A real git-dir has a HEAD file; cheap probe, no git launch needed.
+        if os.path.isfile(os.path.join(gd_path, "HEAD")):
+            base = ["--git-dir", gd_path, "--work-tree", str(repo)]
+    except Exception:
+        base = ["-C", str(repo)]
+    _gitbase_cache[key] = base
+    return base
+
 def _run(repo, args, timeout=None):
     """Run `git -C <repo> <args>`; return stdout str on success, else None.
     Fail-open: any error (missing git, non-repo, timeout, non-zero exit) -> None.
     """
     try:
         p = subprocess.run(
-            ["git", "-C", str(repo)] + list(args),
+            ["git"] + _git_base(repo) + list(args),
             capture_output=True, text=True,
             timeout=timeout or _GIT_TIMEOUT,
         )

@@ -20,6 +20,7 @@ set -euo pipefail
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="${OPENCLAW_HOME:-$HOME/.openclaw}"
+GIT_DIR=""          # isolated snapshot git-dir; default set after REPO resolves
 INTERVAL_MIN=15
 MAX_MB=10
 RETAIN_DAYS=30
@@ -31,6 +32,7 @@ UNINSTALL=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --repo)         REPO="$2"; shift 2 ;;
+    --git-dir)      GIT_DIR="$2"; shift 2 ;;
     --interval-min) INTERVAL_MIN="$2"; shift 2 ;;
     --max-mb)       MAX_MB="$2"; shift 2 ;;
     --retain-days)  RETAIN_DAYS="$2"; shift 2 ;;
@@ -51,6 +53,12 @@ hr()   { printf '\033[1m== %s ==\033[0m\n' "$*"; }
 plan() { printf '  \033[36m[plan]\033[0m %s\n' "$*"; }
 
 REPO="$(cd "$REPO" 2>/dev/null && pwd || echo "$REPO")"
+# Isolated snapshot git-dir INSIDE the repo, but SEPARATE from any user .git.
+# Files stay in place; only the object DB lives here. Never collides with the
+# user's own $REPO/.git (which we never read or write).
+[ -z "$GIT_DIR" ] && GIT_DIR="$REPO/.dinomem-snap.git"
+# git addressing helper: isolated git-dir + repo as work-tree.
+g() { git --git-dir="$GIT_DIR" --work-tree="$REPO" "$@"; }
 UNIT_BASE="dinomem-autosnapshot"
 # Distinct unit name per repo so multiple repos don't collide.
 REPO_TAG="$(echo "$REPO" | tr -c 'a-zA-Z0-9' '-' | sed 's/--*/-/g;s/^-//;s/-$//')"
@@ -75,7 +83,7 @@ if [ "$UNINSTALL" = 1 ]; then
     crontab -l 2>/dev/null | grep -v "git-autosnapshot.*$REPO" | crontab - 2>/dev/null || true
     ok "cron entry removed"
   fi
-  ok "Done. Your commits, scripts, and .gitignore are untouched."
+  ok "Done. Snapshot store removed nothing; your files, commits, and any own repo are untouched."
   exit 0
 fi
 
@@ -83,16 +91,28 @@ fi
 hr "Pre-flight"
 command -v git >/dev/null 2>&1 || fail "git not found — install git first."
 ok "git $(git --version | awk '{print $3}')"
-if [ ! -d "$REPO/.git" ]; then
+# Init the ISOLATED snapshot git-dir (NOT $REPO/.git). This is the whole point:
+# the user's own repo, if any, is left completely untouched.
+if [ ! -f "$GIT_DIR/HEAD" ]; then
   if [ "$DRY_RUN" = 1 ]; then
-    plan "git init $REPO (not a repo yet)"
+    plan "git init --separate-git-dir style snapshot store at $GIT_DIR (isolated; your own .git untouched)"
   else
-    git -C "$REPO" init -q && ok "git repo initialized at $REPO"
+    # PURE standalone git-dir. NOT --separate-git-dir (that would drop a gitlink
+    # .git FILE into the tree and CONVERT an existing user repo). We create the
+    # store in isolation and only ever address it via --git-dir/--work-tree, so
+    # the user's own $REPO/.git (if any) is never read, written, or replaced.
+    mkdir -p "$GIT_DIR"
+    git --git-dir="$GIT_DIR" --work-tree="$REPO" init -q
+    # Make the store bare-of-worktree-config safe: point it at the work-tree and
+    # keep it from ever trying to check out into the tree.
+    git --git-dir="$GIT_DIR" config core.worktree "$REPO" 2>/dev/null || true
+    git --git-dir="$GIT_DIR" config core.bare false 2>/dev/null || true
+    ok "isolated snapshot store initialized at $GIT_DIR (your own repo untouched)"
   fi
 else
-  ok "git repo present: $REPO"
+  ok "snapshot store present: $GIT_DIR"
 fi
-BRANCH="$(git -C "$REPO" symbolic-ref --short -q HEAD 2>/dev/null || echo main)"
+BRANCH="$(g symbolic-ref --short -q HEAD 2>/dev/null || echo main)"
 ok "branch: $BRANCH"
 
 # ── scale-friendly git config (safe, idempotent) ─────────────────────────────
@@ -100,9 +120,9 @@ hr "Scale config"
 if [ "$DRY_RUN" = 1 ]; then
   plan "git config core.fsmonitor / core.untrackedcache / feature.manyFiles = true"
 else
-  git -C "$REPO" config core.untrackedcache true 2>/dev/null || true
-  git -C "$REPO" config core.fsmonitor true 2>/dev/null || true
-  git -C "$REPO" config feature.manyFiles true 2>/dev/null || true
+  g config core.untrackedcache true 2>/dev/null || true
+  g config core.fsmonitor true 2>/dev/null || true
+  g config feature.manyFiles true 2>/dev/null || true
   ok "fsmonitor + untrackedcache + manyFiles enabled (keeps staging fast at scale)"
 fi
 
@@ -112,7 +132,7 @@ if [ "$DRY_RUN" = 1 ]; then
   plan "install auto-commit.sh + git-retention.sh -> $BIN_DIR/"
 else
   mkdir -p "$BIN_DIR"
-  for s in auto-commit.sh git-retention.sh; do
+  for s in auto-commit.sh git-retention.sh dinomem-undo.sh; do
     if [ -f "$BIN_DIR/$s" ] && [ "$FORCE" = 0 ]; then
       skip "$s (exists, --force to overwrite)"
     else
@@ -121,17 +141,22 @@ else
   done
 fi
 
-# ── merge .gitignore + .gitattributes templates ──────────────────────────────
-hr "gitignore / lfs"
-GI="$REPO/.gitignore"
+# ── ignore rules go in the snapshot git-dir's OWN info/exclude ────────────────
+# CRUCIAL for isolation: we do NOT drop a .gitignore into the user's working
+# tree (that would pollute their repo and their diffs). The snapshot store's
+# private info/exclude does the same job, invisible to the user and to any
+# repo they run themselves.
+hr "ignore rules (private to snapshot store)"
+EXC="$GIT_DIR/info/exclude"
 MARKER="# >>> dinomem git-autosnapshot ignores >>>"
 if [ "$DRY_RUN" = 1 ]; then
-  plan "append runtime-noise ignore block to .gitignore (if not present)"
-elif grep -qF "$MARKER" "$GI" 2>/dev/null; then
-  skip ".gitignore block (already present)"
+  plan "append runtime-noise ignore block to $EXC (private; NOT the user's .gitignore)"
+elif grep -qF "$MARKER" "$EXC" 2>/dev/null; then
+  skip "info/exclude block (already present)"
 else
-  cat "$SELF_DIR/gitignore.snippet" >> "$GI"
-  ok ".gitignore runtime-noise block appended"
+  mkdir -p "$GIT_DIR/info" 2>/dev/null || true
+  cat "$SELF_DIR/gitignore.snippet" >> "$EXC"
+  ok "runtime-noise ignore block written to snapshot store (user's tree untouched)"
 fi
 # git-lfs: match dinomem's real installer pattern (detect -> attempt install ->
 # warn+continue). The main installer already auto-installs Python via apt/brew/
@@ -168,18 +193,24 @@ if [ "$DO_LFS" = 1 ] && command -v git-lfs >/dev/null 2>&1; then
   if [ "$DRY_RUN" = 1 ]; then
     plan "git lfs install + copy .gitattributes media rules"
   else
-    git -C "$REPO" lfs install --local >/dev/null 2>&1 || true
-    if [ -f "$REPO/.gitattributes" ] && [ "$FORCE" = 0 ]; then
-      skip ".gitattributes (exists — merge media rules manually if needed)"
+    g lfs install --local >/dev/null 2>&1 || true
+    # lfs media rules live in the snapshot store's info/attributes, NOT a
+    # .gitattributes in the user's tree (same isolation rule as the ignores).
+    ATTR="$GIT_DIR/info/attributes"
+    if grep -qF 'dinomem git-autosnapshot' "$ATTR" 2>/dev/null; then
+      skip "info/attributes media rules (already present)"
     else
-      cp "$SELF_DIR/gitattributes.template" "$REPO/.gitattributes" && ok ".gitattributes media/lfs rules installed"
+      mkdir -p "$GIT_DIR/info" 2>/dev/null || true
+      printf '# >>> dinomem git-autosnapshot media rules >>>\n' >> "$ATTR"
+      cat "$SELF_DIR/gitattributes.template" >> "$ATTR"
+      ok "media/lfs rules written to snapshot store (user's tree untouched)"
     fi
   fi
 fi
 
 # ── scheduler: systemd timer preferred, cron fallback ────────────────────────
 hr "Scheduler (every ${INTERVAL_MIN} min)"
-ENVLINE="AUTOSNAP_REPO=$REPO AUTOSNAP_MAX_MB=$MAX_MB AUTOSNAP_RETAIN_DAYS=$RETAIN_DAYS AUTOSNAP_BRANCH=$BRANCH"
+ENVLINE="AUTOSNAP_REPO=$REPO AUTOSNAP_GIT_DIR=$GIT_DIR AUTOSNAP_MAX_MB=$MAX_MB AUTOSNAP_RETAIN_DAYS=$RETAIN_DAYS AUTOSNAP_BRANCH=$BRANCH"
 if command -v systemctl >/dev/null 2>&1 && [ -d /etc/systemd/system ] && [ -w /etc/systemd/system ]; then
   if [ "$DRY_RUN" = 1 ]; then
     plan "write /etc/systemd/system/${SVC}.{service,timer} + enable --now"
@@ -231,7 +262,7 @@ fi
 # ── first snapshot ───────────────────────────────────────────────────────────
 if [ "$DRY_RUN" != 1 ]; then
   hr "First snapshot"
-  AUTOSNAP_REPO="$REPO" AUTOSNAP_MAX_MB="$MAX_MB" AUTOSNAP_RETAIN_DAYS="$RETAIN_DAYS" AUTOSNAP_BRANCH="$BRANCH" \
+  AUTOSNAP_REPO="$REPO" AUTOSNAP_GIT_DIR="$GIT_DIR" AUTOSNAP_MAX_MB="$MAX_MB" AUTOSNAP_RETAIN_DAYS="$RETAIN_DAYS" AUTOSNAP_BRANCH="$BRANCH" \
     "$BIN_DIR/auto-commit.sh" && ok "initial snapshot run complete" || warn "initial snapshot returned non-zero (check logs/git-autosnapshot.log)"
 fi
 

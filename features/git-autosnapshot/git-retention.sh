@@ -11,7 +11,8 @@
 # byte-identical before and after).
 #
 # CONFIG (env):
-#   AUTOSNAP_REPO         repo root                (required)
+#   AUTOSNAP_REPO         repo root (work-tree)    (required)
+#   AUTOSNAP_GIT_DIR      snapshot git-dir         (default: $REPO/.dinomem-snap.git)
 #   AUTOSNAP_RETAIN_DAYS  keep-granular window     (default 30)
 #   AUTOSNAP_BRANCH       branch                   (default: current)
 #   AUTOSNAP_MIN_COLLAPSE minimum old snapshots to bother collapsing (default 50)
@@ -24,15 +25,20 @@ REPO="${AUTOSNAP_REPO:-}"
 RETAIN_DAYS="${AUTOSNAP_RETAIN_DAYS:-30}"
 MIN_COLLAPSE="${AUTOSNAP_MIN_COLLAPSE:-50}"
 [ -z "$REPO" ] && { echo "git-retention: AUTOSNAP_REPO not set" >&2; exit 2; }
-[ -d "$REPO/.git" ] || { echo "git-retention: $REPO is not a git repo" >&2; exit 2; }
-cd "$REPO"
 
-BRANCH="${AUTOSNAP_BRANCH:-$(git symbolic-ref --short -q HEAD || echo main)}"
+# Isolated snapshot git-dir (NOT the user's $REPO/.git).
+GIT_DIR="${AUTOSNAP_GIT_DIR:-$REPO/.dinomem-snap.git}"
+[ -f "$GIT_DIR/HEAD" ] || { echo "git-retention: snapshot git-dir not initialized at $GIT_DIR" >&2; exit 2; }
+
+# All git calls go through the isolated git-dir + repo work-tree.
+g() { git --git-dir="$GIT_DIR" --work-tree="$REPO" "$@"; }
+
+BRANCH="${AUTOSNAP_BRANCH:-$(g symbolic-ref --short -q HEAD || echo main)}"
 LOG="$REPO/logs/git-autosnapshot.log"
 mkdir -p "$REPO/logs" 2>/dev/null || true
 
 # Never run mid-operation or on a dirty index that could confuse the rewrite.
-if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
+if ! g diff --quiet 2>/dev/null || ! g diff --cached --quiet 2>/dev/null; then
   echo "$(date '+%F %T') RETENTION skip: working tree dirty" >> "$LOG"
   exit 0
 fi
@@ -54,38 +60,38 @@ while IFS='|' read -r sha epoch subj; do
     BOUNDARY="$sha"
     break
   fi
-done < <(git log --reverse --format='%H|%ct|%s' "$BRANCH")
+done < <(g log --reverse --format='%H|%ct|%s' "$BRANCH")
 
 # Nothing to collapse (all commits recent or meaningful).
 [ -z "$BOUNDARY" ] && exit 0
 
 # Parent of BOUNDARY = last commit to squash. If BOUNDARY is root, nothing before it.
-if ! PARENT=$(git rev-parse --verify "${BOUNDARY}^" 2>/dev/null); then
+if ! PARENT=$(g rev-parse --verify "${BOUNDARY}^" 2>/dev/null); then
   exit 0
 fi
 
 # Count collapsible commits; skip if trivially small.
-NUM=$(git rev-list --count "$PARENT" 2>/dev/null || echo 0)
+NUM=$(g rev-list --count "$PARENT" 2>/dev/null || echo 0)
 if [ "$NUM" -lt "$MIN_COLLAPSE" ]; then
   exit 0
 fi
 
 # Backup branch tip before rewriting.
 BK="refs/backup/retention-$(date +%Y%m%d-%H%M%S)"
-git update-ref "$BK" "$BRANCH"
+g update-ref "$BK" "$BRANCH"
 
 # Baseline = orphan commit with PARENT's tree (exact file state), no history.
-PARENT_TREE=$(git rev-parse "${PARENT}^{tree}")
-BASELINE=$(git commit-tree "$PARENT_TREE" -m "baseline: collapsed ${NUM} auto-snapshots older than ${RETAIN_DAYS}d (files preserved; backup ${BK})")
+PARENT_TREE=$(g rev-parse "${PARENT}^{tree}")
+BASELINE=$(g commit-tree "$PARENT_TREE" -m "baseline: collapsed ${NUM} auto-snapshots older than ${RETAIN_DAYS}d (files preserved; backup ${BK})")
 
 # Replay BOUNDARY..BRANCH onto the new baseline.
-if git rebase --onto "$BASELINE" "$PARENT" "$BRANCH" >/dev/null 2>&1; then
+if g rebase --onto "$BASELINE" "$PARENT" "$BRANCH" >/dev/null 2>&1; then
   echo "$(date '+%F %T') RETENTION ok: collapsed ${NUM} old auto-snapshots -> baseline ${BASELINE:0:8} (backup ${BK})" >> "$LOG"
-  git reflog expire --expire=now --all 2>/dev/null || true
-  git gc --quiet --prune=now 2>/dev/null || true
+  g reflog expire --expire=now --all 2>/dev/null || true
+  g gc --quiet --prune=now 2>/dev/null || true
 else
-  git rebase --abort 2>/dev/null || true
-  git update-ref "$BRANCH" "$BK"
+  g rebase --abort 2>/dev/null || true
+  g update-ref "$BRANCH" "$BK"
   echo "$(date '+%F %T') RETENTION FAILED: rebase aborted, restored ${BRANCH} from ${BK}" >> "$LOG"
   exit 1
 fi

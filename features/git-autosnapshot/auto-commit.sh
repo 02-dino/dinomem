@@ -5,50 +5,70 @@
 # on a timer, so your work is always recoverable. Local-only: no remote, nothing
 # leaves the box. Purely a rollback-safety net on top of your real commits.
 #
+# ISOLATION (why this never touches your own repo):
+#   The snapshot object DB lives in a SEPARATE git-dir INSIDE the repo
+#   (default: $REPO/.dinomem-snap.git) addressed via --git-dir/--work-tree.
+#   Your own $REPO/.git (if any) is never read or written. Ignore rules live in
+#   the snapshot git-dir's own info/exclude, so no .gitignore is dropped into
+#   your working tree.
+#
 # CONFIG (all overridable via env; installer bakes REPO in):
-#   AUTOSNAP_REPO      repo root to snapshot        (required; no sane default)
+#   AUTOSNAP_REPO      repo root (work-tree) to snapshot   (required)
+#   AUTOSNAP_GIT_DIR   snapshot git-dir  (default: $REPO/.dinomem-snap.git)
 #   AUTOSNAP_MAX_MB    per-file ceiling for NEW files that get auto-added (default 10)
 #   AUTOSNAP_RETAIN_DAYS  granular-history window before old snapshots collapse (30)
 #   AUTOSNAP_BRANCH    branch to snapshot           (default: current branch)
 #
 # A size guard refuses to auto-add any single NEW file larger than MAX_MB, so a
-# stray model/image/video dump can never bloat .git. Disk-aware housekeeping
-# (gc / lfs prune / history retention) escalates as the disk fills.
+# stray model/image/video dump can never bloat the snapshot DB. Disk-aware
+# housekeeping (gc / lfs prune / history retention) escalates as the disk fills.
 set -euo pipefail
 
 REPO="${AUTOSNAP_REPO:-}"
 MAX_MB="${AUTOSNAP_MAX_MB:-10}"
 RETAIN_DAYS="${AUTOSNAP_RETAIN_DAYS:-30}"
 [ -z "$REPO" ] && { echo "auto-commit: AUTOSNAP_REPO not set" >&2; exit 2; }
-[ -d "$REPO/.git" ] || { echo "auto-commit: $REPO is not a git repo" >&2; exit 2; }
-cd "$REPO"
 
-BRANCH="${AUTOSNAP_BRANCH:-$(git symbolic-ref --short -q HEAD || echo main)}"
+# Isolated snapshot git-dir (NOT the user's $REPO/.git).
+GIT_DIR="${AUTOSNAP_GIT_DIR:-$REPO/.dinomem-snap.git}"
+[ -f "$GIT_DIR/HEAD" ] || { echo "auto-commit: snapshot git-dir not initialized at $GIT_DIR (run install.sh)" >&2; exit 2; }
+
+# Address git via the isolated git-dir + the repo as work-tree. Everything below
+# uses `g` instead of bare `git`, so the user's own repo is never touched.
+g() { git --git-dir="$GIT_DIR" --work-tree="$REPO" "$@"; }
+
+BRANCH="${AUTOSNAP_BRANCH:-$(g symbolic-ref --short -q HEAD || echo main)}"
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG="$REPO/logs/git-autosnapshot.log"
 mkdir -p "$REPO/logs" 2>/dev/null || true
 
-# ── Size guard: exclude oversized NEW files from this run (stay on disk) ──────
-EXCLUDES=()
-while IFS= read -r f; do
-  [ -z "$f" ] && continue
-  sz=$(stat -c '%s' "$f" 2>/dev/null || echo 0)
-  if [ "$sz" -gt $((MAX_MB*1024*1024)) ]; then
-    EXCLUDES+=(":(exclude)$f")
+# -- CHEAP IDLE SHORT-CIRCUIT (the efficiency gate) --------------------------
+# Most 15-min ticks have NOTHING to commit. `git status --porcelain` is fast
+# (backed by the fsmonitor + untracked-cache enabled at install), so probe it
+# FIRST; when the tree is clean, skip ALL the expensive work (ls-files scan,
+# add -A over the whole tree, commit). This makes an idle tick genuinely cheap
+# and prevents redundant snapshots. Housekeeping below stays gated too.
+if [ -n "$(g status --porcelain 2>/dev/null | head -c1)" ]; then
+
+  # -- Size guard: exclude oversized NEW files from this run (stay on disk) ---
+  EXCLUDES=()
+  while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    sz=$(stat -c '%s' "$REPO/$f" 2>/dev/null || echo 0)
+    if [ "$sz" -gt $((MAX_MB*1024*1024)) ]; then
+      EXCLUDES+=(":(exclude)$f")
+    fi
+  done < <(g ls-files --others --exclude-standard 2>/dev/null)
+
+  # -- Stage everything not ignored, minus oversized new files ---------------
+  g add -A -- . "${EXCLUDES[@]}" 2>/dev/null || g add -A 2>/dev/null || true
+
+  # After excludes/ignores there may be nothing actually staged -> no empty commit.
+  if ! g diff --cached --quiet 2>/dev/null; then
+    STAMP="$(date '+%Y-%m-%d %H:%M:%S %Z')"
+    N="$(g diff --cached --name-only | wc -l | tr -d ' ')"
+    g commit --quiet -m "auto-snapshot ${STAMP} (${N} file(s))" 2>/dev/null || true
   fi
-done < <(git ls-files --others --exclude-standard 2>/dev/null)
-
-# ── Stage everything not ignored, minus oversized new files ──────────────────
-git add -A -- . "${EXCLUDES[@]}" 2>/dev/null || git add -A 2>/dev/null || true
-
-# Nothing staged? exit quietly (no empty commits).
-if git diff --cached --quiet 2>/dev/null; then
-  # still run housekeeping below so cleanup happens even on idle ticks
-  :
-else
-  STAMP="$(date '+%Y-%m-%d %H:%M:%S %Z')"
-  N="$(git diff --cached --name-only | wc -l | tr -d ' ')"
-  git commit --quiet -m "auto-snapshot ${STAMP} (${N} file(s))" 2>/dev/null || true
 fi
 
 # ── DISK-AWARE housekeeping ──────────────────────────────────────────────────
@@ -58,21 +78,21 @@ DISK_PCT=$(df --output=pcent "$REPO" 2>/dev/null | tail -1 | tr -dc '0-9')
 
 if [ "$DISK_PCT" -ge 90 ]; then
   echo "$(date '+%F %T') EMERGENCY disk=${DISK_PCT}% -> aggressive gc + full lfs prune + 7d retention" >> "$LOG"
-  git reflog expire --expire=now --all 2>/dev/null || true
-  git gc --quiet --prune=now --aggressive 2>/dev/null || true
-  command -v git-lfs >/dev/null 2>&1 && git lfs prune --force --quiet 2>/dev/null || true
-  AUTOSNAP_RETAIN_DAYS=7 AUTOSNAP_REPO="$REPO" AUTOSNAP_BRANCH="$BRANCH" \
+  g reflog expire --expire=now --all 2>/dev/null || true
+  g gc --quiet --prune=now --aggressive 2>/dev/null || true
+  command -v git-lfs >/dev/null 2>&1 && g lfs prune --force --quiet 2>/dev/null || true
+  AUTOSNAP_RETAIN_DAYS=7 AUTOSNAP_REPO="$REPO" AUTOSNAP_GIT_DIR="$GIT_DIR" AUTOSNAP_BRANCH="$BRANCH" \
     bash "$SELF_DIR/git-retention.sh" 2>/dev/null || true
 elif [ "$DISK_PCT" -ge 80 ]; then
   echo "$(date '+%F %T') WARN disk=${DISK_PCT}% -> gc prune=now + lfs prune + ${RETAIN_DAYS}d retention" >> "$LOG"
-  git gc --quiet --prune=now 2>/dev/null || true
-  command -v git-lfs >/dev/null 2>&1 && git lfs prune --quiet 2>/dev/null || true
-  AUTOSNAP_RETAIN_DAYS="$RETAIN_DAYS" AUTOSNAP_REPO="$REPO" AUTOSNAP_BRANCH="$BRANCH" \
+  g gc --quiet --prune=now 2>/dev/null || true
+  command -v git-lfs >/dev/null 2>&1 && g lfs prune --quiet 2>/dev/null || true
+  AUTOSNAP_RETAIN_DAYS="$RETAIN_DAYS" AUTOSNAP_REPO="$REPO" AUTOSNAP_GIT_DIR="$GIT_DIR" AUTOSNAP_BRANCH="$BRANCH" \
     bash "$SELF_DIR/git-retention.sh" 2>/dev/null || true
 else
   # HEALTHY (<80%): light housekeeping ~hourly (the :00-:14 tick only).
   if [ "$(( $(date +%-M) / 15 ))" -eq 0 ]; then
-    git gc --quiet --auto 2>/dev/null || true
-    command -v git-lfs >/dev/null 2>&1 && git lfs prune --quiet 2>/dev/null || true
+    g gc --quiet --auto 2>/dev/null || true
+    command -v git-lfs >/dev/null 2>&1 && g lfs prune --quiet 2>/dev/null || true
   fi
 fi
