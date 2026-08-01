@@ -89,8 +89,35 @@ fi
 
 # ── pre-flight ───────────────────────────────────────────────────────────────
 hr "Pre-flight"
-command -v git >/dev/null 2>&1 || fail "git not found — install git first."
-ok "git $(git --version | awk '{print $3}')"
+# git is THE core dependency. Auto-install it (latest stable from the OS pkg
+# manager, never a pinned version) the same way we handle git-lfs below and the
+# main installer handles Python -- so the feature is self-provisioning instead of
+# hard-failing. Detect -> attempt install -> only fail if it is STILL absent.
+if ! command -v git >/dev/null 2>&1; then
+  if [ "$DRY_RUN" = 1 ]; then
+    plan "git not found -> attempt install via apt/brew/dnf/yum/apk/pacman (latest stable)"
+  else
+    warn "git not found -- attempting install (latest stable from your pkg manager)..."
+    if command -v apt-get >/dev/null 2>&1; then
+      apt-get update -q >/dev/null 2>&1 || true
+      apt-get install -y git >/dev/null 2>&1 || true
+    elif command -v brew >/dev/null 2>&1; then
+      brew install git >/dev/null 2>&1 || true
+    elif command -v dnf >/dev/null 2>&1; then
+      dnf install -y git >/dev/null 2>&1 || true
+    elif command -v yum >/dev/null 2>&1; then
+      yum install -y git >/dev/null 2>&1 || true
+    elif command -v apk >/dev/null 2>&1; then
+      apk add git >/dev/null 2>&1 || true
+    elif command -v pacman >/dev/null 2>&1; then
+      pacman -S --noconfirm git >/dev/null 2>&1 || true
+    fi
+  fi
+fi
+if [ "$DRY_RUN" != 1 ]; then
+  command -v git >/dev/null 2>&1 || fail "git not found and auto-install failed -- install git manually, then re-run."
+  ok "git $(git --version | awk '{print $3}')"
+fi
 # Init the ISOLATED snapshot git-dir (NOT $REPO/.git). This is the whole point:
 # the user's own repo, if any, is left completely untouched.
 if [ ! -f "$GIT_DIR/HEAD" ]; then
