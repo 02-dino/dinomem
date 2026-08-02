@@ -334,7 +334,7 @@ MEMORY.md                       # Searchable index (auto-generated, do not edit)
 A lightweight timer runs `features/git-autosnapshot/auto-commit.sh` (every 15 min) and commits every non-ignored change — your `MEMORY.md`, `memory/*.md`, notes, pins, skills, and configs — **into the isolated store**. Runtime churn (`*.sqlite*`, `kb/vector_db/`, `memory/cache/`, `logs/`, `models/`) is ignored, so the store stays small.
 
 - **Byte-exact undo.** A bad edit, dedup, or semantic merge is reversible with one command: `git --git-dir=~/.openclaw/.dinomem-snap.git --work-tree=~/.openclaw checkout <ref> -- memory/`.
-- **Size guard.** New files over `AUTOSNAP_MAX_MB` (default 10) are refused from staging (they stay on disk) — a stray model/video dump can never bloat the store.
+- **Size guard (LFS-aware).** New **non-LFS** files over `AUTOSNAP_MAX_MB` (default 10) are refused from staging (they stay on disk) — a stray model/`.jsonl`/`.sqlite` dump can never bloat the store. **LFS-tracked** files (media/archives/pdf) are exempt: their bytes live outside history, so a 40 MB `.mp4` is added *via* LFS instead of being dropped.
 - **Disk-aware self-cleanup.** Housekeeping escalates as the disk fills:
 
   | Disk | Action |

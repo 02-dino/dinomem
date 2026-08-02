@@ -20,8 +20,12 @@
 #   AUTOSNAP_BRANCH    branch to snapshot           (default: current branch)
 #
 # A size guard refuses to auto-add any single NEW file larger than MAX_MB, so a
-# stray model/image/video dump can never bloat the snapshot DB. Disk-aware
-# housekeeping (gc / lfs prune / history retention) escalates as the disk fills.
+# stray model/data dump can never bloat the snapshot DB. LFS-tracked paths
+# (media/archives/pdf per gitattributes) are EXEMPT from the size guard: LFS
+# stores their bytes outside history, so a 40MB .mp4 is added via LFS instead of
+# being dropped. Only oversized NON-LFS blobs (e.g. .jsonl/.sqlite dumps) are
+# excluded. Disk-aware housekeeping (gc / lfs prune / history retention)
+# escalates as the disk fills.
 set -euo pipefail
 
 REPO="${AUTOSNAP_REPO:-}"
@@ -56,7 +60,14 @@ if [ -n "$(g status --porcelain 2>/dev/null | head -c1)" ]; then
     [ -z "$f" ] && continue
     sz=$(stat -c '%s' "$REPO/$f" 2>/dev/null || echo 0)
     if [ "$sz" -gt $((MAX_MB*1024*1024)) ]; then
-      EXCLUDES+=(":(exclude)$f")
+      # LFS-aware: if this path is LFS-tracked, its bytes live OUTSIDE history,
+      # so size is irrelevant -> let it through. Only exclude oversized non-LFS
+      # blobs. `check-attr filter` returns 'lfs' when a gitattributes rule matches.
+      if g check-attr filter -- "$f" 2>/dev/null | grep -q ': filter: lfs$'; then
+        : # LFS-tracked oversized file -> keep (stored via LFS, snapshot stays tiny)
+      else
+        EXCLUDES+=(":(exclude)$f")
+      fi
     fi
   done < <(g ls-files --others --exclude-standard 2>/dev/null)
 

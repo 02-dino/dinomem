@@ -7,8 +7,8 @@ Every N minutes it commits all non-ignored changes (edits **and** brand-new file
 ## What you get
 
 - **Auto-commit on a timer** (systemd timer, or cron fallback). Default every 15 min.
-- **Captures new files too**, with a per-file size guard (default 10 MB) so a stray model/image/video dump can never bloat `.git`.
-- **git-lfs media handling** — images/video/pdf/fonts route through lfs so `.git` history stays small no matter how many binaries you add.
+- **Captures new files too**, with an LFS-aware per-file size guard (default 10 MB). Oversized **non-LFS** blobs (e.g. a stray `.jsonl`/`.sqlite`/model dump) are refused from staging so they can never bloat `.git`. Oversized **LFS-tracked** files (media/archives/pdf) are exempt — see below.
+- **git-lfs media handling** — images/video/pdf/fonts route through lfs so `.git` history stays small no matter how large the binary. Because the size guard is LFS-aware, a 40 MB `.mp4` is added *via* lfs (bytes stored outside history) instead of being dropped.
 - **Disk-aware cleanup** — housekeeping escalates as the disk fills:
 
   | Disk used | Tier | Action |
