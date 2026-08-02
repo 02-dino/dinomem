@@ -1735,6 +1735,104 @@ except Exception: print('unknown')" 2>/dev/null)"
   done
 fi
 
+# ── Install dinomem-recall-gate plugin (before_tool_call mid-session recall) ──
+# The bootstrap dinomem-open-notes hook injects the recall gate ONCE at agent
+# bootstrap; it CANNOT cover mid-session (turn 5, turn 20...). This plugin closes
+# that gap: a before_tool_call hook that fires on the DANGER, not the message —
+# if the model reaches for a COLD fs/exec tool (exec/read/grep/glob) without
+# having run any recall tool yet this turn, it gets ONE block telling it to recall
+# first. LANGUAGE-AGNOSTIC by construction (no message parsing). recallTools/fsTools
+# are config-driven; BASE ships the native retrieval set (memory_search/memory_get).
+# Fail-open: never bricks the tool loop. neuron OVERWRITES only this plugin's
+# openclaw.plugin.json with its neuron-tier recallTools — same base-owns / neuron-
+# extends pattern as extract_memory.py. Installs to the PERSISTENT global extensions
+# dir (plugin registration in openclaw.json is global; a workspace-relative path
+# dangles and crash-loops the gateway if the workspace moves).
+hr "Recall-gate hook plugin"
+PLUGIN_SRC="$SKILL_DIR/plugins/dinomem-recall-gate"
+PLUGIN_DST="$OPENCLAW_DIR/extensions/dinomem-recall-gate"
+if [ ! -d "$PLUGIN_SRC" ]; then
+  warn "plugin source $PLUGIN_SRC missing — skipping (mid-session recall stays bootstrap-only)"
+else
+  mkdir -p "$PLUGIN_DST"
+  cp "$PLUGIN_SRC/openclaw.plugin.json" "$PLUGIN_SRC/package.json" "$PLUGIN_SRC/index.ts" "$PLUGIN_DST/"
+  ok "plugin files -> $PLUGIN_DST"
+  if [ ! -f "$OPENCLAW_JSON" ]; then
+    warn "openclaw.json not found — plugin copied but NOT wired. Add id 'dinomem-recall-gate' to plugins.allow + its path to plugins.load.paths, then restart."
+  else
+    DINOMEM_DRY_RUN="$DRY_RUN" DINOMEM_OPENCLAW_JSON="$OPENCLAW_JSON" DINOMEM_PLUGIN_DST="$PLUGIN_DST" DINOMEM_WS="$WS" python3 - <<'PYEOF'
+import json, os
+
+path = os.environ["DINOMEM_OPENCLAW_JSON"]
+plugin_dst = os.environ["DINOMEM_PLUGIN_DST"]
+ws = os.environ["DINOMEM_WS"]
+PID = "dinomem-recall-gate"
+with open(path) as f:
+    cfg = json.load(f)
+
+changed = []
+plugins = cfg.setdefault("plugins", {})
+
+# 1) allowlist (create if absent so the plugin is explicitly permitted)
+allow = plugins.get("allow")
+if not isinstance(allow, list):
+    allow = []
+    plugins["allow"] = allow
+if PID not in allow:
+    allow.append(PID)
+    changed.append(f"plugins.allow += {PID}")
+
+# 1b) bundledDiscovery — REQUIRED companion to plugins.allow on OpenClaw 2026.6.x+.
+if plugins.get("bundledDiscovery") not in ("compat", "allowlist"):
+    plugins["bundledDiscovery"] = "compat"
+    changed.append('plugins.bundledDiscovery -> "compat"')
+
+# 2) load.paths -> abs plugin dir (dedup) + PRUNE stale workspace-relative paths.
+load = plugins.setdefault("load", {})
+paths = load.get("paths")
+if not isinstance(paths, list):
+    paths = []
+    load["paths"] = paths
+stale_paths = [p for p in paths
+               if isinstance(p, str)
+               and p.rstrip("/").endswith("/" + PID)
+               and p != plugin_dst]
+for sp in stale_paths:
+    paths.remove(sp)
+    changed.append(f"plugins.load.paths -= {sp} (stale)")
+if plugin_dst not in paths:
+    paths.append(plugin_dst)
+    changed.append(f"plugins.load.paths += {plugin_dst}")
+
+# 3) enable -> plugins.entries.<PID>.enabled. agentFilter left as the plugin's
+#    shipped default ("" = all agents) so base gets mid-session recall out of the box.
+entries = plugins.setdefault("entries", {})
+if not isinstance(entries, dict):
+    entries = {}
+    plugins["entries"] = entries
+entry = entries.get(PID)
+if not isinstance(entry, dict):
+    entry = {}
+    entries[PID] = entry
+if entry.get("enabled") is not True:
+    entry["enabled"] = True
+    changed.append(f"plugins.entries.{PID}.enabled -> true")
+
+if changed and os.environ.get("DINOMEM_DRY_RUN") == "1":
+    for c in changed:
+        print(f"  \033[36m[plan]\033[0m wire openclaw.json: {c}")
+elif not changed:
+    print("  \033[33m[skip]\033[0m dinomem-recall-gate already wired in openclaw.json")
+else:
+    with open(path, "w") as f:
+        json.dump(cfg, f, indent=2)
+    for c in changed:
+        print(f"  \033[32m[ok]\033[0m   wired: {c}")
+    print("  \033[33m[warn]\033[0m Restart OpenClaw to load the plugin: openclaw gateway restart")
+PYEOF
+  fi
+fi
+
 hr "done"
 echo "  dinomem installed for agent: $AGENT_ID"
 echo "  workspace: $WS"
