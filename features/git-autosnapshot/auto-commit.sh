@@ -55,6 +55,30 @@ mkdir -p "$REPO/logs" 2>/dev/null || true
 if [ -n "$(g status --porcelain 2>/dev/null | head -c1)" ]; then
 
   # -- Size guard: exclude oversized NEW files from this run (stay on disk) ---
+  # Allowlist: an optional `.dinomem-keep-large` at the repo root lets the user
+  # opt specific oversized NON-LFS blobs (irreproducible dumps you explicitly
+  # want versioned) past the guard. One glob per line; blank lines and lines
+  # starting with # are ignored. Globs are matched against the repo-relative
+  # path (e.g. `data/snapshot-*.jsonl`, `exports/*.sqlite`). Default: absent =
+  # nothing allowlisted = original safe behavior.
+  KEEP_GLOBS=()
+  if [ -f "$REPO/.dinomem-keep-large" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      line="${line%%$'\r'}"                    # strip CR (CRLF files)
+      case "$line" in ''|'#'*) continue ;; esac  # skip blank / comment
+      KEEP_GLOBS+=("$line")
+    done < "$REPO/.dinomem-keep-large"
+  fi
+  # keep_large <relpath> -> 0 if it matches any allowlist glob, else 1
+  keep_large() {
+    local p="$1" glob
+    for glob in "${KEEP_GLOBS[@]:-}"; do
+      [ -z "$glob" ] && continue
+      # shellcheck disable=SC2254  # glob is intentionally a pattern here
+      case "$p" in $glob) return 0 ;; esac
+    done
+    return 1
+  }
   EXCLUDES=()
   while IFS= read -r f; do
     [ -z "$f" ] && continue
@@ -65,6 +89,8 @@ if [ -n "$(g status --porcelain 2>/dev/null | head -c1)" ]; then
       # blobs. `check-attr filter` returns 'lfs' when a gitattributes rule matches.
       if g check-attr filter -- "$f" 2>/dev/null | grep -q ': filter: lfs$'; then
         : # LFS-tracked oversized file -> keep (stored via LFS, snapshot stays tiny)
+      elif keep_large "$f"; then
+        : # user-allowlisted oversized non-LFS blob -> keep (opted in explicitly)
       else
         EXCLUDES+=(":(exclude)$f")
       fi

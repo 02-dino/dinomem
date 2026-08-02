@@ -39,6 +39,21 @@ Options:
 | `--dry-run` | | preview only, write nothing |
 | `--uninstall` | | remove timer/cron (keeps commits, scripts, .gitignore) |
 
+## Keeping an oversized *non-LFS* file on purpose
+
+The size guard is deliberately strict about non-LFS blobs (a stray `.jsonl`/`.sqlite`/model dump). But sometimes you have an irreproducible, non-media blob you *do* want versioned. Opt it in with a `.dinomem-keep-large` file at the repo root — one glob per line, matched against the repo-relative path:
+
+```
+# .dinomem-keep-large — oversized NON-LFS blobs to version anyway
+exports/*.sqlite
+data/keep-*.jsonl
+```
+
+- Blank lines and `#` comments are ignored.
+- Matched files skip the size exclusion and get committed as normal git blobs (they *do* count against `.git` size — that's the tradeoff you're opting into).
+- Absent file = nothing allowlisted = default safe behavior.
+- This is for **non-LFS** blobs only; media/archives/pdf are already handled by LFS and never need an entry.
+
 ## Honest limits
 
 - **Local-only = no durability.** Snapshots protect against *mistakes*, not disk failure. If the disk dies, history dies with it. For durability, add a remote you push to (GitHub / self-hosted) — that also offloads lfs binaries off the local disk.
