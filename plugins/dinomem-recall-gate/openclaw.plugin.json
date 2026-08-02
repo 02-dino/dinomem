@@ -1,0 +1,55 @@
+{
+  "id": "dinomem-recall-gate",
+  "name": "dinomem recall gate",
+  "description": "Mid-session recall enforcement via before_tool_call (LANGUAGE-AGNOSTIC). TIER A: blocks the first COLD fs/exec reach on a turn until a recall tool has run. TIER B (hot-zone write re-arm): a write/edit/apply_patch whose target path is a MECHANISM path (hotZoneGlobs, e.g. scripts/tools/config) requires a FRESH recall THIS turn even if a general recall latched earlier — closes the 'recalled once about X, then built mechanism Y blind' hole. No user-message parsing — fires on the danger (cold fs/exec, or a hot-zone write path) not the message, so it works regardless of language. SCOPE BOUNDARY (by design): Tier B gates the STRUCTURED write tools where the path is a clean param; it does NOT gate freeform exec-shell writes (echo>, sed -i, tee, heredoc) because statically parsing arbitrary shell for hot-zone targets is the exact fragility this gate abandoned. Do mechanism edits via write/edit, not exec-redirects. Complements the bootstrap-only dinomem-open-notes hook. recallTools/fsTools are config-driven; BASE dinomem ships the native retrieval set (memory_search/memory_get). If you also install neuron retrieval tools (session_search/graph_search/docs_search/data_query), add them to recallTools. writeTools/hotZoneGlobs/hotZoneExclude are tool-agnostic and shared across tiers.",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "enforce": {
+        "type": "boolean",
+        "default": true,
+        "description": "Master switch. false = dry-run (never actually blocks)."
+      },
+      "agentFilter": {
+        "type": "string",
+        "default": "",
+        "description": "Only gate sessions whose sessionKey includes this substring. Empty string = all agents (installer-agnostic default)."
+      },
+      "recallTools": {
+        "type": "array",
+        "items": { "type": "string" },
+        "default": ["memory_search", "memory_get"],
+        "description": "Tools that count as 'recall done' for the current turn. BASE set = the native dinomem retrieval tools (memory_search/memory_get). If you install neuron's retrieval tools, add [graph_search, session_search, docs_search, data_query]. Does NOT include semantic_search (that is an analyst-workspace-only tool, not shipped by dinomem). The blockReason lists exactly these, so it never names a tool the install lacks."
+      },
+      "fsTools": {
+        "type": "array",
+        "items": { "type": "string" },
+        "default": ["exec", "read", "grep", "glob"],
+        "description": "fs/exec tools gated: first COLD use (no recall yet this turn) triggers one nudge."
+      },
+      "writeTools": {
+        "type": "array",
+        "items": { "type": "string" },
+        "default": ["write", "edit", "apply_patch", "Write", "Edit", "NotebookEdit"],
+        "description": "TIER B (hot-zone write re-arm): write/edit tools that, when targeting a hotZoneGlobs path, require a FRESH recall THIS turn even if a general recall already latched earlier this turn. Closes the 'recalled once, then built a mechanism blind' hole. Tool-agnostic across tiers."
+      },
+      "hotZoneGlobs": {
+        "type": "array",
+        "items": { "type": "string" },
+        "default": ["scripts/", "procedures/", "tools/", "openclaw.json", ".gen_control", "crontab"],
+        "description": "Substrings marking a MECHANISM path. A writeTools call whose target path contains one of these (and none of hotZoneExclude) is treated as a hot-zone build. GENERIC defaults for easy install; buyers override for their own layout."
+      },
+      "hotZoneExclude": {
+        "type": "array",
+        "items": { "type": "string" },
+        "default": ["memory/", "extensions/dinomem-", ".backups/", "logs/"],
+        "description": "Substrings that DISQUALIFY a path from the hot-zone (loop-safety). Writes to memory/ MUST be excluded or the gate fires on its own memory notes -> self-perpetuating (the cron-gate-loop lesson). Also excludes the extension's own dir + backup/log churn."
+      },
+      "cooldownTurns": {
+        "type": "number",
+        "default": 3,
+        "description": "Minimum turns between gate fires, to avoid nagging on repeated misses."
+      }
+    }
+  }
+}
