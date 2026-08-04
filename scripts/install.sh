@@ -556,6 +556,11 @@ def _cron_add_argv(job):
             a += ['--model', pay['model']]
         if pay.get('thinking'):
             a += ['--thinking', pay['thinking']]
+        # context-weight axis: a self-contained mechanical agentTurn skips the
+        # bootstrap root files (AGENTS/SOUL/IDENTITY/USER/TOOLS) it never reads,
+        # re-paid on every fire otherwise. Only meaningful for message jobs.
+        if pay.get('lightContext'):
+            a += ['--light-context']
     st = job.get('sessionTarget')
     if st in ('main', 'isolated'):
         a += ['--session', st]
@@ -692,6 +697,7 @@ job = {
         "kind": "agentTurn",
         **({"model": _cheap} if _cheap else {}),
         "message": "SCOPE LOCK (READ FIRST, NON-NEGOTIABLE): You operate ONLY on files whose basename matches the glob _note_*.md in $WS/memory/. Get the exact set by running: ls $WS/memory/_note_*.md. If that returns nothing / no matches, STOP IMMEDIATELY, touch nothing, output exactly NO_REPLY. You must NEVER read, evaluate, flip, delete, or GC any file that is not a _note_*.md file. In particular you must NEVER touch: _pin_*.md, _permanent*.md, MEMORY.md, or any date-prefixed distilled memory file (e.g. 2026-06-20_insight_*.md, *_entity_*.md, *_preference_*.md, *_relation_*.md, *_insight_*.md). Those are PERMANENT KNOWLEDGE, not task notes — deleting one is data loss. Do NOT glob memory/*.md, do NOT 'scan all memory files', do NOT infer that a distilled memory file is a resolvable note. If the count of _note_*.md files you are about to process is more than a handful (say >50) or includes anything not literally named _note_*.md, that is a BUG in your file selection — STOP and report it instead of acting. Only after this scope lock is satisfied, proceed.\n\nScan the _note_*.md files in $WS/memory/. Resolve each note (today = current UTC date): 1) task_bound notes (have done_when:): verify the done_when condition against workspace state (file exists, feature shipped). If verified, flip status to done and delete the note (promote to _pin_*.md if it has lasting value). Else leave pending. 2) type:project notes (project executor schema, may be added by neuron): these are normally advanced/closed by the neuron Project Advancer (base does not run it), BUT a project can be finished out-of-band by a human-driven session and left status:in_progress, or parked at a safety-gated final step (git push / external action) that the Advancer is forbidden to run — so it would otherwise orphan here. For any type:project note, verify its done_when the SAME way as task_bound (run the locally-checkable condition; e.g. for a git-push done_when run the rev-parse HEAD==@{u} check). If done_when verifies (and/or all steps are [x]), flip status to done and delete/promote it. If it is in_progress and clearly still has unchecked non-gated steps, leave it for the neuron Advancer (if installed). Do not delete a project whose done_when does not verify. 3) type:brainstorm notes (settled-thinking, status:design; a note class the neuron install may add — NOT tasks, so they carry NO done_when): a brainstorm can have a SHIPPABLE outcome that already landed out-of-band in a live session, leaving it stranded at status:design. IF such a note carries a shipped_when: field, verify it the SAME locally-checkable way as done_when (file exists / grep / exit 0 / test "$(git -C <repo> rev-parse HEAD)" = "$(git -C <repo> rev-parse @{u})"). If shipped_when verifies, flip status:design -> status:resolved and LEAVE THE NOTE IN PLACE (never delete a brainstorm — its thinking is the value; resolved brainstorms are retained/promoted, not reaped). If shipped_when does not verify, or the brainstorm has NO shipped_when field, leave it untouched (pure open-ended thinking has no machine-checkable resolution and stays human-resolved). Never delete a type:brainstorm note here. 4) stale_after GC: if a note is still pending/in_progress AND done_when was never met AND today > stale_after (default date+30d, or date+7d for reminder/quick-todo notes), delete it as abandoned. 5) Legacy notes with no schema fields: infer the task from content, delete if clearly resolved, else leave. Leave untouched any fields you do not recognize. Report what resolved, what was GC'd, and what remains.",
+        "lightContext": True,
         "timeoutSeconds": 300
     },
     "sessionTarget": "isolated",
@@ -709,6 +715,7 @@ job = {
         "kind": "agentTurn",
         **({"model": _cheap} if _cheap else {}),
         "message": "Run: python3 $WS/scripts/check_pending_notes.py\n\nIf exit code is 1 (no output) -> NO_REPLY, stop here, zero LLM cost.\n\nIf exit code is 0 (JSON output) -> for each note in the JSON:\n1. Read the full note file\n2. Evaluate done_when — run any shell command if verifiable, or reason from context\n3. If done -> update status to done in the file, report which ones closed\n4. If not done -> include in reminder summary to user\n\nSend reminder only if there are notes still pending after evaluation. Format: brief list with note title + stale_after date.",
+        "lightContext": True,
         "timeoutSeconds": 600
     },
     "sessionTarget": "isolated",
@@ -877,6 +884,11 @@ def _cron_add_argv(job):
             a += ['--model', pay['model']]
         if pay.get('thinking'):
             a += ['--thinking', pay['thinking']]
+        # context-weight axis: a self-contained mechanical agentTurn skips the
+        # bootstrap root files (AGENTS/SOUL/IDENTITY/USER/TOOLS) it never reads,
+        # re-paid on every fire otherwise. Only meaningful for message jobs.
+        if pay.get('lightContext'):
+            a += ['--light-context']
     st = job.get('sessionTarget')
     if st in ('main', 'isolated'):
         a += ['--session', st]
@@ -962,6 +974,7 @@ job = {
         "kind": "agentTurn",
         **({"model": _cheap} if _cheap else {}),
         "message": "Run: python3 $WS/scripts/check_pending_notes.py\n\nIf exit code is 1 (no output) -> NO_REPLY, stop here, zero LLM cost.\n\nIf exit code is 0 (JSON output) -> for each note in the JSON:\n1. Read the full note file\n2. Evaluate done_when — run any shell command if verifiable, or reason from context\n3. If done -> update status to done in the file, report which ones closed\n4. If not done -> include in reminder summary to user\n\nSend reminder only if there are notes still pending after evaluation. Format: brief list with note title + stale_after date.",
+        "lightContext": True,
         "timeoutSeconds": 600
     },
     "sessionTarget": "isolated",
