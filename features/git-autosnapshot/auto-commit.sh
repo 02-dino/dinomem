@@ -104,7 +104,26 @@ if [ -n "$(g status --porcelain 2>/dev/null | head -c1)" ]; then
   if ! g diff --cached --quiet 2>/dev/null; then
     STAMP="$(date '+%Y-%m-%d %H:%M:%S %Z')"
     N="$(g diff --cached --name-only | wc -l | tr -d ' ')"
-    g commit --quiet -m "auto-snapshot ${STAMP} (${N} file(s))" 2>/dev/null || true
+
+    # -- Structural subject (pure git, zero LLM) -------------------------------
+    # A machine-recoverable diff already exists; this line just makes `git log
+    # --oneline` scannable for RECOVERY TRIAGE: how many added/modified/deleted
+    # and which top-level dir dominated. No semantic summary (would cost a
+    # cheap-model call per 15-min tick for a log almost nobody reads); the real
+    # "what changed" stays in the diff itself.
+    ADDED=$(g diff --cached --name-status | grep -c '^A' || true)
+    MODED=$(g diff --cached --name-status | grep -c '^M' || true)
+    DELED=$(g diff --cached --name-status | grep -c '^D' || true)
+    # Dominant top-level dir among staged paths (e.g. 'memory', 'logs').
+    TOPDIR=$(g diff --cached --name-only \
+      | sed -e 's#^\([^/]*\)/.*#\1#' -e 's#^[^/]*$#(root)#' \
+      | sort | uniq -c | sort -rn | head -1 | awk '{print $2}')
+    [ -z "$TOPDIR" ] && TOPDIR='(root)'
+    SUBJ="auto-snapshot ${STAMP} · +${ADDED} ~${MODED} -${DELED} · ${TOPDIR} (${N} file(s))"
+
+    g commit --quiet -m "$SUBJ" 2>/dev/null \
+      || g commit --quiet -m "auto-snapshot ${STAMP} (${N} file(s))" 2>/dev/null \
+      || true
   fi
 fi
 

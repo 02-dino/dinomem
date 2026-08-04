@@ -13,18 +13,57 @@
 # CONFIG (env):
 #   AUTOSNAP_REPO         repo root (work-tree)    (required)
 #   AUTOSNAP_GIT_DIR      snapshot git-dir         (default: $REPO/.dinomem-snap.git)
-#   AUTOSNAP_RETAIN_DAYS  keep-granular window     (default 30)
+#   AUTOSNAP_RETAIN_DAYS  keep-granular window     (default: DYNAMIC, see below)
 #   AUTOSNAP_BRANCH       branch                   (default: current)
 #   AUTOSNAP_MIN_COLLAPSE minimum old snapshots to bother collapsing (default 50)
+#   AUTOSNAP_RETAIN_MIN   floor for dynamic window (default 7)
+#   AUTOSNAP_RETAIN_MAX   ceiling for dynamic window (default 365)
+#
+# DYNAMIC RETENTION (when AUTOSNAP_RETAIN_DAYS is unset):
+#   The keep-granular window scales with how much free space the filesystem
+#   holding the repo has — plenty of disk => keep more history granular; disk
+#   filling up => shrink toward the floor. Continuous, not fixed tiers. The
+#   caller (auto-commit.sh) may still PIN a small window in an emergency by
+#   exporting AUTOSNAP_RETAIN_DAYS explicitly; an explicit value always wins.
+#
+#     free% >= 50   -> RETAIN_MAX            (365d)  # lots of room, keep long
+#     free% in 15..50 -> linear MIN..MAX             # scale smoothly
+#     free% <  15   -> RETAIN_MIN            (7d)    # tight, keep only recent
+#
+#   Bounds are always clamped to [RETAIN_MIN, RETAIN_MAX] so a huge disk never
+#   yields unbounded history (git log/gc stay fast) and a full disk never drops
+#   below the recent-rollback floor.
 #
 # SAFETY: backs up the branch tip to refs/backup/retention-<ts> before rewriting;
 # on any rebase failure it aborts and restores the tip. Bails on a dirty tree.
 set -euo pipefail
 
 REPO="${AUTOSNAP_REPO:-}"
-RETAIN_DAYS="${AUTOSNAP_RETAIN_DAYS:-30}"
 MIN_COLLAPSE="${AUTOSNAP_MIN_COLLAPSE:-50}"
+RETAIN_MIN="${AUTOSNAP_RETAIN_MIN:-7}"
+RETAIN_MAX="${AUTOSNAP_RETAIN_MAX:-365}"
 [ -z "$REPO" ] && { echo "git-retention: AUTOSNAP_REPO not set" >&2; exit 2; }
+
+# RETAIN_DAYS: explicit env pins it (emergency override); else derive from free
+# disk on the filesystem holding the repo. Continuous linear ramp between the
+# floor and ceiling across the 15%..50% free-space band.
+if [ -n "${AUTOSNAP_RETAIN_DAYS:-}" ]; then
+  RETAIN_DAYS="$AUTOSNAP_RETAIN_DAYS"
+else
+  FREE_PCT=$(df --output=pcent "$REPO" 2>/dev/null | tail -1 | tr -dc '0-9')
+  [ -z "$FREE_PCT" ] && FREE_PCT=50            # df gives USED%; convert below
+  FREE_PCT=$((100 - FREE_PCT))                  # -> FREE%
+  if   [ "$FREE_PCT" -ge 50 ]; then RETAIN_DAYS="$RETAIN_MAX"
+  elif [ "$FREE_PCT" -le 15 ]; then RETAIN_DAYS="$RETAIN_MIN"
+  else
+    # linear: at 15% free -> MIN, at 50% free -> MAX
+    SPAN_DAYS=$((RETAIN_MAX - RETAIN_MIN))
+    RETAIN_DAYS=$(( RETAIN_MIN + SPAN_DAYS * (FREE_PCT - 15) / 35 ))
+  fi
+  # clamp defensively
+  [ "$RETAIN_DAYS" -lt "$RETAIN_MIN" ] && RETAIN_DAYS="$RETAIN_MIN"
+  [ "$RETAIN_DAYS" -gt "$RETAIN_MAX" ] && RETAIN_DAYS="$RETAIN_MAX"
+fi
 
 # Isolated snapshot git-dir (NOT the user's $REPO/.git).
 GIT_DIR="${AUTOSNAP_GIT_DIR:-$REPO/.dinomem-snap.git}"
