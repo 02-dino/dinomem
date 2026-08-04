@@ -138,6 +138,12 @@ if [ "$DRY_RUN" = 1 ]; then
   printf '\033[1;36m== DRY RUN — preview only, nothing will be written ==\033[0m\n'
 fi
 
+# Re-run-safety banner: dinomem is Python-stdlib-only (no pip/venv/requirements),
+# and every write step is idempotent (existing files are skipped unless --force).
+# So if any step fails mid-install, just RE-RUN this script — completed steps are
+# skipped and it resumes from where it stopped. No half-state cleanup needed.
+printf '\033[2m  stdlib-only (no pip deps) · idempotent · safe to re-run on failure (completed steps skip)\033[0m\n'
+
 # ── 0) Pre-flight compatibility checks ───────────────────────────────────────────
 hr "Pre-flight checks"
 # Python version check
