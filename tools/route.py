@@ -117,6 +117,25 @@ selected leaf tool. Keeping it write-free avoids duplicating any leaf-tool logic
   Default for USER-requested scheduling -> openclaw cron (via cron_tool.py). Only
   base-infra plumbing chooses linux crontab, and that choice is made at install.
 
+## CRON CONTEXT-WEIGHT (once surface=cron AND payload=agentTurn/message): light vs full
+  The SAME logic that makes root files the expensive default for surface routing applies
+  PER-FIRE to a cron's context: the bootstrap root files (AGENTS/SOUL/IDENTITY/USER/TOOLS)
+  are injected into the run on EVERY fire. A mechanical cron re-pays that token cost each
+  time for context it never reads. So classify the job's context need, not just its tier:
+    - needs_persona_or_root_rules -> FULL context (default; omit --light-context).
+      The job's quality depends on SOUL/IDENTITY tone, a TOOLS spec, or an AGENTS.md
+      behavioral rule it does NOT restate in its own prompt. Public-facing / voice /
+      judgment jobs usually live here.
+    - self_contained_mechanical   -> --light-context (skip bootstrap injection).
+      The prompt carries everything the job needs (script-run + fill-fields + format /
+      report). The root files add nothing but tokens on every fire.
+  cron_tool.py exposes this as --light-context (AXIS 5, message jobs only). It is a NO-OP
+  for command/system-event jobs (they inject no root context). DEFAULT light for a purely
+  mechanical agentTurn; keep FULL when persona/root-rule dependence is real. When unsure,
+  prefer FULL (correctness over a few tokens) — light is safe once the prompt is self-contained.
+  This axis is ORTHOGONAL to model-tier: a job can be cheap-model AND full-context, or
+  default-model AND light-context; decide context need independently of which model runs it.
+
 ## TRIGGER RE-CHECK (only about surface, not about avoiding any root file)
   The single hierarchy is trigger-gated (cron/hook/skill) vs always-on (root). Before routing
   to ANY root file, re-test whether the behavior actually has a trigger that fits it better:
@@ -175,6 +194,15 @@ SCHEMA = {
         "openclaw_cron": "needs agent context / model routing / delivery / agentTurn payload (T1 gate, T2 cheap, T3 default); written by tools/cron_tool.py",
         "rule": "survives-gateway-down deterministic -> linux crontab; needs-agent-or-model-or-delivery -> openclaw cron",
         "default_for_user_requests": "openclaw cron",
+    },
+    "cron_context_weight": {
+        "applies_to": "openclaw cron, agentTurn/message payload only (no-op for command/system-event)",
+        "axis": "orthogonal to model-tier: context-need is decided independently of which model runs the job",
+        "full": "needs_persona_or_root_rules -> omit --light-context (DEFAULT): job quality depends on SOUL/IDENTITY tone, a TOOLS spec, or an AGENTS.md rule it does not restate in its own prompt",
+        "light": "self_contained_mechanical -> --light-context: prompt carries everything (script-run + fill-fields + format/report); bootstrap root files add only tokens on every fire",
+        "why": "bootstrap root files (AGENTS/SOUL/IDENTITY/USER/TOOLS) inject on EVERY fire; a mechanical cron re-pays that for context it never reads",
+        "default": "light for a purely mechanical agentTurn; full when persona/root-rule dependence is real; when unsure prefer full (correctness over a few tokens)",
+        "flag": "cron_tool.py --light-context (AXIS 5)",
     },
     "trigger_recheck_before_root": [
         "could_it_be_a_hook_on_its_event -> prefer hook",

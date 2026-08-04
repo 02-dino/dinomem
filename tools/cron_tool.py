@@ -36,6 +36,21 @@ AXIS 4 — runtime_cost_tier (decide FIRST; pick cheapest meeting goal):
   llm_no_reasoning                  -> T2  --message + cheapest model       STOP: recommend+approve
   llm_reasoning                     -> T3  --message + default model        disclose recurring cost + confirm
 
+AXIS 5 — context_weight (agentTurn/--message jobs ONLY; orthogonal to tier & model):
+  needs_persona_or_root_rules  -> FULL context (omit --light-context)  the job's quality depends on
+                                  SOUL/IDENTITY tone, TOOLS spec, or an AGENTS.md behavioral rule
+                                  it does NOT restate in its own prompt.
+  self_contained_mechanical    -> --light-context                     the prompt carries everything it
+                                  needs (script-run + fill-fields + format/report); the bootstrap root
+                                  files (AGENTS/SOUL/IDENTITY/USER/TOOLS) add nothing but tokens.
+  WHY: bootstrap files are injected into the run's context on EVERY fire. A mechanical cron re-pays that
+  cost each time for context it never reads. --light-context skips workspace bootstrap injection for that
+  one job — the SAME 'put behavior where its trigger lives / root files are the expensive default' logic as
+  the surface arbiter, applied to per-fire cron CONTEXT. Command/system-event jobs inject no root context
+  at all, so the flag is a no-op there — it only matters for --message (agentTurn) jobs.
+  DEFAULT: light for a purely mechanical agentTurn; full only when persona/root-rule dependence is real.
+  When unsure, prefer FULL (correctness over a few tokens); light is safe once the prompt is self-contained.
+
 ## COST RULES (enforced)
   T0 preferred: deterministic goal -> --command/--system-event, never --message.
   no unconditional recurring --message: recurring + message + no gate -> REJECT unless --confirmed (T3).
@@ -185,6 +200,7 @@ def cmd_add(args):
     gate = args.get("gate")
     model = args.get("model")
     no_reasoning = args.get("no_reasoning")
+    light_context = args.get("light_context")
     confirmed = args.get("confirmed")
 
     # T1: --gate is itself the payload (its stdout on a hit); it does not need --command.
@@ -250,6 +266,12 @@ def cmd_add(args):
         argv += ["--command", command]
     else:  # message -> agentTurn
         argv += ["--session", "isolated", "--message", message]
+        # AXIS 5 context_weight: a self-contained mechanical agentTurn skips the
+        # bootstrap root files (AGENTS/SOUL/IDENTITY/USER/TOOLS) it never reads,
+        # re-paid on every fire otherwise. Only meaningful for message jobs;
+        # command/system-event jobs inject no root context, so it's a no-op there.
+        if light_context:
+            argv += ["--light-context"]
         # T2 cheap model: explicit --model wins, else the compaction anchor
         # (via _cheap_model helper: DINOMEM_CHEAP_MODEL env -> compaction.model
         # -> legacy env). ONE anchor drives every cheap lane; change
@@ -324,7 +346,7 @@ def _parse_argv(argv):
         a = argv[i]
         if a.startswith("--"):
             key = a[2:].replace("-", "_")
-            if key in {"no_reasoning", "confirmed"}:
+            if key in {"no_reasoning", "light_context", "confirmed"}:
                 args[key] = True
                 i += 1
             else:

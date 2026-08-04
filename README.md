@@ -156,6 +156,8 @@ dinomem routes the request to the right cron primitive (`at:` one-shot, `every:`
 
 Recurring jobs that would wake a reasoning LLM on every fire are **refused unless you confirm**, and portable gate scripts (`file-changed`, `threshold`, `diff-since-last`) ship ready to use so most "tell me when X" needs cost nothing until X actually happens.
 
+There's a second, orthogonal cost knob: **context weight**. The bootstrap root files (`AGENTS.md`, `SOUL.md`, `IDENTITY.md`, `USER.md`, `TOOLS.md`) are injected into a cron's run on *every fire* — the same reason they're the expensive default for surface routing. A **mechanical** cron whose prompt already carries everything it needs (run a script → fill fields → format a report) re-pays that cost for context it never reads, so it routes with `--light-context` to skip bootstrap injection. A cron whose quality depends on persona/tone or an `AGENTS.md` rule it doesn't restate keeps the **full** context. This is decided independently of which model runs the job (a job can be cheap-model *and* full-context, or default-model *and* light) — the default is light for a purely mechanical `agentTurn`, full when persona/root-rule dependence is real, and *when unsure, full wins* (correctness over a few tokens). The flag is a no-op for `command`/`system-event` jobs, which inject no root context to begin with.
+
 ### Automation (hook routing)
 
 > "Whenever a message comes in, log the sender"
