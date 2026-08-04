@@ -76,6 +76,30 @@ fail() { printf '  \033[31m[fail]\033[0m %s\n' "$*"; exit 1; }
 hr()   { printf '\033[1m== %s ==\033[0m\n' "$*"; }
 # plan: in --dry-run, print what WOULD happen instead of doing it.
 plan() { printf '  \033[36m[plan]\033[0m %s\n' "$*"; }
+
+# subst FILE PLACEHOLDER VALUE  — portable in-place placeholder replacement.
+# WHY not `sed -i`: BSD sed (macOS) requires an explicit backup suffix
+# (`sed -i ''`) while GNU sed (Linux) forbids it, so a single `sed -i "s|..|..|"`
+# crashes on one of the two platforms. AND the replacement VALUE is a filesystem
+# path that can legally contain `|`, `/`, `&`, or other sed-special chars, which
+# breaks any fixed `s<delim>...<delim>` expression and mangles `&`/backrefs.
+# This helper sidesteps BOTH: no `-i` (write to a temp file, then move), and a
+# literal (non-regex) replace via awk index/substr so the value needs no
+# escaping and no delimiter can collide. Portable across BSD/GNU userland.
+subst() {
+  _f="$1"; _ph="$2"; _val="$3"; _tmp="$_f.tmp.$$"
+  PH="$_ph" VAL="$_val" awk '
+    BEGIN { ph=ENVIRON["PH"]; val=ENVIRON["VAL"]; L=length(ph) }
+    {
+      out=""; s=$0
+      while ((p=index(s,ph))>0) {
+        out = out substr(s,1,p-1) val
+        s = substr(s,p+L)
+      }
+      print out s
+    }
+  ' "$_f" > "$_tmp" && mv "$_tmp" "$_f"
+}
 # run: execute a command, or in --dry-run print it (with an optional label).
 # Usage: run "<human label>" <command> [args...]
 run() {
@@ -289,9 +313,9 @@ for f in procedures/_cheap_model.py procedures/git_history.py procedures/session
     plan "copy + substitute placeholders -> $f"
   else
     cp "$SKILL_DIR/$f" "$dst"
-    sed -i "s|DINOMEM_WORKSPACE_PLACEHOLDER|$WS|g" "$dst"
-    sed -i "s|DINOMEM_AGENT_SESSIONS_PLACEHOLDER|$SESSIONS_DIR|g" "$dst"
-    sed -i "s|DINOMEM_AGENT_ID_PLACEHOLDER|$AGENT_ID|g" "$dst"
+    subst "$dst" DINOMEM_WORKSPACE_PLACEHOLDER "$WS"
+    subst "$dst" DINOMEM_AGENT_SESSIONS_PLACEHOLDER "$SESSIONS_DIR"
+    subst "$dst" DINOMEM_AGENT_ID_PLACEHOLDER "$AGENT_ID"
     ok "$f"
   fi
 done
@@ -304,9 +328,9 @@ for f in procedures/memory_cleanup.py procedures/memory_review.py procedures/cle
     plan "copy + substitute placeholders -> $f"
   else
     cp "$SKILL_DIR/$f" "$dst"
-    sed -i "s|DINOMEM_WORKSPACE_PLACEHOLDER|$WS|g" "$dst"
-    sed -i "s|DINOMEM_AGENT_SESSIONS_PLACEHOLDER|$SESSIONS_DIR|g" "$dst"
-    sed -i "s|DINOMEM_AGENT_ID_PLACEHOLDER|$AGENT_ID|g" "$dst"
+    subst "$dst" DINOMEM_WORKSPACE_PLACEHOLDER "$WS"
+    subst "$dst" DINOMEM_AGENT_SESSIONS_PLACEHOLDER "$SESSIONS_DIR"
+    subst "$dst" DINOMEM_AGENT_ID_PLACEHOLDER "$AGENT_ID"
     ok "$f"
   fi
 done
@@ -375,7 +399,7 @@ if [ -d "$SKILL_DIR/skills" ]; then
       # Bake the real workspace path into skill bodies so script-call examples
       # resolve at agent runtime (agent shell has no $WS). Matches the sed pass
       # used for procedures/tools scripts above.
-      find "$_skdst" -name '*.md' -exec sed -i "s|DINOMEM_WORKSPACE_PLACEHOLDER|$WS|g" {} +
+      find "$_skdst" -name '*.md' -exec sh -c 'for _m; do subst "$_m" DINOMEM_WORKSPACE_PLACEHOLDER "$WS"; done' _ {} +
       ok "skills/$_skname/ copied"
     fi
   done
