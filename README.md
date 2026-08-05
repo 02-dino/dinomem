@@ -1,8 +1,8 @@
-# 🦕 dinomem — The Memory Layer That Gets Sharper Over Time
+# 🦕 dinomem — Stop Re-Explaining Yourself to Your Agent
 
-> Self-curating long-term memory for AI agents. Most memory systems bloat with noise — dinomem distills each session, dedupes daily, and recalls before it acts.
+> Self-curating long-term memory for AI agents. Most memory systems bloat with noise — dinomem distills each session, dedupes and reviews daily, recalls before it acts, and never loses a memory to a bad edit.
 
-An LLM reads each archived session and distills what matters into structured memory files — automatically reviewed daily in batches, deduplicated daily, and updated when things change. The agent is behaviorally wired to search memory before acting, so recall actually happens. Memory quality improves over time.
+You told your agent once. It should still know. An LLM reads each archived session and distills what matters into structured memory files — automatically reviewed daily in batches, deduplicated daily, and updated when things change. The agent is behaviorally wired to search memory before acting, so recall actually happens. Every memory edit is git-versioned, so a bad dedup or merge is reversible byte-for-byte — nothing is ever destroyed. Memory quality improves over time.
 
 ---
 
@@ -25,6 +25,8 @@ The difference: memory quality improves over time instead of accumulating noise 
 **This compounds with model quality.** The extraction, dedup, and review are done by an LLM reading your sessions — not a fixed embedding algorithm. Every time the underlying model gets smarter, dinomem's judgment of what matters gets sharper too — no retraining, no rewrite. Most memory systems are bottlenecked at the embedding layer and stay flat as models improve; dinomem rides the curve.
 
 Most systems inject everything into context, or retrieve blindly. dinomem gives the agent a navigation index — `MEMORY.md` is injected every turn as a compact map of what exists in memory. The agent decides what to search based on that map. Recall is active, not passive.
+
+**Nothing is ever lost, and it configures itself.** Every memory write is git-versioned in an isolated store (never your repo) — a bad dedup, merge, or prune is reversible byte-for-byte, and retention reads git to spare recently-reinforced notes instead of guessing from mtime. And dinomem doesn't just remember — when you teach it a rule, it routes the behavior to where its trigger lives: a schedule becomes a **cron**, an event becomes a **hook**, an on-demand procedure becomes a **skill**, and only truly always-on rules land in a root file. You stop hand-writing config; you describe the behavior and it picks the cheapest correct home.
 
 ---
 
