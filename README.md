@@ -198,9 +198,9 @@ The arbiter reasons through ordered discriminators (time trigger → event trigg
 ## Prerequisites
 
 - [ ] [OpenClaw](https://github.com/openclaw/openclaw) **>= 2026.1.0** installed and running (`openclaw status` / `openclaw --version`). The `memorySearch`, `compaction`, and `contextInjection` config keys dinomem patches require 2026.1.0 or newer.
-- [ ] [Docker](https://docs.docker.com/get-docker/) — for the local embedding server
 - [ ] Python 3.8+
 - [ ] Linux or macOS (Windows: use WSL2)
+- [ ] [Docker](https://docs.docker.com/get-docker/) — **optional.** Powers the local embedding server (TEI) for faster semantic recall. The installer **auto-installs Docker on Linux** if it's missing, and if that can't run, dinomem degrades gracefully: **core memory (auto-save + `memory_search`) still works without it.** You only need to install Docker yourself on macOS (Docker Desktop can't be scripted headlessly).
 
 ### Minimum spec
 
@@ -274,8 +274,9 @@ After a session is archived and extracted, you'll see new files in `memory/` and
 |------|---------|-------------|
 | `--workspace DIR` | `$OPENCLAW_WORKSPACE` or `~/.openclaw/workspace` | Path to agent workspace |
 | `--agent-id ID` | Detected from workspace name | OpenClaw agent ID |
-| `--no-docker` | — | Skip TEI Docker setup |
+| `--no-docker` | — | Skip TEI Docker setup (memory still works; only faster semantic recall is skipped) |
 | `--no-cron` | — | Skip crontab registration |
+| `--repair-cron` | — | **Idempotent "just fix the crons" mode.** Skips every heavy/one-time phase (Docker, file copy, config wiring) and jumps straight to cron registration + self-check. Safe to re-run any time a prior install left the note-lifecycle crons unregistered. |
 | `--no-backup-cron` | — | Skip weekly backup cron (if you have your own backup system) |
 | `--force` | — | Overwrite existing scripts |
 | `--dry-run` | — | Preview every change without writing anything (no files, crons, Docker, or config patch). Idempotency-aware: reports `[plan]` for new actions, `[skip]` for what already exists. Re-run without the flag to apply. |
@@ -460,14 +461,16 @@ tail -50 ~/.openclaw/workspace-myagent/logs/extract_memory.log
 python3 ~/.openclaw/workspace-myagent/procedures/extract_memory.py
 ```
 
-**Cron not running**
+**Cron not running / note-lifecycle crons missing**
 ```bash
 crontab -l | grep auto_session_reset
-# If missing, re-run install:
-bash dinomem/scripts/install.sh --workspace ~/.openclaw/workspace-myagent --agent-id myagent
+openclaw cron list --json | grep -i "Note Cron Gate"   # the note-janitor gate
+# If any lane is missing, run the fast idempotent cron-only repair (no re-copy, no Docker):
+bash dinomem/scripts/install.sh --workspace ~/.openclaw/workspace-myagent --agent-id myagent --repair-cron
 systemctl status cron      # Ubuntu/Debian
 systemctl status crond     # CentOS/RHEL
 ```
+> The installer now **auto-verifies its required crons and self-repairs** on a normal run; `--repair-cron` is the manual escape hatch if a lane is still missing (e.g. the gateway rejected command-kind crons — grant `operator.admin` and re-run).
 
 **`memory_search` not finding anything**
 ```bash
