@@ -46,6 +46,12 @@ DO_SMART_CACHE=1
 DO_GIT_SNAPSHOT=1   # default-ON: ISOLATED git snapshot store (.dinomem-snap.git — never touches your own repo). Opt out with --no-git-snapshot. See features/git-autosnapshot
 FORCE=0
 DRY_RUN=0
+# --repair-cron: idempotent "just fix the crons" mode. Skips the heavy/one-time
+# phases (docker/TEI, pip, file copy, config/hook wiring, git-snapshot, smart-cache)
+# and flows straight to cron registration + gate + self-check. Safe to re-run any
+# time a fresh install left the Daily Note Review / Pending Note Reminder / Note
+# Cron Gate lanes unregistered.
+REPAIR_CRON=0
 
 # smart-cache-pro (compression-only) — bundled token-discipline plugin. Overridable.
 SMART_CACHE_REPO="${SMART_CACHE_REPO:-https://github.com/02-dino/smart-cache-pro}"
@@ -57,6 +63,7 @@ while [ $# -gt 0 ]; do
     --agent-id)   AGENT_ID="$2"; shift 2 ;;
     --no-docker)  DO_DOCKER=0; shift ;;
     --no-cron)         DO_CRON=0; shift ;;
+    --repair-cron)     REPAIR_CRON=1; DO_CRON=1; DO_DOCKER=0; DO_SMART_CACHE=0; DO_GIT_SNAPSHOT=0; shift ;;
     --no-backup-cron)  DO_BACKUP_CRON=0; shift ;;
     --no-smart-cache)  DO_SMART_CACHE=0; shift ;;
     --git-snapshot)    DO_GIT_SNAPSHOT=1; shift ;;
@@ -303,6 +310,14 @@ else
   ok "Root files: ${TOTAL_CHARS} chars total — within limits"
 fi
 
+# ── REPAIR-CRON FAST PATH ─────────────────────────────────────────────────────
+# In --repair-cron mode we skip every heavy/one-time phase (dir create, file copy,
+# hooks, skills, TEI/docker, config wiring, git-snapshot, smart-cache) and jump
+# straight to cron registration + gate + self-check. Idempotent on a normal install
+# too, but re-running them is pointless when the ONLY thing we're fixing is
+# unregistered crons.
+if [ "$REPAIR_CRON" = 0 ]; then
+
 # ── 1) Create workspace directories ──────────────────────────────────────────
 hr "Directories"
 for d in procedures tools logs memory memory/peers .memory_archive; do
@@ -449,6 +464,12 @@ if [ "$DO_DOCKER" = 1 ]; then
   fi
 fi
 
+fi  # end REPAIR-CRON FAST PATH (heavy phases)
+if [ "$REPAIR_CRON" = 1 ]; then
+  hr "repair-cron mode"
+  ok "skipping docker/TEI/copy/config/git-snapshot phases — re-registering crons only"
+fi
+
 # ── 4) Register cron jobs ─────────────────────────────────────────────────────
 # upsert_cron: add or update a cron entry by script keyword
 # Usage: upsert_cron <keyword> <comment> <cron_line> <label>
@@ -556,14 +577,20 @@ def _cron_add_argv(job):
     if name:
         a += ['--name', name]
     sched = job.get('schedule', {}) or {}
+    _sched_flags = 0
     if sched.get('kind') == 'cron' and sched.get('expr'):
-        a += ['--cron', sched['expr']]
+        a += ['--cron', sched['expr']]; _sched_flags += 1
         if sched.get('tz'):
             a += ['--tz', sched['tz']]
     elif sched.get('kind') == 'every' and sched.get('every'):
-        a += ['--every', str(sched['every'])]
+        a += ['--every', str(sched['every'])]; _sched_flags += 1
     elif sched.get('kind') == 'at' and sched.get('at'):
-        a += ['--at', str(sched['at'])]
+        a += ['--at', str(sched['at'])]; _sched_flags += 1
+    # DEFENSIVE: `openclaw cron add` rejects zero-or-multiple schedule flags with
+    # a cryptic 'Choose exactly one schedule' error that aborts the whole install
+    # heredoc, killing every lane after it. Fail LOUD with the job name instead.
+    if _sched_flags != 1:
+        raise ValueError("cron job %r has a malformed schedule (%r) -> would emit %d schedule flags; expected exactly 1" % (job.get('name'), sched, _sched_flags))
     pay = job.get('payload', {}) or {}
     pkind = pay.get('kind')
     if pkind == 'command':
@@ -753,6 +780,32 @@ job = {
 }
 PNR_ID = upsert_gated_worker(job, "pending_note_reminder")
 
+# ── SAME-NAME DEDUP SWEEP (idempotency guarantee across ANY prior state) ─────
+# The upsert helpers already update-by-name so a clean re-run never duplicates,
+# BUT a PRIOR half-finished/crashed run (or a manual add) could have left two jobs
+# sharing a canonical name; the by-name lookup then picks one arbitrarily and the
+# other keeps firing as a zombie. Sweep every canonical base lane: if >1 job shares
+# it, keep the NEWEST (highest createdAtMs) and remove the rest. Makes 'update
+# dinomem' converge to exactly one of each lane from any starting state. Pure
+# cleanup: never creates anything, only removes true dupes.
+_CANON_BASE = ["Daily Note Review", "Pending Note Reminder", "Note Cron Gate"]
+try:
+    _lr = subprocess.run(['openclaw','cron','list','--json'], capture_output=True, text=True, timeout=10)
+    _data = json.loads(_lr.stdout) if _lr.returncode == 0 else []
+    _jl = _data if isinstance(_data, list) else _data.get('jobs', {}).get('jobs', _data.get('jobs', []))
+except Exception:
+    _jl = []
+for _cn in _CANON_BASE:
+    _m = [j for j in (_jl or []) if j.get('name','').strip().lower() == _cn.lower()]
+    if len(_m) <= 1:
+        continue
+    _m.sort(key=lambda j: (j.get('createdAtMs', 0), j.get('updatedAtMs', 0)), reverse=True)
+    for _dup in _m[1:]:
+        _did = _dup.get('id','')
+        if _did:
+            subprocess.run(['openclaw','cron','remove',_did], capture_output=True, text=True, timeout=15)
+            print("  \033[32m[ok]\033[0m   deduped '%s' — removed duplicate %s (kept newest)" % (_cn, _did[:8]))
+
 # ── Note Cron Gate (command cron, */15, ZERO LLM) ───────────────────────────
 # One canonical gate. If it already exists (e.g. a prior run, or neuron created
 # it), MERGE our two lane ids into its existing env (never clobber neuron's trio
@@ -884,14 +937,20 @@ def _cron_add_argv(job):
     if name:
         a += ['--name', name]
     sched = job.get('schedule', {}) or {}
+    _sched_flags = 0
     if sched.get('kind') == 'cron' and sched.get('expr'):
-        a += ['--cron', sched['expr']]
+        a += ['--cron', sched['expr']]; _sched_flags += 1
         if sched.get('tz'):
             a += ['--tz', sched['tz']]
     elif sched.get('kind') == 'every' and sched.get('every'):
-        a += ['--every', str(sched['every'])]
+        a += ['--every', str(sched['every'])]; _sched_flags += 1
     elif sched.get('kind') == 'at' and sched.get('at'):
-        a += ['--at', str(sched['at'])]
+        a += ['--at', str(sched['at'])]; _sched_flags += 1
+    # DEFENSIVE: `openclaw cron add` rejects zero-or-multiple schedule flags with
+    # a cryptic 'Choose exactly one schedule' error that aborts the whole install
+    # heredoc, killing every lane after it. Fail LOUD with the job name instead.
+    if _sched_flags != 1:
+        raise ValueError("cron job %r has a malformed schedule (%r) -> would emit %d schedule flags; expected exactly 1" % (job.get('name'), sched, _sched_flags))
     pay = job.get('payload', {}) or {}
     pkind = pay.get('kind')
     if pkind == 'command':
@@ -1743,6 +1802,68 @@ if [ "$DRY_RUN" = 1 ]; then
   echo "  Re-run without --dry-run to apply."
   echo "  Undo (after a real install): bash $SKILL_DIR/scripts/uninstall.sh --workspace $WS --agent-id $AGENT_ID"
   exit 0
+fi
+
+# ── Cron self-check + REQUIRED-CRON GATE with auto-repair ────────────────────
+# The note lifecycle only self-drives if base's cron lanes actually landed. The
+# registration path is best-effort (a failed `cron add` just warns + continues,
+# exit 0), so a silent gap used to run forever unnoticed. Now: verify the REQUIRED
+# lanes, and if any is missing while the gateway is reachable, AUTO-REPAIR via a
+# cron-only re-run (--repair-cron, idempotent). If it still can't register them,
+# surface ONE copy-paste fix command and (on a normal install) exit NONZERO so the
+# gap is loud. Required = Note Cron Gate + Daily Note Review (the janitor spine).
+# Pending Note Reminder is recommended-not-required (a reminder, not the lifecycle).
+REQUIRED_CRON_GAP=0
+if command -v openclaw >/dev/null 2>&1 && openclaw status >/dev/null 2>&1; then
+  hr "Cron self-check"
+  _CRON_LIST="$(openclaw cron list --json 2>/dev/null || echo '[]')"
+  _MISSING_REQUIRED=""
+  for _cname in "Note Cron Gate" "Daily Note Review"; do
+    if printf '%s' "$_CRON_LIST" | grep -qiF "$_cname"; then
+      ok "cron present: $_cname"
+    else
+      warn "cron MISSING (required): $_cname"
+      _MISSING_REQUIRED="${_MISSING_REQUIRED}${_MISSING_REQUIRED:+, }$_cname"
+    fi
+  done
+  if printf '%s' "$_CRON_LIST" | grep -qiF "Pending Note Reminder"; then
+    ok "cron present: Pending Note Reminder"
+  else
+    warn "cron MISSING (recommended): Pending Note Reminder — reminder lane; not blocking"
+  fi
+  if [ -n "$_MISSING_REQUIRED" ]; then
+    _REPAIR_CMD="bash $SKILL_DIR/scripts/install.sh --workspace $WS --agent-id $AGENT_ID --repair-cron"
+    # Only auto-repair on a NORMAL install; if we are already inside --repair-cron
+    # and lanes are STILL missing, a re-run won't help (real gateway/permission
+    # problem) — don't loop, just surface the manual command + fail.
+    if [ "$REPAIR_CRON" = 0 ]; then
+      printf '  \033[33m[repair]\033[0m required cron(s) missing (%s) — auto-repairing (cron-only re-run)...\n' "$_MISSING_REQUIRED"
+      if bash "$SKILL_DIR/scripts/install.sh" --workspace "$WS" --agent-id "$AGENT_ID" --repair-cron; then
+        _CRON_LIST2="$(openclaw cron list --json 2>/dev/null || echo '[]')"
+        _STILL_MISSING=""
+        for _cname in "Note Cron Gate" "Daily Note Review"; do
+          printf '%s' "$_CRON_LIST2" | grep -qiF "$_cname" || _STILL_MISSING="${_STILL_MISSING}${_STILL_MISSING:+, }$_cname"
+        done
+        if [ -z "$_STILL_MISSING" ]; then
+          ok "auto-repair fixed all required crons"
+          _MISSING_REQUIRED=""
+        else
+          warn "auto-repair ran but these are STILL missing: $_STILL_MISSING"
+          _MISSING_REQUIRED="$_STILL_MISSING"
+        fi
+      else
+        warn "auto-repair (--repair-cron) exited nonzero — see output above"
+      fi
+    fi
+    if [ -n "$_MISSING_REQUIRED" ]; then
+      warn "required cron(s) still missing: $_MISSING_REQUIRED"
+      printf '  \033[33m[fix]\033[0m Run this to register them (idempotent, cron-only):\n'
+      printf '        %s\n' "$_REPAIR_CMD"
+      printf '  \033[33m[fix]\033[0m If it keeps failing: your gateway may reject command-kind crons.\n'
+      printf '        Allow command cron jobs (operator.admin) on the gateway, then re-run the above.\n'
+      REQUIRED_CRON_GAP=1
+    fi
+  fi
 fi
 
 # ── Hook liveness self-check (L3/L3b) ───────────────────────────────────────
