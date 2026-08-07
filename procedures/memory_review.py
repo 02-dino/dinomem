@@ -321,6 +321,20 @@ def get_embeddings_for_files(filepaths):
     # treat TEI as unavailable (return None) so the caller falls back cleanly.
     EMBED_BATCH = 8
     vectors = []
+    # Resilient to transient TEI unavailability (cold start, cron-storm queueing,
+    # reload windows): each batch retries with backoff instead of failing on the
+    # first blip. Fail-soft: returns None only after retries exhaust, so the
+    # caller falls back cleanly. Tunable via env: DINOMEM_EMBED_TIMEOUT (s),
+    # DINOMEM_EMBED_RETRIES.
+    import time as _t
+    try:
+        _timeout = float(os.environ.get("DINOMEM_EMBED_TIMEOUT", "20"))
+    except (TypeError, ValueError):
+        _timeout = 20.0
+    try:
+        _retries = int(os.environ.get("DINOMEM_EMBED_RETRIES", "2"))
+    except (TypeError, ValueError):
+        _retries = 2
     try:
         for i in range(0, len(texts), EMBED_BATCH):
             chunk = texts[i:i + EMBED_BATCH]
@@ -328,13 +342,23 @@ def get_embeddings_for_files(filepaths):
             if os.environ.get("DINOMEM_EMBED_PREFIX", "1") != "0":
                 chunk = ["query: " + t for t in chunk]
             payload = json.dumps({"input": chunk, "model": ""}).encode()
-            req = urllib.request.Request(
-                TEI_URL, data=payload,
-                headers={"Content-Type": "application/json"}, method="POST"
-            )
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                data = json.loads(resp.read())
-            vectors.extend(item["embedding"] for item in data["data"])
+            _batch_vecs = None
+            for _attempt in range(_retries + 1):
+                try:
+                    req = urllib.request.Request(
+                        TEI_URL, data=payload,
+                        headers={"Content-Type": "application/json"}, method="POST"
+                    )
+                    with urllib.request.urlopen(req, timeout=_timeout) as resp:
+                        data = json.loads(resp.read())
+                    _batch_vecs = [item["embedding"] for item in data["data"]]
+                    break
+                except Exception:
+                    if _attempt < _retries:
+                        _t.sleep(0.5 * (2 ** _attempt))  # 0.5s, 1.0s backoff
+                        continue
+                    raise
+            vectors.extend(_batch_vecs)
         if len(vectors) != len(valid_paths):
             return None  # mismatch — treat as unavailable
         return dict(zip(valid_paths, vectors))

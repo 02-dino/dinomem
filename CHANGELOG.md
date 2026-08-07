@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.3.1
+
+**Bugfix: TEI embedding calls now retry on transient unavailability (no more silent dedup/cleanup degradation under load).** All three TEI-embedding callers previously issued a single HTTP request with a tight timeout and **no retry** — so a brief TEI stall (cold start, cron-storm queueing, reload window) would fail the embed and silently skip semantic dedup / bail the cleanup pass. Fixed by wrapping each caller in a bounded retry-with-backoff. Fail-soft behavior is preserved (returns `None` only after all attempts exhaust), so a genuinely-down TEI still degrades gracefully instead of crashing.
+
+### Fixed
+- **`extract_memory.py` `_get_tei_embedding`** — `timeout=8`, no retry → `timeout=20` + 2 retries (0.5s/1.0s backoff).
+- **`memory_cleanup.py` `get_embeddings`** — `timeout=10`, no retry → same resilient wrapper.
+- **`memory_review.py` `get_embeddings_for_files`** — `timeout=15`, no retry → per-batch retry-with-backoff.
+- All three tunable via env: `DINOMEM_EMBED_TIMEOUT` (seconds, default 20), `DINOMEM_EMBED_RETRIES` (default 2). No behavior change when TEI is healthy.
+
 ## 1.3.0
 
 **New feature: `git-autosnapshot` — local git safety net (opt-in).** A self-contained feature (`features/git-autosnapshot/`) that auto-commits all non-ignored changes in your `~/.openclaw` repo on a timer, so work is always recoverable. Local-only by default — no remote, nothing leaves the box. Enable during install with `--git-snapshot`, or run `bash features/git-autosnapshot/install.sh --repo ~/.openclaw` standalone.

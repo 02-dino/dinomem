@@ -1064,18 +1064,38 @@ def _strip_meta_tags(text):
     return re.sub(r'\s*\[(ctx|expires):[^\]]*\]', '', text).strip()
 
 def _get_tei_embedding(text):
-    """Get single embedding from TEI. Returns vector or None."""
+    """Get single embedding from TEI. Returns vector or None.
+
+    Resilient to transient TEI unavailability (cold start, cron-storm queueing,
+    reload windows): retries with backoff instead of failing on the first blip.
+    Fail-soft: returns None only after all attempts exhaust, so the caller's
+    dedup/contradiction path degrades gracefully rather than crashing.
+    Tunable via env: DINOMEM_EMBED_TIMEOUT (s), DINOMEM_EMBED_RETRIES.
+    """
+    import urllib.request as _ur
+    import time as _t
+    _embed_url = os.environ.get("DINOMEM_EMBED_URL", "http://localhost:8080/v1/embeddings")
     try:
-        import urllib.request as _ur
-        payload = json.dumps({"input": [text], "model": ""}).encode()
-        _embed_url = os.environ.get("DINOMEM_EMBED_URL", "http://localhost:8080/v1/embeddings")
-        req = _ur.Request(_embed_url, data=payload,
-                          headers={"Content-Type": "application/json"}, method="POST")
-        with _ur.urlopen(req, timeout=8) as resp:
-            data = json.loads(resp.read())
-        return data["data"][0]["embedding"]
-    except Exception:
-        return None
+        _timeout = float(os.environ.get("DINOMEM_EMBED_TIMEOUT", "20"))
+    except (TypeError, ValueError):
+        _timeout = 20.0
+    try:
+        _retries = int(os.environ.get("DINOMEM_EMBED_RETRIES", "2"))
+    except (TypeError, ValueError):
+        _retries = 2
+    payload = json.dumps({"input": [text], "model": ""}).encode()
+    for _attempt in range(_retries + 1):
+        try:
+            req = _ur.Request(_embed_url, data=payload,
+                              headers={"Content-Type": "application/json"}, method="POST")
+            with _ur.urlopen(req, timeout=_timeout) as resp:
+                data = json.loads(resp.read())
+            return data["data"][0]["embedding"]
+        except Exception:
+            if _attempt < _retries:
+                _t.sleep(0.5 * (2 ** _attempt))  # 0.5s, 1.0s backoff
+                continue
+            return None
 
 def _cosine_sim(a, b):
     dot = sum(x * y for x, y in zip(a, b))

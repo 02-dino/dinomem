@@ -131,19 +131,39 @@ def is_duplicate(text, seen_facts):
 
 # ── Semantic Dedup via TEI ────────────────────────────────────────────────────────────
 def get_embeddings(texts):
-    """Get embeddings from TEI. Returns list of vectors or None if unavailable."""
+    """Get embeddings from TEI. Returns list of vectors or None if unavailable.
+
+    Resilient to transient TEI unavailability (cold start, cron-storm queueing,
+    reload windows): retries with backoff instead of failing on the first blip.
+    Fail-soft: returns None only after all attempts exhaust, so the dedup pass
+    degrades gracefully rather than crashing. Tunable via env:
+    DINOMEM_EMBED_TIMEOUT (s), DINOMEM_EMBED_RETRIES.
+    """
+    import time as _t
+    # e5 asymmetric: symmetric dedup task -> uniform 'query: ' prefix (env-gated).
+    if os.environ.get("DINOMEM_EMBED_PREFIX", "1") != "0":
+        texts = ["query: " + t for t in texts]
     try:
-        # e5 asymmetric: symmetric dedup task -> uniform 'query: ' prefix (env-gated).
-        if os.environ.get("DINOMEM_EMBED_PREFIX", "1") != "0":
-            texts = ["query: " + t for t in texts]
-        payload = json.dumps({"input": texts, "model": ""}).encode()
-        req = urllib.request.Request(TEI_URL, data=payload,
-                                     headers={"Content-Type": "application/json"}, method="POST")
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read())
-        return [item["embedding"] for item in data["data"]]
-    except Exception:
-        return None
+        _timeout = float(os.environ.get("DINOMEM_EMBED_TIMEOUT", "20"))
+    except (TypeError, ValueError):
+        _timeout = 20.0
+    try:
+        _retries = int(os.environ.get("DINOMEM_EMBED_RETRIES", "2"))
+    except (TypeError, ValueError):
+        _retries = 2
+    payload = json.dumps({"input": texts, "model": ""}).encode()
+    for _attempt in range(_retries + 1):
+        try:
+            req = urllib.request.Request(TEI_URL, data=payload,
+                                         headers={"Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(req, timeout=_timeout) as resp:
+                data = json.loads(resp.read())
+            return [item["embedding"] for item in data["data"]]
+        except Exception:
+            if _attempt < _retries:
+                _t.sleep(0.5 * (2 ** _attempt))  # 0.5s, 1.0s backoff
+                continue
+            return None
 
 def cosine(a, b):
     dot = sum(x * y for x, y in zip(a, b))
