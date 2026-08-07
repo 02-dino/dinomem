@@ -200,7 +200,7 @@ The arbiter reasons through ordered discriminators (time trigger → event trigg
 - [ ] [OpenClaw](https://github.com/openclaw/openclaw) **>= 2026.1.0** installed and running (`openclaw status` / `openclaw --version`). The `memorySearch`, `compaction`, and `contextInjection` config keys dinomem patches require 2026.1.0 or newer.
 - [ ] Python 3.8+
 - [ ] Linux or macOS (Windows: use WSL2)
-- [ ] [Docker](https://docs.docker.com/get-docker/) — **optional.** Powers the local embedding server (TEI) for faster semantic recall. The installer **auto-installs Docker on Linux** if it's missing, and if that can't run, dinomem degrades gracefully: **core memory (auto-save + `memory_search`) still works without it.** You only need to install Docker yourself on macOS (Docker Desktop can't be scripted headlessly).
+- [ ] [Docker](https://docs.docker.com/get-docker/) — **auto-installed for you (recommended for full capacity).** Powers the local embedding server (TEI), which drives semantic recall/dedup. The installer **auto-installs Docker on Linux** by default, so you normally do nothing. It's not a hard blocker: if Docker genuinely can't run on your box, dinomem **degrades gracefully** — core memory (auto-save + `memory_search`) keeps working, but semantic recall runs slower/weaker until TEI is available. Recommended: let it install. (macOS only: install Docker Desktop yourself — it can't be scripted headlessly.)
 
 ### Minimum spec
 
@@ -274,7 +274,7 @@ After a session is archived and extracted, you'll see new files in `memory/` and
 |------|---------|-------------|
 | `--workspace DIR` | `$OPENCLAW_WORKSPACE` or `~/.openclaw/workspace` | Path to agent workspace |
 | `--agent-id ID` | Detected from workspace name | OpenClaw agent ID |
-| `--no-docker` | — | Skip TEI Docker setup (memory still works; only faster semantic recall is skipped) |
+| `--no-docker` | — | Skip TEI Docker setup. **Not recommended** — memory still auto-saves and `memory_search` works, but you lose fast local semantic recall/dedup (runs slower/weaker until TEI is available). Only use on a box that genuinely can't run Docker. |
 | `--no-cron` | — | Skip crontab registration |
 | `--repair-cron` | — | **Idempotent "just fix the crons" mode.** Skips every heavy/one-time phase (Docker, file copy, config wiring) and jumps straight to cron registration + self-check. Safe to re-run any time a prior install left the note-lifecycle crons unregistered. |
 | `--no-backup-cron` | — | Skip weekly backup cron (if you have your own backup system) |

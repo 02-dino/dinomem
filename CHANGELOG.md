@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.2
+
+**Install-hardening + honest dependency framing.** Rolls up the install/UX work that landed after 1.3.1 and corrects README wording that undersold TEI/Docker.
+### Changed
+- **README: TEI/Docker no longer framed as "optional" (skippable).** Reworded to "auto-installed for you (recommended for full capacity)": the installer auto-provisions Docker/TEI on Linux by default; it degrades gracefully only if a box genuinely can't run them. "Optional" previously read as "you don't need these," leaving users on a partial-capacity install (slower/weaker semantic recall). `--no-docker` flag now labeled **not recommended** with the real trade-off spelled out.
+### Added
+- **`--repair-cron` idempotent cron-only repair mode** + required-cron gate with auto-repair + same-name dedup sweep (exactly one of each note-lifecycle lane on update).
+- **Docker auto-install on Linux** during install; silent backup; tiered "what works now" verdict.
+
 ## 1.3.1
 
 **Bugfix: TEI embedding calls now retry on transient unavailability (no more silent dedup/cleanup degradation under load).** All three TEI-embedding callers previously issued a single HTTP request with a tight timeout and **no retry** — so a brief TEI stall (cold start, cron-storm queueing, reload window) would fail the embed and silently skip semantic dedup / bail the cleanup pass. Fixed by wrapping each caller in a bounded retry-with-backoff. Fail-soft behavior is preserved (returns `None` only after all attempts exhaust), so a genuinely-down TEI still degrades gracefully instead of crashing.
