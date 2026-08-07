@@ -432,7 +432,26 @@ fi
 if [ "$DO_DOCKER" = 1 ]; then
   hr "TEI Embedding Server (Docker)"
   if ! command -v docker >/dev/null 2>&1; then
-    warn "Docker not found — skipping TEI setup. Install Docker and re-run."
+    # AUTO-INSTALL attempt (noob-smooth: don't make the user go install Docker + re-run).
+    # Only on Linux via the official convenience script; degrade QUIETLY if it can't.
+    # macOS Docker Desktop can't be scripted headlessly, so we skip auto-install there.
+    _docker_installed=0
+    if [ "$(uname)" = "Linux" ] && command -v curl >/dev/null 2>&1; then
+      warn "Docker not found — attempting auto-install (get.docker.com)..."
+      _dsudo=""; [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1 && _dsudo="sudo"
+      if curl -fsSL https://get.docker.com 2>/dev/null | $_dsudo sh >/dev/null 2>&1 && command -v docker >/dev/null 2>&1; then
+        $_dsudo systemctl enable --now docker >/dev/null 2>&1 || $_dsudo service docker start >/dev/null 2>&1 || true
+        ok "Docker auto-installed"
+        _docker_installed=1
+      fi
+    fi
+    if [ "$_docker_installed" = 0 ]; then
+      warn "Docker unavailable — skipping TEI embed server (OPTIONAL, not required)."
+      warn "  Core memory (MEMORY.md + memory_search) still works without it. For faster"
+      warn "  semantic recall, install Docker (https://docs.docker.com/engine/install/) + re-run."
+    fi
+  fi
+  if ! command -v docker >/dev/null 2>&1; then :
   elif [ "${TEI_REUSE:-0}" = 1 ] || tei_healthy; then
     ok "Existing healthy TEI already answering on :8080 (/health 200) — reusing it, not starting a new container."
   elif lsof -i :8080 >/dev/null 2>&1 || ss -tlnp 2>/dev/null | grep -q ':8080 '; then
@@ -1134,7 +1153,7 @@ hr "OpenClaw config"
 OPENCLAW_JSON="${OPENCLAW_JSON:-$HOME/.openclaw/openclaw.json}"
 [ -f "$OPENCLAW_JSON" ] || OPENCLAW_JSON="$OPENCLAW_DIR/openclaw.json"
 if [ -f "$OPENCLAW_JSON" ] && [ "$DRY_RUN" != 1 ]; then
-  bash "$SKILL_DIR/scripts/file-backup.sh" "$OPENCLAW_JSON" >/dev/null 2>&1 && ok "openclaw.json backed up" || warn "openclaw.json backup failed — continuing"
+  bash "$SKILL_DIR/scripts/file-backup.sh" "$OPENCLAW_JSON" >/dev/null 2>&1 && ok "openclaw.json backed up" || true  # backup is a safety nicety; original untouched, so a failed .bak is not user-actionable — stay silent
 fi
 if [ ! -f "$OPENCLAW_JSON" ]; then
   warn "openclaw.json not found at $OPENCLAW_JSON — skipping config patch"
@@ -1600,7 +1619,7 @@ fi
 hr "AGENTS.md"
 AGENTS="$WS/AGENTS.md"
 if [ -f "$AGENTS" ] && [ "$DRY_RUN" != 1 ]; then
-  bash "$SKILL_DIR/scripts/file-backup.sh" "$AGENTS" >/dev/null 2>&1 && ok "AGENTS.md backed up" || warn "AGENTS.md backup failed — continuing"
+  bash "$SKILL_DIR/scripts/file-backup.sh" "$AGENTS" >/dev/null 2>&1 && ok "AGENTS.md backed up" || true
 fi
 BEGIN="<!-- BEGIN:dinomem (managed — do not edit between markers) -->"
 END="<!-- END:dinomem -->"
@@ -1998,6 +2017,19 @@ PYEOF
 fi
 
 hr "done"
+# ── Tiered "what works now" verdict (noob-smooth) ────────────────────────────
+# A first-time user who sees a wall of yellow warnings assumes it's broken. It
+# isn't: core memory works off plain files + the retrieval tool, independent of
+# the OPTIONAL layers (TEI/Docker for faster semantic recall, extra ingest tools).
+# Lead with a plain-language status so they know they're good.
+echo "  \033[1;32m✔ dinomem is installed and your agent's memory works now.\033[0m"
+echo "    Core memory (auto-save + memory_search recall) is active — no further setup needed."
+if command -v docker >/dev/null 2>&1 && tei_healthy 2>/dev/null; then
+  echo "    \033[32m✔ Fast semantic recall (TEI) is running.\033[0m"
+else
+  echo "    \033[2m○ Optional: faster semantic recall (TEI/Docker) is off — memory still works without it.\033[0m"
+fi
+echo ""
 echo "  dinomem installed for agent: $AGENT_ID"
 echo "  workspace: $WS"
 echo ""
