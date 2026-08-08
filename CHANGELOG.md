@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.4.0
+
+**Memory security release — stored/second-order prompt-injection defense on the write path.** dinomem learns from every user it talks to, which makes the async extraction path a place where a non-owner could plant standing instructions that get recalled later with the system's own authority. This release closes that, without discounting legitimate multi-user personalization.
+
+### Added
+- **Authority-scope gate on the memory write path** (`mem_authority.py`, deterministic regex, zero-LLM, fail-open). Principle: **provenance ≠ authority**. A non-owner's facts *about themselves* stay **fully trusted** and personalize normally (no "untrusted" tag). A non-owner item that asserts a **system/assistant directive** is demoted to a neutral observation (peer lane) or dropped (world lane). Owner items unaffected.
+- **Smooth owner-id resolution + install-time capture.** `mem_authority.py` resolves the owner id via `DINOMEM_OWNER_IDS` env → `DINOTRUST_OWNER_IDS` env → dinotrust `owner_ids:` parsed from `openclaw.json` → `~/.dinomem/owner_ids` cache → none = passthrough + one-time nudge (memoized, fail-open). `install.sh` now captures the owner id at install: auto-detect from dinotrust config; else agent-driven (`DINOMEM_INSTALLER_OWNER_ID` or ask the owner); else interactive prompt (with how-to-find-your-id hints); else skip with a runtime nudge. Persists to `~/.dinomem/owner_ids` and threads `DINOMEM_OWNER_IDS` into the extract cron env. Multi-platform via flat numeric `platform_id` match.
+- **Better-wins confidence gate on world-facts.** Extraction emits a `[conf:X.X]` tag, persisted to frontmatter; the contradiction resolver refuses to let a lower-confidence claim evict a higher-confidence established fact. Missing confidence = newest-wins fallback (backward-compatible), zero-LLM, fail-open.
+
+### Fixed
+- **Cross-head dedup:** a world-fact is dropped when it duplicates a peer fact (peer lane wins, peer file untouched). Fail-open, zero-LLM.
+
 ## 1.3.2
 
 **Install-hardening + honest dependency framing.** Rolls up the install/UX work that landed after 1.3.1 and corrects README wording that undersold TEI/Docker.
