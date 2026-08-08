@@ -649,6 +649,8 @@ status:           provisional → trusted
 
 **After L4 promotion** — this insight is written into `MEMORY.md` and injected every turn. The agent no longer needs to be reminded of the rule. It's baseline behavior. No prompting. No configuration. No manually written rule. The agent learned it.
 
+> 📖 Want the plain-language version of this leap — what it *feels* like to go from base to neuron? Read the full [**Before / After**](BEFORE_AFTER.md#-and-if-you-want-it-to-learn-dinomem-neuron).
+
 
 
 
