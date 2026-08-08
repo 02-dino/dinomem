@@ -30,6 +30,8 @@ Most systems inject everything into context, or retrieve blindly. dinomem gives 
 
 ---
 
+> **New here?** See the [**Before / After**](BEFORE_AFTER.md) — what actually changes for you the day you install dinomem, in plain lived-experience terms.
+
 > Want your agent to not just remember, but learn?
 > dinomem-neuron is a separate private repo — not included here. Scheduled pattern synthesis, contradiction detection, and behavioral promotion.
 > [↓ dinomem-neuron](#want-more--dinomem-neuron-private-repo)
@@ -562,6 +564,8 @@ dinomem remembers.
 **dinomem-neuron learns.**
 
 dinomem gives your agent memory. Neuron turns those memories into behavioral knowledge that persists across every future conversation — without you writing a single config line.
+
+> 📖 New to the difference? Read the plain-language [**Before / After**](BEFORE_AFTER.md) — it ends with a base-vs-neuron one-liner that makes the split click.
 
 ---
 
