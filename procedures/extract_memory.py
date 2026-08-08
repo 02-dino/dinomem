@@ -1124,6 +1124,16 @@ def _contradiction_check_items(new_items, memory_dir, threshold=0.85):
     item_pattern = re.compile(
         r'^\s*-?\s*\[(operational|decision|correction|insight|factual)\]\s*(.+?)$'
     )
+    # CROSS-HEAD DEDUP: peer facts (written by extract_user into
+    # memory/peers/*.md) live in the SAME recursive memory DB as world-facts.
+    # A fact that is genuinely both person- AND world-flavored can leak through
+    # both extraction heads and land twice. We fold peer-fact lines into the
+    # comparison corpus here, tagged is_peer=True, so a new world-fact that is
+    # semantically a peer-fact already on record is caught. The RESOLUTION is
+    # one-way: on a peer match the world-fact is DROPPED (person lane wins) and
+    # the peer file is NEVER modified/deleted — that is extract_user's lane.
+    # Peer fact line schema (peer_rep.md.tmpl): `- <text>  (conf: 0.0-1.0, ts: YYYY-MM-DD)`.
+    peer_pattern = re.compile(r'^\s*-\s+(.+?)(?:\s*\(conf:.*\))?\s*$')
     existing_items = []
     md_files = sorted([f for f in memory_dir.glob("*.md")
                        if f.name != "MEMORY.md" and not f.name.startswith("_")])
@@ -1131,7 +1141,31 @@ def _contradiction_check_items(new_items, memory_dir, threshold=0.85):
         lines = md_file.read_text(encoding='utf-8').split('\n')
         for i, line in enumerate(lines):
             if item_pattern.match(line):
-                existing_items.append((md_file, i, line, line.strip()))
+                # (md_file, line_idx, raw_line, item_text, is_peer)
+                existing_items.append((md_file, i, line, line.strip(), False))
+
+    # Fold in peer-fact lines from memory/peers/*.md (is_peer=True). Fail-open:
+    # any error scanning peers must never break world-fact extraction.
+    try:
+        peers_dir = memory_dir / "peers"
+        if peers_dir.is_dir():
+            _peer_sections = {"FACTS", "BEAT"}  # only assertable person-facts, not LEDGER/PROVENANCE
+            for pf in sorted(peers_dir.glob("*.md")):
+                cur_section = None
+                for i, line in enumerate(pf.read_text(encoding='utf-8').split('\n')):
+                    hm = re.match(r'^##\s+(.+?)\s*$', line)
+                    if hm:
+                        cur_section = hm.group(1).strip().upper()
+                        continue
+                    if cur_section not in _peer_sections:
+                        continue
+                    if line.strip().startswith('<!--'):
+                        continue
+                    pm = peer_pattern.match(line)
+                    if pm and pm.group(1).strip():
+                        existing_items.append((pf, i, line, pm.group(1).strip(), True))
+    except Exception as _pe:
+        log(f"   ⚠️  Cross-head peer scan skipped (fail-open): {_pe}")
 
     if not existing_items:
         return new_items
@@ -1145,14 +1179,23 @@ def _contradiction_check_items(new_items, memory_dir, threshold=0.85):
             continue
 
         candidates = []
-        for (md_file, line_idx, raw_line, item_text) in existing_items:
+        for (md_file, line_idx, raw_line, item_text, is_peer) in existing_items:
             ex_clean = _strip_meta_tags(item_text)
             ex_vec = _get_tei_embedding(ex_clean)
             if ex_vec and _cosine_sim(new_vec, ex_vec) >= threshold:
-                candidates.append((md_file, line_idx, raw_line, item_text))
+                candidates.append((md_file, line_idx, raw_line, item_text, is_peer))
 
         if not candidates:
             kept_new.append(new_item)
+            continue
+
+        # CROSS-HEAD RULE (one-way, deterministic, no LLM): if this world-fact is
+        # semantically a PEER fact already on record, the person lane wins. Drop
+        # the redundant world-fact and NEVER touch the peer file. This is what
+        # prevents the world<->peer cross-duplication in the shared memory DB.
+        if any(c[4] for c in candidates):
+            _pf = next((c[0].name for c in candidates if c[4]), '?')
+            log(f"   🧬 Cross-head dedup: dropped world-fact (already a peer fact in {_pf})")
             continue
 
         candidate_texts = '\n'.join(f'- {_strip_meta_tags(c[3])}' for c in candidates)
@@ -1222,7 +1265,12 @@ Prefer `merge` over `update` when the existing item is still TRUE and the new it
             kept_new.append(new_item)
             continue
         elif verdict in ('update', 'contradiction'):
-            for (md_file, line_idx, raw_line, item_text) in candidates:
+            for (md_file, line_idx, raw_line, item_text, is_peer) in candidates:
+                # Peer files are extract_user's lane — NEVER delete/blank them
+                # here. (In practice a peer candidate is already short-circuited
+                # above by the cross-head drop, but guard belt-and-suspenders.)
+                if is_peer:
+                    continue
                 # File may have already been deleted by an earlier iteration in
                 # this same loop (two different new insights both superseding
                 # the same existing file), or unlinked externally between the
