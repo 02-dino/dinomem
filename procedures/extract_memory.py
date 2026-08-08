@@ -775,6 +775,7 @@ Rules:
 - CONFIG/BEHAVIOR CHANGE RULE: if the session changes a config value, default, policy, or behavior affecting future sessions, extract it as [decision] even if not phrased as "we decided" (e.g. "changed default to X", "updated README to reflect ON by default", "switched Y to Z"). State the new value AND the old one it replaces.
 - [operational] = specific and actionable, end with [ctx:max 5 words]
 - [decision] and [correction] = end with [ctx:max 5 words]
+- CONFIDENCE: every [decision], [correction], [operational], and [factual] item MUST also end with a [conf:X.X] tag (0.0-1.0) = how certain/well-supported the fact is. Directly stated + verified in-session = 0.9+; strong inference = 0.7; tentative/single-mention = 0.5. This lets a later low-confidence claim NOT evict a high-confidence established fact. Put [conf:] AFTER [ctx:]. Example: [ctx:github push][conf:0.9]
 - Return empty arrays if nothing worth remembering for that archive
 - JSON array only, no explanation outside JSON"""
     log(f"   🔄 Batch analyzing {len(included)} archives: {archive_list}...")
@@ -1279,6 +1280,23 @@ Prefer `merge` over `update` when the existing item is still TRUE and the new it
                 if not md_file.exists():
                     log(f"   ⏭️  Contradiction check: {md_file.name} already gone (handled earlier this run)")
                     continue
+                # BETTER-WINS GATE (deterministic, zero-LLM): do NOT let a
+                # lower-confidence incoming claim evict a higher-confidence
+                # established world-fact. Existing conf comes from the file's
+                # `confidence:` frontmatter; incoming from the new item's
+                # [conf:X.X] tag. Missing on EITHER side => neutral, fall back to
+                # newest-wins (delete proceeds) so legacy conf-less facts are
+                # unaffected. Only blocks when BOTH exist AND existing > incoming.
+                try:
+                    _ex_cm = re.search(r'^confidence:\s*([01](?:\.\d+)?)\s*$',
+                                       md_file.read_text(encoding='utf-8'), re.MULTILINE)
+                    _in_cm = re.search(r'\[conf:\s*([01](?:\.\d+)?)\]', new_item)
+                    if _ex_cm and _in_cm and float(_ex_cm.group(1)) > float(_in_cm.group(1)):
+                        log(f"   🛡️  Better-wins: kept {md_file.name} "
+                            f"(conf {_ex_cm.group(1)} > incoming {_in_cm.group(1)}) — no evict")
+                        continue
+                except Exception:
+                    pass  # fail-open: any parse error => proceed with normal resolution
                 # Per-item files store one item as the whole body. If the item
                 # line is the only content line, delete the file outright instead
                 # of leaving an orphan frontmatter-only file. Legacy multi-item
@@ -1367,6 +1385,11 @@ def _write_item_file(memory_dir, date_str, item_type, item_text, topics, context
     # Extract ctx tag if present
     ctx_match = re.search(r'\[ctx:([^\]]+)\]', item_text)
     ctx = ctx_match.group(1) if ctx_match else ""
+    # Extract confidence tag if present ([conf:0.0-1.0]). Persisted to
+    # frontmatter so the contradiction gate can compare established-fact
+    # confidence vs an incoming claim (better-wins, not just newest-wins).
+    conf_match = re.search(r'\[conf:\s*([01](?:\.\d+)?)\]', item_text)
+    confidence = conf_match.group(1) if conf_match else ""
     # Build topic string
     topic_str = ' '.join(topics) if topics else ""
     # YAML frontmatter + content
@@ -1379,6 +1402,8 @@ def _write_item_file(memory_dir, date_str, item_type, item_text, topics, context
         frontmatter_lines.append(f"expires: {expires}")
     if ctx:
         frontmatter_lines.append(f"ctx: {ctx}")
+    if confidence:
+        frontmatter_lines.append(f"confidence: {confidence}")
     if topic_str:
         frontmatter_lines.append(f"topics: {topic_str}")
     if seed_verdict:
