@@ -1706,6 +1706,29 @@ def main():
         _write_status(ok=True, remaining=0, note="llm_disabled")
         return
 
+    # One-time authority-gate nudge: if NO owner id resolves through the smooth
+    # chain (env / dinotrust config / cache file), the write-side injection gate
+    # is PASSTHROUGH (it cannot tell owner from non-owner, so it filters nobody).
+    # Warn once so a non-technical installer knows security is inactive and how
+    # to turn it on. Fail-open: never blocks extraction.
+    try:
+        if _AUTH_OK and not _auth.owner_config_present():
+            _nudge = MEMORY_DIR / ".authority_gate_nudge"
+            if not _nudge.exists():
+                log("⚠️  AUTHORITY GATE INACTIVE: no owner id configured, so the")
+                log("    memory injection-defense cannot distinguish owner from")
+                log("    non-owner and is running in PASSTHROUGH (no filtering).")
+                log("    Fix (any one): set DINOMEM_OWNER_IDS=\"<your-id>\" in the")
+                log("    extract env, install dinotrust (owner_ids auto-read), or")
+                log("    write your id to ~/.dinomem/owner_ids. See README.")
+                try:
+                    _nudge.parent.mkdir(parents=True, exist_ok=True)
+                    _nudge.write_text(datetime.now().strftime("%Y-%m-%d %H:%M:%S") + "\n")
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
     # Find all archived files
     all_archives = [f.name for f in SESSIONS_DIR.glob("*.archived.*.jsonl")]
     if not all_archives:

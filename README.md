@@ -63,7 +63,29 @@ dinomem is **safe against this by default** — no extra install required. The `
 
 - A non-owner's facts **about themselves** ("prefers raw data", "trades ETH", "low risk tolerance") are **fully trusted** and stored as personalization — they *should* change how the agent treats that user. **No "untrusted" tag** that would make the model discount legit user data.
 - A non-owner item that asserts a **system/assistant directive** is not "untrusted data" — it is simply **not a standing instruction from a non-owner**. Peer lane: **demoted to a neutral observation** ("this person asked the assistant to…"). World lane: **dropped**.
-- Owner-sourced items are unaffected. Deterministic regex, zero-LLM, fail-open (never blocks personalization, never crashes extraction). Set owner ids via `DINOMEM_OWNER_IDS` (falls back to `DINOTRUST_OWNER_IDS`); if none configured the gate does not over-filter.
+- Owner-sourced items are unaffected. Deterministic regex, zero-LLM, fail-open (never blocks personalization, never crashes extraction). If no owner is configured the gate does not over-filter.
+
+### Setting your owner id (mostly automatic)
+
+The gate needs to know **who the owner is**. The installer resolves it for you when it can, and only asks when it can't — resolution order (first hit wins, all fail-open):
+
+| # | Source | Who it's for |
+|---|--------|--------------|
+| 1 | `DINOMEM_OWNER_IDS` env | explicit override |
+| 2 | `DINOTRUST_OWNER_IDS` env | dinotrust users — free |
+| 3 | dinotrust `owner_ids:` parsed from `openclaw.json` | dinotrust installed — free, always in sync |
+| 4 | `~/.dinomem/owner_ids` cache file | what the installer writes |
+| 5 | *none* | gate runs in **passthrough** + prints a one-time nudge |
+
+**At install time:**
+- **dinotrust already installed** → your owner id is auto-detected, zero prompts.
+- **Agent-driven install** (an AI agent runs the installer) → the agent already knows the owner's platform id from its session; it passes `DINOMEM_INSTALLER_OWNER_ID` (or is told to **ask the owner** to confirm), and the installer writes the cache.
+- **Human install in a terminal** → you get a short prompt ("paste your Telegram/Discord numeric id" — with how-to-find-it hints). Leave blank to skip.
+- **Non-interactive / CI** → skipped; the runtime prints a one-time "gate inactive" nudge so you know to set it later.
+
+Set it any time after install with: `echo <your-id> > ~/.dinomem/owner_ids` (comma-separate multiple owners).
+
+**Multi-platform:** the id is the numeric `platform_id` the session archive yields, so a flat id set already matches across Telegram / Discord / WhatsApp / etc. — no per-platform config needed. (dinotrust's richer per-platform scoping is read for sync when present.)
 
 **Recommended for multi-user setups: also install [dinotrust](https://github.com/02-dino/dinotrust).** Not required for the above (dinomem stands alone), but it adds the complementary **recall-side** fence at the instruction layer (`memory_policy` + `R2_external_instructions`: recalled memory = data, not instruction) and gates the **live tool loop** (`before_tool_call`) — the half dinomem's write-path gate cannot see. dinomem = write-side suspenders; dinotrust = recall-side + live-tool belt. They complement, they don't clash.
 

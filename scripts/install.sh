@@ -534,8 +534,72 @@ if [ "$DO_CRON" = 1 ]; then
     ok "cron cheap model: $DINOMEM_CHEAP_MODEL"
   fi
 
+  # ── Owner id for the memory authority-scope gate (injection defense) ─────────
+  # dinomem stores memory from EVERY user; the write-side gate needs to know who
+  # the owner is, else it runs in passthrough (no filtering). We resolve the id
+  # here at install and (a) thread it into the extract crons AND (b) persist it to
+  # ~/.dinomem/owner_ids so a runtime resolve also finds it. Resolution order,
+  # smooth-for-noobs (auto when known, ask only when not):
+  #   1. DINOMEM_OWNER_IDS / DINOTRUST_OWNER_IDS env  (explicit)
+  #   2. dinotrust `owner_ids:` already in openclaw.json  (dinotrust user -> free)
+  #   3. agent-driven install (DINOMEM_INSTALLER_OWNER_ID passed by the agent that
+  #      knows the owner's platform_id from its session)  -> use + confirm
+  #   4. interactive human install  -> prompt (with how-to-find-id hint)
+  #   5. non-interactive / unknown  -> skip; runtime nudge will warn once
+  OWNER_ENV=""
+  OWNER_IDS_RESOLVED=""
+  # 1. explicit env
+  if [ -n "${DINOMEM_OWNER_IDS:-}" ]; then
+    OWNER_IDS_RESOLVED="$DINOMEM_OWNER_IDS"
+  elif [ -n "${DINOTRUST_OWNER_IDS:-}" ]; then
+    OWNER_IDS_RESOLVED="$DINOTRUST_OWNER_IDS"
+  fi
+  # 2. dinotrust owner_ids: already in openclaw.json
+  if [ -z "$OWNER_IDS_RESOLVED" ] && [ -f "$OPENCLAW_JSON" ]; then
+    _DT_IDS="$(grep -oE 'owner_ids:[^]]*\]?' "$OPENCLAW_JSON" 2>/dev/null | head -1 | grep -oE '[0-9]{4,}' | tr '\n' ',' | sed 's/,$//')"
+    if [ -n "$_DT_IDS" ]; then
+      OWNER_IDS_RESOLVED="$_DT_IDS"
+      ok "owner id auto-detected from dinotrust config: $OWNER_IDS_RESOLVED"
+    fi
+  fi
+  # 3. agent-driven install passes the id it already knows
+  if [ -z "$OWNER_IDS_RESOLVED" ] && [ -n "${DINOMEM_INSTALLER_OWNER_ID:-}" ]; then
+    OWNER_IDS_RESOLVED="$DINOMEM_INSTALLER_OWNER_ID"
+    ok "owner id provided by installing agent: $OWNER_IDS_RESOLVED"
+  fi
+  # 4. interactive human prompt (only if we still don't know AND we have a TTY)
+  if [ -z "$OWNER_IDS_RESOLVED" ] && [ "$DRY_RUN" != 1 ] && [ -t 0 ]; then
+    printf '\n\033[1mMemory security \u2014 owner id\033[0m\n'
+    printf '  dinomem learns from every user it talks to. To stop a non-owner from\n'
+    printf '  planting instructions in memory, it needs YOUR platform user id.\n'
+    printf '  Telegram: message @userinfobot to get your numeric id.\n'
+    printf '  Discord: enable Developer Mode, right-click your name -> Copy User ID.\n'
+    printf '  (Leave blank to skip \u2014 the gate stays inactive until you set it later.)\n'
+    printf '  Your owner id(s), comma-separated: '
+    read -r _IN_ID || _IN_ID=""
+    if [ -n "$_IN_ID" ]; then
+      OWNER_IDS_RESOLVED="$_IN_ID"
+    fi
+  fi
+  # Persist + thread if resolved; else warn (non-fatal).
+  if [ -n "$OWNER_IDS_RESOLVED" ]; then
+    OWNER_ENV="DINOMEM_OWNER_IDS=$OWNER_IDS_RESOLVED "
+    if [ "$DRY_RUN" != 1 ]; then
+      mkdir -p "$HOME/.dinomem" 2>/dev/null || true
+      printf '%s\n' "$OWNER_IDS_RESOLVED" > "$HOME/.dinomem/owner_ids" 2>/dev/null \
+        && ok "owner id persisted to ~/.dinomem/owner_ids (authority gate ACTIVE)" \
+        || warn "could not write ~/.dinomem/owner_ids \u2014 relying on cron env only"
+    else
+      plan "persist owner id to ~/.dinomem/owner_ids + thread into extract crons"
+    fi
+  else
+    warn "No owner id resolved \u2014 memory authority gate will run in PASSTHROUGH (no"
+    warn "  injection filtering). Set it later: echo <your-id> > ~/.dinomem/owner_ids"
+    warn "  (agent installers: pass DINOMEM_INSTALLER_OWNER_ID, or ask the owner)."
+  fi
+
   # auto_session_reset — every 15 min (orchestrates session archive + memory extraction)
-  RESET_CRON="*/15 * * * * cd $WS && ${EMBED_ENV}${CHEAP_ENV}python3 procedures/auto_session_reset.py >> logs/auto_reset.log 2>&1"
+  RESET_CRON="*/15 * * * * cd $WS && ${EMBED_ENV}${CHEAP_ENV}${OWNER_ENV}python3 procedures/auto_session_reset.py >> logs/auto_reset.log 2>&1"
   upsert_cron "auto_session_reset.py" "dinomem: auto session reset + memory extraction" "$RESET_CRON" "auto_session_reset cron (every 15 min)"
 
   # workspace_backup — weekly Sunday at 2:00 UTC (snapshot of memory + config files)

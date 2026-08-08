@@ -45,14 +45,106 @@ import os
 import re
 
 # ── Owner ids ────────────────────────────────────────────────────────────────
-# Discovered from env (set by installer) with a safe fallback. NOT the security
-# authority of record (dinotrust owns that) — here it only decides whether an
-# extracted SYSTEM-DIRECTIVE is allowed to persist as a standing rule.
+# Owner id is resolved through a SMOOTH CHAIN so a non-technical installer gets
+# working security with zero manual steps whenever the info already exists on the
+# box, and only falls back to "ask" when it genuinely can't be found:
+#   1. DINOMEM_OWNER_IDS env         (explicit override — installer/operator set)
+#   2. DINOTRUST_OWNER_IDS env        (dinotrust user -> free)
+#   3. dinotrust `owner_ids:` parsed from openclaw.json  (dinotrust installed ->
+#      free, always in sync, no duplicate config to maintain)
+#   4. ~/.dinomem/owner_ids cache file  (what the installer writes after asking)
+#   5. NONE -> is_owner() fail-opens to passthrough (no over-filtering); a
+#      one-time nudge (owner_gate_nudge) tells the operator the gate is inactive.
+# Every step is fail-open: an error in one source never blocks the next, and
+# total failure yields an empty set. Memoized (owner config changes rarely).
+_OWNER_CACHE = None  # None = unresolved; set() (possibly empty) once resolved
+
+
+def _parse_id_blob(raw):
+    """Comma/whitespace-separated id blob -> clean set of str ids. Fail-open."""
+    try:
+        return {x.strip() for x in re.split(r"[,\s]+", str(raw)) if x.strip()}
+    except Exception:
+        return set()
+
+
+def _openclaw_config_paths():
+    """Candidate openclaw.json locations (env override first, then defaults)."""
+    paths = []
+    for ev in ("OPENCLAW_CONFIG", "OPENCLAW_HOME"):
+        v = os.environ.get(ev)
+        if v:
+            v = os.path.expanduser(v)
+            paths.append(v if v.endswith(".json") else os.path.join(v, "openclaw.json"))
+    home = os.path.expanduser("~")
+    paths.append(os.path.join(home, ".openclaw", "openclaw.json"))
+    paths.append("/root/.openclaw/openclaw.json")
+    seen, out = set(), []
+    for p in paths:
+        if p and p not in seen:
+            seen.add(p); out.append(p)
+    return out
+
+
+def _ids_from_dinotrust_config():
+    """Parse dinotrust's injected `owner_ids:` line out of openclaw.json.
+    dinotrust stores owners as a YAML line inside a string-valued config field,
+    so we regex the raw file text rather than assume a fixed JSON path.
+    Fail-open -> empty set."""
+    for path in _openclaw_config_paths():
+        try:
+            if not os.path.exists(path):
+                continue
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                blob = f.read()
+            m = re.search(r"owner_ids:\s*(\[[^\]]*\]|[0-9][0-9,\s\\\"']*)", blob)
+            if m:
+                ids = _parse_id_blob(re.sub(r'[\[\]"\'\\]', " ", m.group(1)))
+                ids = {i for i in ids if i.isdigit()}
+                if ids:
+                    return ids
+        except Exception:
+            continue
+    return set()
+
+
+def _ids_from_cache_file():
+    """Read ~/.dinomem/owner_ids (installer-written). Fail-open."""
+    try:
+        path = os.path.expanduser(os.environ.get(
+            "DINOMEM_OWNER_FILE", "~/.dinomem/owner_ids"))
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                return _parse_id_blob(f.read())
+    except Exception:
+        pass
+    return set()
+
+
 def _owner_ids():
-    raw = (os.environ.get("DINOMEM_OWNER_IDS", "") or
-           os.environ.get("DINOTRUST_OWNER_IDS", "")).strip()
-    ids = {x.strip() for x in re.split(r"[,\s]+", raw) if x.strip()}
+    """Resolve owner ids via the smooth chain (memoized, fail-open)."""
+    global _OWNER_CACHE
+    if _OWNER_CACHE is not None:
+        return _OWNER_CACHE
+    ids = set()
+    try:
+        ids = _parse_id_blob(os.environ.get("DINOMEM_OWNER_IDS", ""))
+        if not ids:
+            ids = _parse_id_blob(os.environ.get("DINOTRUST_OWNER_IDS", ""))
+        if not ids:
+            ids = _ids_from_dinotrust_config()
+        if not ids:
+            ids = _ids_from_cache_file()
+    except Exception:
+        ids = set()
+    _OWNER_CACHE = ids
     return ids
+
+
+def owner_config_present():
+    """True if ANY owner id was resolved. The extractor can call this once to
+    decide whether to emit the one-time 'gate inactive' nudge."""
+    return bool(_owner_ids())
 
 
 def is_owner(platform_id):
