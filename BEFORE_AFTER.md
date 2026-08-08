@@ -101,7 +101,7 @@ Most memory systems are bottlenecked at the embedding layer and stay flat as mod
 
 Everything above is dinomem **base** — it *remembers*. **dinomem-neuron** is the learning layer on top.
 
-> ⚠️ **dinomem-neuron is a separate private repo** — not included in dinomem base. Access is granted after onboarding → [@dinotlgrm](https://t.me/dinotlgrm). The full tease + install path lives at the bottom of the main README → [Want more? → dinomem-neuron](README.md#want-more--dinomem-neuron-private-repo).
+> ⚠️ **dinomem-neuron is a separate private repo** — not included in dinomem base. Access is granted after onboarding — DM [**@dinotlgrm on Telegram**](https://t.me/dinotlgrm). The full tease + install path lives at the bottom of the main README → [Want more? → dinomem-neuron](README.md#want-more--dinomem-neuron-private-repo).
 
 The rest of this section is the neuron before/after in full — the same story you'd read in the neuron repo, so you can decide before you ever ask for access.
 
@@ -176,7 +176,7 @@ Now **every** investing conversation reflects it — no recall, no prompting, no
 
 And like base, it **compounds with model quality** — synthesis is an LLM finding patterns across *your* memory, not weights you fine-tune. Every model upgrade sharpens the patterns for free.
 
-> ⚠️ Again: neuron is a **separate private repo**. Access after onboarding → [@dinotlgrm](https://t.me/dinotlgrm) · full feature tease → [Want more? → dinomem-neuron](README.md#want-more--dinomem-neuron-private-repo)
+> ⚠️ Again: neuron is a **separate private repo**. Access after onboarding — DM [**@dinotlgrm on Telegram**](https://t.me/dinotlgrm) · full feature tease → [Want more? → dinomem-neuron](README.md#want-more--dinomem-neuron-private-repo)
 
 ---
 

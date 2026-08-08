@@ -678,7 +678,7 @@ status:           provisional → trusted
 
 ---
 
-Access granted after onboarding → [@dinotlgrm](https://t.me/dinotlgrm)
+Access granted after onboarding — DM [**@dinotlgrm on Telegram**](https://t.me/dinotlgrm)
 
 > dinomem-neuron install instructions are in the private repo after access is granted.
 
