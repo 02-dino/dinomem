@@ -46,6 +46,24 @@ except Exception:
     _em = None
     _EM_OK = False
 
+# Authority-scope gate (provenance != authority). Fail-open: if the module is
+# missing, gate_* become identity passthroughs so extraction never breaks.
+try:
+    import mem_authority as _auth
+    _AUTH_OK = True
+except Exception:
+    _auth = None
+    _AUTH_OK = False
+
+def _gate_peer(text, is_owner_src):
+    """Wrap mem_authority.gate_peer_fact; passthrough if module unavailable."""
+    if not _AUTH_OK:
+        return True, text, False
+    try:
+        return _auth.gate_peer_fact(text, is_owner_src)
+    except Exception:
+        return True, text, False
+
 # ─── Configuration ──────────────────────────────────────────────────
 SESSIONS_DIR = Path("DINOMEM_AGENT_SESSIONS_PLACEHOLDER")  # rewritten at install (mirrors extract_memory)
 MEMORY_DIR = _HERE.parent / "memory"
@@ -463,9 +481,15 @@ def _append_under(section_body, header, lines):
 
 def apply_derive(platform, platform_id, derived):
     """Write derived facts/beat/ledger/supersedes into the rep. Supersede-in-place
-    with provenance; append new facts. Fail-open (returns False on any error)."""
+    with provenance; append new facts. Fail-open (returns False on any error).
+
+    AUTHORITY-SCOPE GATE: this rep belongs to `platform_id`. If that id is NOT an
+    owner, any derived line that reads as a SYSTEM/ASSISTANT DIRECTIVE (not a fact
+    about the person) is DEMOTED to a neutral observation — NEVER dropped, NEVER
+    tagged 'untrusted'. Personalization facts pass untouched, fully trusted."""
     p = peer_path(platform, platform_id)
     today = datetime.now().strftime("%Y-%m-%d")
+    _is_owner_src = _auth.is_owner(platform_id) if _AUTH_OK else True
     try:
         txt = p.read_text(encoding="utf-8") if p.exists() else ""
     except Exception:
@@ -496,12 +520,16 @@ def apply_derive(platform, platform_id, derived):
     for f in (derived.get("facts") or []):
         t = sanitize_text(f.get("text", "")).strip()
         c = f.get("confidence", 0.7)
+        _keep, t, _dem = _gate_peer(t, _is_owner_src)
+        if _dem:
+            log(f"   🧱 authority-gate: demoted non-owner directive to observation ({p.name})")
         if t and t not in txt:
             fact_lines.append(f"- {t}  (conf: {c}, ts: {today})")
     beat_lines = []
     for b in (derived.get("beat") or []):
         t = sanitize_text(b.get("text", "")).strip()
         c = b.get("confidence", 0.6)
+        _keep, t, _dem = _gate_peer(t, _is_owner_src)
         if t and t not in txt:
             beat_lines.append(f"- {t}  (conf: {c}, ts: {today})")
     ledger_lines = []

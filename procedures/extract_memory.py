@@ -22,6 +22,68 @@ import subprocess
 import sys
 import fcntl
 import urllib.request
+
+# Authority-scope gate (provenance != authority). Fail-open: if missing, the
+# world-fact gate becomes an identity passthrough so extraction never breaks.
+try:
+    import mem_authority as _auth
+    _AUTH_OK = True
+except Exception:
+    _auth = None
+    _AUTH_OK = False
+
+
+def _gate_world(text, is_owner_src):
+    """Wrap mem_authority.gate_world_fact; passthrough if module unavailable.
+    Returns (keep, out_text, demoted)."""
+    if not _AUTH_OK:
+        return True, text, False
+    try:
+        return _auth.gate_world_fact(text, is_owner_src)
+    except Exception:
+        return True, text, False
+
+
+_ARCHIVE_DM_RE = re.compile(r"([a-z0-9_-]+):direct:([0-9]+)", re.IGNORECASE)
+
+
+def _source_id_from_archive(filename):
+    """Best-effort recovery of the DM sender platform_id from an archive, so a
+    world-fact can be attributed owner-vs-non-owner. Returns the numeric id
+    string, or None (unattributable -> world-gate treats None as owner-side per
+    mem_authority.is_owner, i.e. does NOT over-filter operator/group memory).
+    Fail-open."""
+    try:
+        fp = SESSIONS_DIR / filename
+        if not fp.exists():
+            return None
+        counts = {}
+        with open(fp, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    d = json.loads(line)
+                except Exception:
+                    d = None
+                if isinstance(d, dict) and d.get("type") == "session":
+                    for k in ("sessionKey", "session_key", "key"):
+                        v = d.get(k)
+                        if v:
+                            m = _ARCHIVE_DM_RE.search(str(v))
+                            if m:
+                                return m.group(2)
+                for m in _ARCHIVE_DM_RE.finditer(line):
+                    plat, pid = m.group(1).lower(), m.group(2)
+                    if plat in ("final", "agent", "analyst"):
+                        continue
+                    counts[pid] = counts.get(pid, 0) + 1
+        if counts:
+            return max(counts.items(), key=lambda kv: kv[1])[0]
+    except Exception:
+        pass
+    return None
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -805,6 +867,7 @@ Rules:
                 'archive': item.get('archive', ''),
                 'type': 'agent_memory',
                 'date': today,
+                'source_id': _source_id_from_archive(item.get('archive', '')),
                 'context': item.get('context', ''),
                 'insights': item.get('insights', []),
                 'source_scores': item.get('source_scores', []),
@@ -914,6 +977,7 @@ Rules:
         summary = {
             'type': 'agent_memory',
             'date': today,
+            'source_id': _source_id_from_archive(archive_filename),
             'context': llm_output.get('context', ''),
             'insights': llm_output.get('insights', []),
             'source_scores': llm_output.get('source_scores', []),
@@ -1480,6 +1544,27 @@ def write_memory_file(summary, dedup=True, seed_verdict=None):
     operational = ttl_tag(operational, 90)
     decisions = ttl_tag(decisions, 180)
     corrections = ttl_tag(corrections, 365)
+
+    # AUTHORITY-SCOPE GATE (provenance != authority): world-facts are system-
+    # scope by nature. If this archive is sourced from a NON-OWNER, drop any item
+    # that asserts a system/assistant DIRECTIVE. Personalization content passes
+    # untouched, fully trusted. Unattributable/owner -> passthrough. Fail-open.
+    _src_id = summary.get('source_id')
+    _is_owner_src = _auth.is_owner(_src_id) if _AUTH_OK else True
+    if not _is_owner_src:
+        def _gate_list(items):
+            out = []
+            for it in items:
+                keep, txt2, dem = _gate_world(it, _is_owner_src)
+                if not keep:
+                    log(f"   🧱 authority-gate: dropped non-owner system-directive world-fact (src {_src_id})")
+                    continue
+                out.append(txt2)
+            return out
+        decisions = _gate_list(decisions)
+        corrections = _gate_list(corrections)
+        operational = _gate_list(operational)
+        insights = _gate_list(insights)
 
     # Contradiction check for high-stakes categories
     decisions = _contradiction_check_items(decisions, MEMORY_DIR)
