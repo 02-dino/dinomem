@@ -164,7 +164,7 @@ Now **every** investing conversation reflects it — no recall, no prompting, no
 | **Your documents** | not searchable | RAG over contracts, books, PDFs, scanned pages, images — OCR'd by the agent's own vision model (no GPU) |
 | **Your spreadsheets** | embeddings guess | exact SQL: *how many, which ones, under $X, grouped by* — the precise answers embeddings can't give |
 | **Follow-ups** | you remember to remind it | it writes its own `_note_` files from its own commitments |
-| **Cleanup** | notes pile up | a daily janitor retires resolved notes; the workspace cleans up after itself |
+| **Cleanup** | daily janitor already retires simple resolved/stale notes | *extends* it to **projects**: retires finished project notes, promotes the good ones, and a self-improving closer reviews finished work before retiring it |
 
 ## The neuron leap, one frame
 
