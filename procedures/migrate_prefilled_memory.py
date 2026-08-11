@@ -121,6 +121,58 @@ def extract_lines(src):
     return uniq
 
 
+# ─── USER.md pre-router content (peer facts hand-typed into old flat USER.md) ──
+def extract_user_lines(src):
+    """Extract operator content from a pre-router USER.md — i.e. lines OUTSIDE the
+    compile_user managed block (<!-- BEGIN:dinomem-user-map --> ... END).
+
+    Why: USER.md is NOT clobbered like MEMORY.md — compile_user only rewrites its
+    marker-bounded block, so hand-written USER.md content SURVIVES. But pre-router
+    peer facts typed into the old flat USER.md sit INERT: never turned into a
+    memory/peers/ rep, so the router never indexes or retrieves them. This mode
+    surfaces them so they can be migrated to peer reps (where they become live).
+    Skips the template scaffold and the managed block. Fail-open -> [].
+    """
+    try:
+        raw = Path(src).read_text(encoding="utf-8")
+    except Exception as e:
+        log(f"❌ cannot read {src}: {e}")
+        return []
+    # drop the compile_user managed block wholesale (it's regenerated, not operator content)
+    raw = re.sub(r"<!--\s*BEGIN:dinomem-user-map.*?<!--\s*END:dinomem-user-map\s*-->",
+                 "", raw, flags=re.DOTALL | re.IGNORECASE)
+    # USER.md template boilerplate lines to ignore (the default scaffold).
+    # Includes the `- **Field:** value` skeleton rows (Name/Timezone/Pronouns/etc)
+    # whether empty OR filled — those are the owner-profile template, not peer facts.
+    _TMPL_FIELDS = r"(Name|What to call them|Pronouns|Timezone|Notes|About Your Human)"
+    tmpl = re.compile(
+        r"^\s*(#*\s*USER\.md.*|\*Learn about.*|\*\(.*\)\*|##\s*Context|"
+        r"The more you know.*|Respect the difference.*|"
+        r"[-*]?\s*\*\*" + _TMPL_FIELDS + r":\*\*.*)$", re.IGNORECASE)
+    out = []
+    for line in raw.splitlines():
+        s = line.rstrip()
+        if not s.strip():
+            continue
+        if re.match(r"^\s*#{1,6}\s+\S", s):      # headers -> structural
+            continue
+        if s.strip() in ("---", "***"):
+            continue
+        if tmpl.match(s.strip()):
+            continue
+        content = re.sub(r"^\s*[-*]\s+", "", s).strip()
+        content = content.strip("*").strip()
+        if len(content) >= 8:
+            out.append(content)
+    seen, uniq = set(), []
+    for c in out:
+        k = c.lower()
+        if k not in seen:
+            seen.add(k)
+            uniq.append(c)
+    return uniq
+
+
 # ─── Routing: dinomem's route.py is a SCHEMA EMITTER (LLM-in-the-loop) ─────────
 # route.py does NOT expose classify(text); `route.py classify` prints a JSON
 # decision schema an LLM reasons over. So the authoritative routing decision is
@@ -362,17 +414,26 @@ def main():
         except Exception:
             log("--plan needs a path"); sys.exit(2)
 
-    worksheet_path = MEMORY_DIR / "_migration_worksheet.json"
+    # USER.md mode: pre-router peer facts hand-typed into old flat USER.md.
+    # Detected either explicitly (--file .../USER.md) or by basename.
+    is_user_mode = Path(src).name.upper() == "USER.MD"
+    worksheet_path = MEMORY_DIR / ("_user_migration_worksheet.json" if is_user_mode
+                                   else "_migration_worksheet.json")
 
     if not Path(src).exists():
         log(f"ℹ️  {src} not found — nothing to migrate."); sys.exit(0)
 
-    # Guard: if MEMORY.md is already dinomem-managed, migration is a no-op mistake.
     try:
         head = Path(src).read_text(encoding="utf-8")
     except Exception as e:
         log(f"❌ cannot read {src}: {e}"); sys.exit(1)
-    if "dinomem:recency" in head and not apply:
+
+    if is_user_mode and not apply:
+        log("ℹ️  USER.md mode: USER.md is NOT clobbered like MEMORY.md — compile_user")
+        log("   only rewrites its marker-bounded block, so hand-written content SURVIVES.")
+        log("   This mode surfaces pre-router peer facts (outside the markers) that sit")
+        log("   INERT (never indexed as memory/peers/ reps) so you can migrate them live.")
+    elif "dinomem:recency" in head and not apply:
         log("ℹ️  MEMORY.md is already dinomem-managed (has recency markers).")
         log("   Migration is intended for a PRE-FILLED, not-yet-managed MEMORY.md.")
         log("   Proceeding in dry-run to show what WOULD route, but likely nothing useful.")
@@ -380,8 +441,14 @@ def main():
     # APPLY from an LLM-filled worksheet -> authoritative routing.
     if apply and plan_path and plan_path.exists():
         plan = load_plan(plan_path)
-        log(f"\n=== migrate_prefilled_memory APPLY (from worksheet {plan_path.name}) ===")
+        log(f"\n=== migrate_prefilled APPLY (from worksheet {plan_path.name}) ===")
         log(f"routed items: {len(plan)}")
+    elif is_user_mode:
+        # Every surfaced USER.md line is a candidate PEER fact -> default kind 'peer'
+        # (LLM refines: some may be owner-block -> pin, or truly ambiguous -> review).
+        lines = extract_user_lines(src)
+        plan = [{"text": ln, "kind": "peer", "reason": "user.md:pre-router-peer-candidate"}
+                for ln in lines]
     else:
         lines = extract_lines(src)
         plan = build_plan(lines)

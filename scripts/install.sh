@@ -360,6 +360,31 @@ prefilled_memory_guard() {
 }
 prefilled_memory_guard
 
+# ── PRE-ROUTER USER.md HINT (peer facts sitting inert) ────────────────────
+# Unlike MEMORY.md, USER.md is NOT clobbered — compile_user only rewrites its
+# marker-bounded block, so hand-written USER.md content SURVIVES. So this is NOT
+# a data-loss risk (no backup needed). BUT peer facts hand-typed into the old
+# flat USER.md sit INERT: never turned into memory/peers/ reps, so the router
+# never indexes/retrieves them. We just HINT the opt-in migrator can activate them.
+prerouter_user_hint() {
+  local um="$WS/USER.md"
+  [ -f "$um" ] || return 0
+  # strip the compile_user managed block + template scaffold; real content left?
+  local body
+  body=$(awk 'BEGIN{skip=0}
+              /BEGIN:dinomem-user-map/{skip=1}
+              /END:dinomem-user-map/{skip=0; next}
+              skip==0{print}' "$um" 2>/dev/null \
+         | grep -vE '^\s*$|^#|About Your Human|Learn about|What to call|Respect the difference|^\s*[-*]?\s*\*\*(Name|Timezone|Pronouns|Notes|What to call them):\*\*|Context|The more you know' \
+         | head -c 200)
+  [ -z "$body" ] && return 0
+  warn "Pre-router content detected in USER.md (peer facts outside the managed block)."
+  warn "  Not a data-loss risk (compile_user preserves it), but it sits INERT — the"
+  warn "  router won't index it until it's a memory/peers/ rep. To activate it, run:"
+  warn "    python3 $WS/procedures/migrate_prefilled_memory.py --dry-run --file $WS/USER.md"
+}
+prerouter_user_hint
+
 # ── REPAIR-CRON FAST PATH ─────────────────────────────────────────────────────
 # In --repair-cron mode we skip every heavy/one-time phase (dir create, file copy,
 # hooks, skills, TEI/docker, config wiring, git-snapshot, smart-cache) and jump
