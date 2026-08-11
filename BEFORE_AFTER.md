@@ -90,6 +90,8 @@ That's one home tuned for cost. The same judgment runs across *all five* — the
 
 Notice the edges are where it matters: *"always log X"* could be a hook **or** a root rule — one is event-gated and free, the other reloads every turn. *"do Y every morning"* is a cron, not a rule. Picking wrong costs you reliability or tokens on every single turn, forever. The arbiter picks the fit so you never have to know the difference.
 
+And the cost-tuning doesn't stop at *which home*. When a routed job actually needs the model, dinomem also decides **whether it needs to think at all**, and if so **whether a cheap model will do or it warrants your premium one** — so a mechanical "fill in a report" job never quietly bills you for reasoning-grade tokens it didn't need. Same principle, one layer down: spend where it buys reliability, nowhere else.
+
 ---
 
 ## The third fix: it's safe with more than one user
