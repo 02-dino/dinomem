@@ -64,9 +64,13 @@ Week 12: ▓▓▓▓▓▓░░░░  leaner AND sharper — quality compound
 
 ---
 
-## The second fix: it configures itself
+## The second fix: it routes behavior to the *right home*
 
-You don't just get memory — you stop hand-editing config. You describe a behavior once; dinomem figures out *where it belongs* and *how cheap it can run* — then wires it for you.
+You don't just get memory — you stop hand-editing config. Tell your agent to *do* something, and there are five places it could live: a **cron**, a **hook**, a **skill**, a **memory** file, or an always-injected **root file**. Pick wrong and it's either unreliable or quietly expensive. dinomem's arbiter picks the one that fits — *for reliability and cost* — and wires it for you.
+
+The principle is one line: **put behavior where its trigger lives.** A schedule → cron. A gateway event → hook. A procedure you need *sometimes* → skill. A biographical fact → memory (recalled on match). Something always-on with *no trigger* → a root file. The first four are trigger-gated, so they cost **nothing until they fire**; a root file reloads on **every single turn**, so it's the most expensive home and the fallback of last resort — never the default.
+
+And it's not just *which* home — it's *how cheap that home can run*. Take the one everyone gets wrong:
 
 **The tell nobody thinks about:** *"Ping me when BTC funding flips negative."*
 
@@ -74,17 +78,17 @@ You don't just get memory — you stop hand-editing config. You describe a behav
 >
 > ✅ dinomem writes a tiny **deterministic script** to read funding, runs it on a **no-LLM cron**, and only wakes the model on an actual flip. Costs ~nothing until the thing you asked about actually happens.
 
-You never knew a recurring job could quietly burn tokens on every tick — or that the fix was a gate script + the right cost tier. You didn't have to. dinomem picks the tier (**no-LLM → gated → cheap-model → reasoning**) and writes the gate for you. Same instinct, applied to everything:
+That's one home tuned for cost. The same judgment runs across *all five* — the arbiter reads what you asked, finds its trigger, and routes to exactly one:
 
-| You say… | ❌ Before | ✅ After (dinomem routes it) |
+| You say… | ❌ Before | ✅ After — best home, chosen for you |
 |----------|-----------|------------------------------|
-| "Ping me when funding flips negative" | Hand-write a cron that wakes an LLM every fire | → **gate script + no-LLM cron**; model wakes only on a real hit |
-| "Your name is Dino" | You edit an identity file | → written to **IDENTITY.md** |
-| "Here's how I want PRs reviewed" | You wire a skill by hand | → distilled into a **skill**, loaded on-demand |
-| "Log every inbound message" | You hand-write a hook | → routed to a **hook**, event-gated |
-| "Give me raw data only — no indicators" | You hand-edit AGENTS.md | → written to **AGENTS.md** as a standing rule |
+| "Ping me when funding flips negative" | Hand-write a cron that wakes an LLM every fire | → **cron** + gate script, no-LLM; model wakes only on a real hit |
+| "Log every inbound message" | You hand-write a hook | → **hook**, event-gated — fires only on that event |
+| "Here's how I want PRs reviewed" | You wire a skill by hand | → **skill**, loaded on-demand when the task appears |
+| "What did we decide about MSTR?" | You re-explain it | → **memory**, recalled on match — never injected every turn |
+| "Give me raw data only — no indicators" | You hand-edit AGENTS.md | → **root file** (AGENTS.md) — the *only* case that earns always-on |
 
-The rule underneath: **put behavior where its trigger lives** — a schedule → cron, an event → hook, a sometimes-procedure → skill — and only fall back to an always-injected root file when the behavior has *no* trigger. Trigger-gated homes cost nothing until they fire; root files reload every single turn, so they're the last resort, not the default.
+Notice the edges are where it matters: *"always log X"* could be a hook **or** a root rule — one is event-gated and free, the other reloads every turn. *"do Y every morning"* is a cron, not a rule. Picking wrong costs you reliability or tokens on every single turn, forever. The arbiter picks the fit so you never have to know the difference.
 
 ---
 
