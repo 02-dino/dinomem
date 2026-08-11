@@ -281,8 +281,8 @@ else
   ok "kb/vector_db/ clear"
 fi
 # Existing AGENTS.md memory block
-if [ -f "$WS/AGENTS.md" ] && grep -qF "memory_recall" "$WS/AGENTS.md" 2>/dev/null; then
-  warn "AGENTS.md already has a memory_recall section — dinomem block will be appended. Check for duplicates after install."
+if [ -f "$WS/AGENTS.md" ] && grep -qF "memory_recall" "$WS/AGENTS.md" 2>/dev/null && ! grep -qF "$BEGIN" "$WS/AGENTS.md" 2>/dev/null; then
+  warn "AGENTS.md has an UNMARKED legacy memory_recall section — it will be absorbed into the managed block (no duplicate left)."
 fi
 # Root files size check (per-file + total)
 ROOT_FILES="AGENTS.md SOUL.md IDENTITY.md TOOLS.md USER.md"
@@ -326,7 +326,7 @@ done
 
 # ── 2) Copy scripts ───────────────────────────────────────────────────────────
 hr "Copying scripts"
-for f in procedures/_cheap_model.py procedures/git_history.py procedures/session_reset.py procedures/auto_session_reset.py procedures/extract_memory.py procedures/extract_user.py procedures/extract_user_test.py procedures/workspace_backup.py templates/peer_rep.md.tmpl; do
+for f in procedures/_cheap_model.py procedures/git_history.py procedures/session_reset.py procedures/auto_session_reset.py procedures/extract_memory.py procedures/extract_user.py procedures/compile_user.py procedures/extract_user_test.py procedures/workspace_backup.py templates/peer_rep.md.tmpl; do
   dst="$WS/$f"
   if [ -f "$dst" ] && [ "$FORCE" = 0 ]; then
     skip "$f (exists, use --force to overwrite)"
@@ -1768,8 +1768,30 @@ if grep -qF "$BEGIN" "$AGENTS" 2>/dev/null; then
 elif [ "$DRY_RUN" = 1 ]; then
   plan "append dinomem managed block to AGENTS.md"
 else
-  printf '\n%s\n' "$BLOCK" >> "$AGENTS"
-  ok "AGENTS.md wired"
+  # No modern marker present. A PRE-MARKER install may still have left an
+  # UNMARKED legacy dinomem section (## dinomem / ## memory_recall /
+  # ## rag_long_docs) written directly into AGENTS.md. Appending the fresh
+  # marked block without removing it leaves a stale duplicate (the old
+  # warn-only path). Absorb it: strip any such unmarked top-level section
+  # (from its '## <header>' line up to the next '## '/'# ' header or EOF),
+  # then append the current marked block. Marker-bounded blocks are never
+  # touched here (this branch only runs when no BEGIN marker exists).
+  if grep -qE '^## (dinomem|memory_recall|rag_long_docs)([[:space:]]|$)' "$AGENTS" 2>/dev/null; then
+    _tmp_legacy="$(mktemp)"
+    awk '
+      /^## (dinomem|memory_recall|rag_long_docs)([ \t]|$)/ { drop=1; next }
+      drop && /^#{1,2} / { drop=0 }
+      !drop { print }
+    ' "$AGENTS" > "$_tmp_legacy"
+    # Trim trailing blank lines the removal may leave.
+    awk 'NF{last=NR} {lines[NR]=$0} END{for(i=1;i<=last;i++) print lines[i]}' "$_tmp_legacy" > "$AGENTS"
+    rm -f "$_tmp_legacy"
+    printf '\n%s\n' "$BLOCK" >> "$AGENTS"
+    ok "AGENTS.md wired (absorbed unmarked legacy dinomem section into managed block)"
+  else
+    printf '\n%s\n' "$BLOCK" >> "$AGENTS"
+    ok "AGENTS.md wired"
+  fi
 fi
 
 # ── 6b) Wire TOOLS.md ────────────────────────────────────────────────────────

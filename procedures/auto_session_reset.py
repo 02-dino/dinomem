@@ -143,6 +143,15 @@ def _run_main():
     if user_script.exists():
         user_ok = run_script("extract_user.py")
 
+    # Step 2c: Compile the USER.md router (owner block + user map) from the peer
+    # reps extract_user just refreshed. Marker-bounded + fail-open: it only
+    # rewrites its managed block, never hand-written USER.md content, and any
+    # error exits 0 (never breaks the pipeline). Only runs if installed.
+    compile_ok = None
+    compile_script = Path(__file__).parent / "compile_user.py"
+    if compile_script.exists():
+        compile_ok = run_script("compile_user.py")
+
     # Step 3: Session ingest (optional — only if neuron is installed)
     ingest_script = Path(__file__).parent / "session_ingest.py"
     ingest_ok = None
