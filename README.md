@@ -168,6 +168,8 @@ python3 procedures/migrate_prefilled_memory.py --apply --plan memory/_migration_
 
 Each line lands where it belongs: a durable fact → `memory/_pin_`, a dated observation → a dated `memory/…_insight_`, an always-on behavioral rule → `AGENTS.md`, a per-person fact → `memory/peers/`, and anything ambiguous → `memory/_migrated_review.md` for you to place by hand. The migrator **backs up `MEMORY.md` first**, never deletes the original, and **appends** to `AGENTS.md` (never clobbers it). Running `--apply` without a reviewed plan falls back to the heuristic routing — safe, but the worksheet review gives better placement.
 
+> **Note:** the migrator never writes to the always-injected *Persistent* section (`topics/PERSISTENT.md` / `PERSISTENT_AUTO.md`) — that's a **neuron-only, earned-not-assigned** surface. A durable rule migrates to `AGENTS.md` or a `_pin_`; if it proves durable, neuron's L4 promoter (`memory_promote.py`) graduates it into the Persistent section on its own. That's by design — the firewall keeps promotion from feeding back on itself, so nothing is hand-injected there during migration.
+
 **Pre-router `USER.md`.** `USER.md` is a *different* case from `MEMORY.md`: it is **not** clobbered. `compile_user.py` only rewrites its marker-bounded router block (`<!-- BEGIN:dinomem-user-map -->` … `END`), so any hand-written content **survives**. The only issue is that peer facts hand-typed into the *old flat* `USER.md` sit **inert** — the router never indexes them until they become `memory/peers/` reps. The same migrator surfaces and activates them:
 
 ```bash
