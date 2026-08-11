@@ -101,9 +101,12 @@ selected leaf tool. Keeping it write-free avoids duplicating any leaf-tool logic
   above (never 'just keep it in mind', never a note you don't verify on disk), and
   VERIFY it landed. Do not trust THIS session to carry it forward — trust the surface.
 
-  COROLLARY (auto-managed files): even among loaded surfaces, MEMORY.md and USER.md
-  do NOT count as durable homes — they are regenerated/overwritten by the extraction
-  crons (see ⛔ AUTO-MANAGED ROOT FILES). Durable = an inherited surface that is NOT
+  COROLLARY (auto-managed files): even among loaded surfaces, MEMORY.md and USER.md's
+  MANAGED BLOCK do NOT count as durable homes — they are regenerated/overwritten by the
+  extraction crons (see ⛔ AUTO-MANAGED ROOT FILES). Note the scope differs: MEMORY.md is
+  rewritten WHOLESALE by extract_memory.py (no safe zone), whereas only USER.md's
+  marker-bounded router block is recompiled by compile_user.py — USER.md content OUTSIDE
+  the markers is hand-written and durable. Durable = an inherited surface that is NOT
   auto-regenerated: root files you hand-maintain (AGENTS/SOUL/IDENTITY/TOOLS.md), a
   hook, a skill, a cron, or a memory/ _note_/_pin_ SOURCE the crons read FROM.
 
