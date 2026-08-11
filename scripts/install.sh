@@ -320,7 +320,7 @@ if [ "$REPAIR_CRON" = 0 ]; then
 
 # ── 1) Create workspace directories ──────────────────────────────────────────
 hr "Directories"
-for d in procedures tools logs memory memory/peers .memory_archive; do
+for d in procedures tools logs memory memory/peers .memory_archive templates; do
   if [ -d "$WS/$d" ]; then skip "$d/ (exists)"; elif [ "$DRY_RUN" = 1 ]; then plan "create dir $d/"; else mkdir -p "$WS/$d"; ok "$d/"; fi
 done
 
@@ -333,6 +333,7 @@ for f in procedures/_cheap_model.py procedures/git_history.py procedures/session
   elif [ "$DRY_RUN" = 1 ]; then
     plan "copy + substitute placeholders -> $f"
   else
+    mkdir -p "$(dirname "$dst")"
     cp "$SKILL_DIR/$f" "$dst"
     subst "$dst" DINOMEM_WORKSPACE_PLACEHOLDER "$WS"
     subst "$dst" DINOMEM_AGENT_SESSIONS_PLACEHOLDER "$SESSIONS_DIR"
