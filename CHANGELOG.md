@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.4.2 — 2026-08-11
+
+**Install-reliability patch — the real fix for the cron `--json: command not found` error-loop.**
+### Fixed
+- **Cron registration no longer crashes with `/bin/bash: --json: command not found`.** Two `python3` heredocs in the installer used an *unquoted* delimiter (`<<PYEOF`), so bash performed command-substitution on backticks inside a code *comment* that read `` `cron add --json <blob>` ``. Bash ran that backtick, tried to execute `--json`, and errored — across every note-cron registration lane (Daily Note Review, Pending Note Reminder; and, downstream, the neuron Advancer/Improver/Deleter/Ideator lanes that ride the same gate), which looked like a 4× error-loop and could time out the install. `--no-cron` did NOT help because the crash was in the registration heredoc itself. Fix: quote the heredoc delimiters (`<<'PYEOF'`) so backticks/`$vars` in the body are never shell-expanded, and pass the one intentional `$WS` fallback through the environment (`DINOMEM_WS`). This also silently fixed a second corruption: bash had been mangling `$WS`/`$(git rev-parse)` occurrences inside the cron *prompt* JSON strings.
+
 ## 1.4.1
 
 **Install-reliability patch.**

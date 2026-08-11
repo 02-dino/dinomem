@@ -649,7 +649,7 @@ if [ "$DO_CRON" = 1 ]; then
   if [ "$DRY_RUN" = 1 ]; then
     plan "register (disabled) Daily Note Review + Pending Note Reminder, then create/extend 'Note Cron Gate' (*/15, zero-LLM)"
   else
-    python3 - <<PYEOF
+    DINOMEM_WS="$WS" python3 - <<'PYEOF'
 import subprocess, json
 
 def _cron_add_argv(job):
@@ -896,7 +896,7 @@ for _cn in _CANON_BASE:
 # ids). --command-env REPLACES the whole env set, so we always re-send the full
 # merged dict. If the gate cannot be created (command crons refused), fall back
 # to re-enabling both workers on their own schedules.
-WS = os.environ.get("OPENCLAW_WORKSPACE", "$WS")
+WS = os.environ.get("OPENCLAW_WORKSPACE") or os.environ.get("DINOMEM_WS", "")
 GATE_NAME = "Note Cron Gate"
 
 def _gate_env(gate_id):
@@ -1009,7 +1009,7 @@ PYEOF
   if [ "$DRY_RUN" = 1 ]; then
     plan "register/refresh OpenClaw cron: Pending Note Reminder (every 3 days 9:00 local)"
   else
-    python3 - <<PYEOF
+    python3 - <<'PYEOF'
 import subprocess, json
 
 def _cron_add_argv(job):
