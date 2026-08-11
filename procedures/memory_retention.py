@@ -228,6 +228,12 @@ def run(dry_run: bool = False, terminal_age: int = TERMINAL_AGE_DAYS):
 
     for filepath in sorted(MEMORY_DIR.glob("*.md")):
         name = filepath.name
+        # Protected: valid-time _history/ (superseded facts kept for as_of queries).
+        # glob('*.md') is non-recursive so _history/ is already invisible; this is
+        # explicit defense-in-depth so a future glob->rglob change can't silently
+        # expose retired facts to the deleter.
+        if filepath.parent.name == "_history":
+            continue
         # Protected: MEMORY.md, any _*.md (pins/notes/neuron-managed)
         if name == "MEMORY.md" or name.startswith("_"):
             continue
