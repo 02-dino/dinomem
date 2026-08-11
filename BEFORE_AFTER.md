@@ -12,17 +12,19 @@ Here's the before and after of that.
 
 ### ❌ BEFORE — no memory, or naive vector memory
 
-> **You:** "I got liquidated on a 20x ETH long back in May — lost most of the position."
+> *You and the agent spend an afternoon in June building out a full MSTR thesis — the case, the levels, where it breaks.*
 >
-> *One week later, fresh session:*
+> *Three months later, fresh session:*
 >
-> **Agent:** "This ETH setup looks clean at 20x — want me to size it?" 🤦
+> **You:** "What did we land on for MSTR back in June?"
 >
-> You re-explain the scar tissue. Again next week. And the week after.
+> **Agent:** "I don't have any context on that." 🤦
+>
+> You re-explain the whole thesis from scratch. Every time it comes up.
 
 And "just add a vector database" doesn't save you:
 
-- It saved **all 12 versions** of that correction — plus every dead thread, every abandoned tangent.
+- It saved **all 12 revisions** of that thesis — plus every dead thread, every abandoned tangent.
 - Recall returns a pile of near-duplicates and noise.
 - It gets **worse** the more you use it. Volume goes up, signal goes down.
 
@@ -36,20 +38,18 @@ Week 12: ▓▓▓▓▓▓▓▓▓▓  huge, mostly noise — recall degraded
 
 ### ✅ AFTER — dinomem
 
-> **You:** "I got liquidated on a 20x ETH long back in May — lost most of the position."
->
-> *That session gets archived. An LLM reads it and distills:*
+> *That June session gets archived. An LLM reads it and distills the thesis — the call, the levels, the invalidation — into:*
 >
 > ```
-> memory/2026-05-26_event_eth-liq-20x.md
-> "User was liquidated on a 20x ETH long in May 2026 — leverage-averse since."
+> memory/2026-06-14_analysis_mstr-thesis.md
+> "MSTR thesis (Jun 2026): long above $X, thesis breaks below $Y, catalyst = ..."
 > ```
 >
-> *Every future session, before the agent acts, it searches memory and finds this. It never pitches you a high-leverage setup again.*
+> *Three months later you ask — the agent searches memory, pulls that one file, and hands you back the exact call. You have hundreds of past analyses; it injects none of them every turn, and recalls the one that matches when you ask.*
 
 And the memory itself gets **better** with age, not worse:
 
-- **Daily dedup** — the 12 versions of a correction collapse into one clean fact.
+- **Daily dedup** — the 12 revisions of that thesis collapse into one clean, current fact.
 - **Daily review** — noise and dead threads get dropped; contradictions get flagged.
 - **Recall is active** — the agent is behaviorally wired to search memory *before* it acts, so recall actually happens instead of being hoped for.
 - **Nothing is ever lost** — every memory edit is git-versioned in an **isolated store** (never your repo). A bad dedup or merge is reversible byte-for-byte.
