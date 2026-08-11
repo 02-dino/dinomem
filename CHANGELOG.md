@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.4.1
+
+**Install-reliability patch.**
+### Fixed
+- **Installer no longer fails on a workspace without `templates/`.** The directory-creation loop now creates `templates/`, and the copy loop `mkdir -p`s each target's parent defensively before `cp`. Previously, installing into a workspace that never had a `templates/` dir aborted with `cp: No such file or directory` when copying `templates/peer_rep.md.tmpl`.
+- **extract_memory:** unpack 5-tuple in the contradiction-check merge branch — was crashing extraction on any merge-verdict run.
+
 ## 1.4.0
 
 **Memory security release — stored/second-order prompt-injection defense on the write path.** dinomem learns from every user it talks to, which makes the async extraction path a place where a non-owner could plant standing instructions that get recalled later with the system's own authority. This release closes that, without discounting legitimate multi-user personalization.
