@@ -1305,11 +1305,11 @@ Prefer `merge` over `update` when the existing item is still TRUE and the new it
                 log(f"   ℹ️  Contradiction check: merge verdict without merged text -> keeping both")
                 kept_new.append(new_item)
                 continue
-            target = next(((mf, li, rl, it) for (mf, li, rl, it) in candidates if mf.exists()), None)
+            target = next(((mf, li, rl, it, pr) for (mf, li, rl, it, pr) in candidates if mf.exists()), None)
             if target is None:
                 kept_new.append(new_item)
                 continue
-            mf, li, rl, it = target
+            mf, li, rl, it, _pr = target
             try:
                 lines = mf.read_text(encoding='utf-8').split('\n')
                 if li < len(lines):
