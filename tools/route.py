@@ -80,10 +80,13 @@ selected leaf tool. Keeping it write-free avoids duplicating any leaf-tool logic
                   peer reps; compile_user.py assembles them into USER.md). Same rule —
                   edit the SOURCE (peer rep or a _pin_), never the managed block. Content
                   OUTSIDE the markers is hand-written and preserved.
-  ROUTER HARD RULE: classify NEVER selects MEMORY.md or USER.md as a write target.
-  If a request's natural home *looks* like one of them, redirect to its durable
-  source (a memory/ note, a peer rep, or AGENTS.md for a rule). These two files are
-  absent from every write path below BY DESIGN.
+  ROUTER HARD RULE: classify NEVER selects MEMORY.md, nor USER.md's MANAGED BLOCK,
+  as a write target. If a request's natural home *looks* like one of them, redirect
+  to its durable source (a memory/ note, a peer rep, or AGENTS.md for a rule). These
+  targets are absent from every write path below BY DESIGN. (Scope note: MEMORY.md is
+  off-limits ENTIRELY — wholesale-regenerated. For USER.md only the marker-bounded
+  router block is off-limits; content OUTSIDE the markers is a legitimate hand-edit
+  surface — but auto-routed FACTS still belong in their source, never typed in by hand.)
 
 ## 🔒 DON'T-TRUST-THIS-SESSION — durability MUST live on a surface the NEXT session loads
   THE PRINCIPLE (the reason this router exists): a fix/behavior that lives only in
