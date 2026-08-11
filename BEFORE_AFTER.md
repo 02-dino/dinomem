@@ -66,25 +66,25 @@ Week 12: ▓▓▓▓▓▓░░░░  leaner AND sharper — quality compound
 
 ## The second fix: it configures itself
 
-You don't just get memory — you stop hand-editing config. You describe a behavior once; dinomem asks *does this have a trigger?* and picks the cheapest home for it — because a root file reloads on **every single turn**, so it's the most expensive place to put anything.
+You don't just get memory — you stop hand-editing config. You describe a behavior once; dinomem figures out *where it belongs* and *how cheap it can run* — then wires it for you.
 
-**The tell nobody thinks about:** *"Ping me the funding rate every morning at 7."*
+**The tell nobody thinks about:** *"Ping me when BTC funding flips negative."*
 
-> ❌ A naive agent drops that into its always-on instructions — now it re-reads "ping at 7" on *every* turn, all day, forever, just to fire once.
+> ❌ A naive agent wires a cron that **wakes a full reasoning LLM on every fire** — checking that one number 24×/day, forever. You pay for 23 checks that found nothing, every day.
 >
-> ✅ dinomem sees a *schedule* trigger → it's a **cron**. Fires at 7, costs nothing the other 23 hours.
+> ✅ dinomem writes a tiny **deterministic script** to read funding, runs it on a **no-LLM cron**, and only wakes the model on an actual flip. Costs ~nothing until the thing you asked about actually happens.
 
-You never knew that was a config decision. You didn't have to. That's the whole point — same instinct, applied to everything:
+You never knew a recurring job could quietly burn tokens on every tick — or that the fix was a gate script + the right cost tier. You didn't have to. dinomem picks the tier (**no-LLM → gated → cheap-model → reasoning**) and writes the gate for you. Same instinct, applied to everything:
 
 | You say… | ❌ Before | ✅ After (dinomem routes it) |
 |----------|-----------|------------------------------|
-| "Remind me every morning at 7" | You go write a cron by hand | → becomes a **cron** automatically |
-| "Your name is Dino" | You edit an identity file | → written to the **identity file** |
-| "Here's a new tool / procedure" | You wire a skill manually | → distilled into a **skill** |
-| "Always X when Y happens" | You hand-write a hook | → routed to a **hook** |
+| "Ping me when funding flips negative" | Hand-write a cron that wakes an LLM every fire | → **gate script + no-LLM cron**; model wakes only on a real hit |
+| "Your name is Dino" | You edit an identity file | → written to **IDENTITY.md** |
+| "Here's how I want PRs reviewed" | You wire a skill by hand | → distilled into a **skill**, loaded on-demand |
+| "Log every inbound message" | You hand-write a hook | → routed to a **hook**, event-gated |
 | "Give me raw data only — no indicators" | You hand-edit AGENTS.md | → written to **AGENTS.md** as a standing rule |
 
-You describe the behavior; dinomem picks the cheapest correct home for it. Only truly always-on rules land in a root file.
+The rule underneath: **put behavior where its trigger lives** — a schedule → cron, an event → hook, a sometimes-procedure → skill — and only fall back to an always-injected root file when the behavior has *no* trigger. Trigger-gated homes cost nothing until they fire; root files reload every single turn, so they're the last resort, not the default.
 
 ---
 
