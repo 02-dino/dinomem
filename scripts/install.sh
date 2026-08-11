@@ -310,6 +310,56 @@ else
   ok "Root files: ${TOTAL_CHARS} chars total — within limits"
 fi
 
+# ── PRE-FILLED MEMORY.md GUARD (warn + backup before first clobber) ────────────
+# dinomem's extract cron OWNS MEMORY.md and periodically overwrites its managed
+# region. A dinomem-managed MEMORY.md carries the '<!-- dinomem:recency-... -->'
+# markers. If MEMORY.md has REAL hand-written content but NO dinomem markers, the
+# operator pre-filled it and the first extract cycle would silently bury it.
+# We do NOT auto-migrate here (content is heterogeneous — needs the opt-in
+# route-through migrator). We WARN loudly + BACKUP so nothing is ever lost.
+prefilled_memory_guard() {
+  local mm="$WS/MEMORY.md"
+  [ -f "$mm" ] || return 0
+  # already dinomem-managed? then the markers exist -> safe, nothing to guard.
+  if grep -q 'dinomem:recency' "$mm" 2>/dev/null; then
+    return 0
+  fi
+  # strip the boilerplate title line + blank lines; is there real content left?
+  local body
+  body=$(grep -vE '^\s*$|^#*\s*MEMORY\.md\s*$' "$mm" 2>/dev/null | head -c 400)
+  if [ -z "$body" ]; then
+    return 0   # empty / template-only -> nothing to protect
+  fi
+  local chars
+  chars=$(wc -c < "$mm" 2>/dev/null | tr -d ' ')
+  warn "────────────────────────────────────────────────────────────────"
+  warn "PRE-FILLED MEMORY.md DETECTED (${chars} chars, no dinomem markers)."
+  warn "dinomem's extract cron OWNS MEMORY.md and will OVERWRITE its managed"
+  warn "region on the next cycle — your hand-written content would be LOST."
+  warn "A timestamped backup has been made (see below)."
+  warn "To preserve it as dinomem-native memory, run the opt-in migrator:"
+  warn "    python3 $WS/procedures/migrate_prefilled_memory.py --dry-run"
+  warn "  (dry-run shows the routing plan; add --apply to write. Backs up first.)"
+  warn "It replays each MEMORY.md line through the routing system into a"
+  warn "memory/_pin_, a dated memory entry, AGENTS.md, or a peer rep — with"
+  warn "anything ambiguous parked in memory/_migrated_review.md for you."
+  warn "────────────────────────────────────────────────────────────────"
+  # BACKUP: prefer the workspace backup helper; fall back to a plain copy.
+  local stamp bak
+  stamp=$(date -u +%Y%m%d-%H%M%S)
+  bak="$mm.prefilled-bak.$stamp"
+  if cp "$mm" "$bak" 2>/dev/null; then
+    ok "Backed up pre-filled MEMORY.md -> $(basename "$bak")"
+  else
+    warn "Could not write backup $(basename "$bak") — copy MEMORY.md aside manually before proceeding."
+  fi
+  if [ -f "$WS/procedures/workspace_backup.py" ]; then
+    python3 "$WS/procedures/workspace_backup.py" >/dev/null 2>&1 \
+      && ok "workspace_backup.py snapshot taken" || true
+  fi
+}
+prefilled_memory_guard
+
 # ── REPAIR-CRON FAST PATH ─────────────────────────────────────────────────────
 # In --repair-cron mode we skip every heavy/one-time phase (dir create, file copy,
 # hooks, skills, TEI/docker, config wiring, git-snapshot, smart-cache) and jump
@@ -326,7 +376,7 @@ done
 
 # ── 2) Copy scripts ───────────────────────────────────────────────────────────
 hr "Copying scripts"
-for f in procedures/_cheap_model.py procedures/git_history.py procedures/session_reset.py procedures/auto_session_reset.py procedures/extract_memory.py procedures/extract_user.py procedures/compile_user.py procedures/extract_user_test.py procedures/workspace_backup.py templates/peer_rep.md.tmpl; do
+for f in procedures/_cheap_model.py procedures/git_history.py procedures/session_reset.py procedures/auto_session_reset.py procedures/extract_memory.py procedures/extract_user.py procedures/compile_user.py procedures/migrate_prefilled_memory.py procedures/extract_user_test.py procedures/workspace_backup.py templates/peer_rep.md.tmpl; do
   dst="$WS/$f"
   if [ -f "$dst" ] && [ "$FORCE" = 0 ]; then
     skip "$f (exists, use --force to overwrite)"

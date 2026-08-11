@@ -150,6 +150,24 @@ For things you want to build or do:
 
 Saved as `memory/_note_<slug>.md`. Recalled when you ask "what's on my build list?". Auto-deleted by the daily cron once resolved. Notes carry a small schema (`type`, `status`, `done_when`, `stale_after`) so cleanup is deterministic rather than guesswork: `done_when` is a concrete artifact check that resolves the note, and `stale_after` garbage-collects abandoned notes (default 30 days, 7 for quick reminders). See [`references/architecture.md`](references/architecture.md#transient-note-schema-_note_md) for the full schema and resolution ownership.
 
+### Migrating a pre-filled MEMORY.md
+
+If you **hand-wrote `MEMORY.md` before installing dinomem**, note that dinomem's extract cron *owns* `MEMORY.md` and will overwrite its managed region on the next cycle. The installer protects you here: it detects a pre-filled `MEMORY.md` (real content with no `dinomem:recency` markers), **warns loudly, and backs it up** before anything can clobber it. Nothing is auto-migrated — your content is heterogeneous and routing it needs judgment.
+
+To fold that content into dinomem-native memory, run the opt-in migrator (dry-run first, always):
+
+```bash
+python3 procedures/migrate_prefilled_memory.py --dry-run
+```
+
+This writes a routing **worksheet** (`memory/_migration_worksheet.json`) — each line of your old `MEMORY.md` with a heuristic-suggested home plus the `route.py` decision schema. Because `route.py` is a *schema emitter* (the routing decision is LLM-in-the-loop, not a fixed algorithm), you (or your agent) review/correct each line's target, then apply:
+
+```bash
+python3 procedures/migrate_prefilled_memory.py --apply --plan memory/_migration_worksheet.json
+```
+
+Each line lands where it belongs: a durable fact → `memory/_pin_`, a dated observation → a dated `memory/…_insight_`, an always-on behavioral rule → `AGENTS.md`, a per-person fact → `memory/peers/`, and anything ambiguous → `memory/_migrated_review.md` for you to place by hand. The migrator **backs up `MEMORY.md` first**, never deletes the original, and **appends** to `AGENTS.md` (never clobbers it). Running `--apply` without a reviewed plan falls back to the heuristic routing — safe, but the worksheet review gives better placement.
+
 > Want the agent to create and drive these itself?
 > In dinomem-neuron it writes notes from its own commitments and turns big requests into step-by-step projects it works through on its own.
 > [↓ dinomem-neuron](#want-more--dinomem-neuron-private-repo)
