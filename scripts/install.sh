@@ -797,11 +797,11 @@ def _cron_verify(name):
     """Read back a cron job by name via `cron list --json`. Returns its id, or ''
     if the gateway did not actually store it (silent-failure guard)."""
     try:
-        lr = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)
+        lr = subprocess.run(['openclaw', 'cron', 'list', '--all', '--json'], capture_output=True, text=True, timeout=10)
         if lr.returncode != 0:
             return ''
         data = json.loads(lr.stdout)
-        joblist = data if isinstance(data, list) else data.get('jobs', {}).get('jobs', data.get('jobs', []))
+        joblist = data if isinstance(data, list) else (data.get('jobs') if isinstance(data.get('jobs'), list) else (data.get('jobs') or {}).get('jobs', []))
         for j in (joblist or []):
             if j.get('name','').strip().lower() == name.strip().lower():
                 return j.get('id','') or 'exists'
@@ -817,10 +817,10 @@ def upsert_selfsched(job, label):
     name = job['name']
     existing_id = ''
     try:
-        lr = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)
+        lr = subprocess.run(['openclaw', 'cron', 'list', '--all', '--json'], capture_output=True, text=True, timeout=10)
         if lr.returncode == 0:
             data = json.loads(lr.stdout)
-            joblist = data if isinstance(data, list) else data.get('jobs', {}).get('jobs', data.get('jobs', []))
+            joblist = data if isinstance(data, list) else (data.get('jobs') if isinstance(data.get('jobs'), list) else (data.get('jobs') or {}).get('jobs', []))
             for j in (joblist or []):
                 if j.get('name','').strip().lower() == name.strip().lower():
                     existing_id = j.get('id',''); break
@@ -855,11 +855,11 @@ import os
 
 def _find_cron(name):
     try:
-        lr = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)
+        lr = subprocess.run(['openclaw', 'cron', 'list', '--all', '--json'], capture_output=True, text=True, timeout=10)
         if lr.returncode != 0:
             return ''
         data = json.loads(lr.stdout)
-        joblist = data if isinstance(data, list) else data.get('jobs', {}).get('jobs', data.get('jobs', []))
+        joblist = data if isinstance(data, list) else (data.get('jobs') if isinstance(data.get('jobs'), list) else (data.get('jobs') or {}).get('jobs', []))
         for j in (joblist or []):
             if j.get('name','').strip().lower() == name.strip().lower():
                 return j.get('id','')
@@ -1157,11 +1157,11 @@ def _cron_verify(name):
     """Read back a cron job by name via `cron list --json`. Returns its id, or ''
     if the gateway did not actually store it (silent-failure guard)."""
     try:
-        lr = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)
+        lr = subprocess.run(['openclaw', 'cron', 'list', '--all', '--json'], capture_output=True, text=True, timeout=10)
         if lr.returncode != 0:
             return ''
         data = json.loads(lr.stdout)
-        joblist = data if isinstance(data, list) else data.get('jobs', {}).get('jobs', data.get('jobs', []))
+        joblist = data if isinstance(data, list) else (data.get('jobs') if isinstance(data.get('jobs'), list) else (data.get('jobs') or {}).get('jobs', []))
         for j in (joblist or []):
             if j.get('name','').strip().lower() == name.strip().lower():
                 return j.get('id','') or 'exists'
@@ -1177,10 +1177,10 @@ def upsert_selfsched(job, label):
     name = job['name']
     existing_id = ''
     try:
-        lr = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)
+        lr = subprocess.run(['openclaw', 'cron', 'list', '--all', '--json'], capture_output=True, text=True, timeout=10)
         if lr.returncode == 0:
             data = json.loads(lr.stdout)
-            joblist = data if isinstance(data, list) else data.get('jobs', {}).get('jobs', data.get('jobs', []))
+            joblist = data if isinstance(data, list) else (data.get('jobs') if isinstance(data.get('jobs'), list) else (data.get('jobs') or {}).get('jobs', []))
             for j in (joblist or []):
                 if j.get('name','').strip().lower() == name.strip().lower():
                     existing_id = j.get('id',''); break
@@ -1997,17 +1997,17 @@ fi
 REQUIRED_CRON_GAP=0
 if command -v openclaw >/dev/null 2>&1 && openclaw status >/dev/null 2>&1; then
   hr "Cron self-check"
-  _CRON_LIST="$(openclaw cron list --json 2>/dev/null || echo '[]')"
+  _CRON_LIST="$(openclaw cron list --all --json 2>/dev/null || echo '[]')"
   _MISSING_REQUIRED=""
   for _cname in "Note Cron Gate" "Daily Note Review"; do
-    if printf '%s' "$_CRON_LIST" | grep -qiF "$_cname"; then
+    if grep -qiF "$_cname" <<< "$_CRON_LIST"; then
       ok "cron present: $_cname"
     else
       warn "cron MISSING (required): $_cname"
       _MISSING_REQUIRED="${_MISSING_REQUIRED}${_MISSING_REQUIRED:+, }$_cname"
     fi
   done
-  if printf '%s' "$_CRON_LIST" | grep -qiF "Pending Note Reminder"; then
+  if grep -qiF "Pending Note Reminder" <<< "$_CRON_LIST"; then
     ok "cron present: Pending Note Reminder"
   else
     warn "cron MISSING (recommended): Pending Note Reminder — reminder lane; not blocking"
@@ -2020,10 +2020,10 @@ if command -v openclaw >/dev/null 2>&1 && openclaw status >/dev/null 2>&1; then
     if [ "$REPAIR_CRON" = 0 ]; then
       printf '  \033[33m[repair]\033[0m required cron(s) missing (%s) — auto-repairing (cron-only re-run)...\n' "$_MISSING_REQUIRED"
       if bash "$SKILL_DIR/scripts/install.sh" --workspace "$WS" --agent-id "$AGENT_ID" --repair-cron; then
-        _CRON_LIST2="$(openclaw cron list --json 2>/dev/null || echo '[]')"
+        _CRON_LIST2="$(openclaw cron list --all --json 2>/dev/null || echo '[]')"
         _STILL_MISSING=""
         for _cname in "Note Cron Gate" "Daily Note Review"; do
-          printf '%s' "$_CRON_LIST2" | grep -qiF "$_cname" || _STILL_MISSING="${_STILL_MISSING}${_STILL_MISSING:+, }$_cname"
+          grep -qiF "$_cname" <<< "$_CRON_LIST2" || _STILL_MISSING="${_STILL_MISSING}${_STILL_MISSING:+, }$_cname"
         done
         if [ -z "$_STILL_MISSING" ]; then
           ok "auto-repair fixed all required crons"
