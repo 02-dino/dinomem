@@ -72,9 +72,23 @@ note_body_hash() {
 
 # Build the set of REVIEWABLE notes (exist AND not freshly claimed by another).
 reviewable=()
+# is this an in_progress PROJECT note? if so it is the Advancer's lane, not the
+# janitor's. Its body (current_step/resume_state) changes every build turn,
+# which defeats the content-hash guard below and re-fires the review each tick
+# with the same KEEP verdict (spam, confirmed 2026-08-13). The janitor only
+# needs a project note once it is DONE (to verify done_when + retire) or stale
+# (time-based GC) -- never while it is actively advancing.
+is_active_project() {
+  local f="$1" typ st
+  typ=$(grep -E '^type:'   "$f" | head -n1 | sed -E 's/^type:[[:space:]]*//'   | tr -d '\r' | xargs || true)
+  st=$(grep -E '^status:' "$f" | head -n1 | sed -E 's/^status:[[:space:]]*//' | tr -d '\r' | xargs || true)
+  [ "$typ" = "project" ] && [ "$st" = "in_progress" ]
+}
+
 for f in "$MEMORY_DIR"/_note_*.md; do
   [ -f "$f" ] || continue
   is_fresh_claimed "$f" && continue   # actively held -> not the janitor's business now
+  is_active_project "$f" && continue  # in_progress project -> Advancer's lane, skip (body churns, defeats hash)
   reviewable+=("$f")
 done
 
