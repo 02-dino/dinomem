@@ -519,7 +519,13 @@ if [ -d "$SKILL_DIR/skills" ]; then
       # Bake the real workspace path into skill bodies so script-call examples
       # resolve at agent runtime (agent shell has no $WS). Matches the sed pass
       # used for procedures/tools scripts above.
-      find "$_skdst" -name '*.md' -exec sh -c 'for _m; do subst "$_m" DINOMEM_WORKSPACE_PLACEHOLDER "$WS"; done' _ {} +
+      # NB: MUST loop in THIS bash shell, not `-exec sh -c`: `subst` is a bash
+      # FUNCTION (invisible to a fresh sh) and $WS would be unset in the child, so
+      # the old `find -exec sh -c '... subst ... $WS'` silently did nothing AND
+      # printed `subst: command not found`. Iterate in-process instead.
+      while IFS= read -r -d '' _m; do
+        subst "$_m" DINOMEM_WORKSPACE_PLACEHOLDER "$WS"
+      done < <(find "$_skdst" -name '*.md' -print0)
       ok "skills/$_skname/ copied"
     fi
   done
