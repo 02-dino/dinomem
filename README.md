@@ -332,6 +332,25 @@ python3 ~/.openclaw/workspace-myagent/procedures/auto_session_reset.py
 
 After a session is archived and extracted, you'll see new files in `memory/` and entries in `MEMORY.md`.
 
+### Verify it actually works — on demand
+
+Curious whether the memory is real, correct, and reversible? These are the tools to reach for. Nothing here runs in the background you have to watch — you check when *you* want to:
+
+```bash
+# WHAT CHANGED + UNDO IT — every add/update/delete is stamped with a restore_ref
+# (a git HEAD sha), so any memory change is byte-exact reversible.
+python3 procedures/_memory_diff.py             # audit log of recent memory changes
+# each entry carries a restore_ref you can git-restore to undo that exact change
+
+# MEMORY AT A GLANCE — zero-LLM counts/health card (also the Sunday cron)
+python3 scripts/weekly_stats.py --workspace .  # how many facts/insights, recent activity
+```
+
+- **Transparent + reversible.** `_memory_diff.py` is the audit trail: see *what* the memory did, and *undo any change byte-exact* via its `restore_ref`. Nothing is a black box.
+- **Prove recall quality (citable).** Want a hard number on how well the memory answers — on the same benchmark the papers use? Run the LongMemEval-S harness in [`benchmark/longmemeval/`](benchmark/longmemeval/): it measures dinomem on the public LongMemEval-S dataset with the official scorer, in an isolated throwaway workspace (your real memory is never touched). That's the on-demand "does it actually work" proof.
+
+> Deeper introspection — *why* a specific memory is here and what lifecycle state it's in — lives in **dinomem-neuron** (`explain_memory.py`, `lifecycle_state.py`).
+
 ---
 
 
