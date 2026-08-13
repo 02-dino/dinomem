@@ -111,8 +111,17 @@ plan() { printf '  \033[36m[plan]\033[0m %s\n' "$*"; }
 # This helper sidesteps BOTH: no `-i` (write to a temp file, then move), and a
 # literal (non-regex) replace via awk index/substr so the value needs no
 # escaping and no delimiter can collide. Portable across BSD/GNU userland.
+# _SUBST_SEQ: monotonic counter so each subst() call gets a UNIQUE temp name.
+# `$_f.tmp.$$` alone collides when subst is called multiple times on the SAME
+# file within one process (e.g. _same_content substitutes 3 placeholders on one
+# mktemp file) -> awk 'cannot open file' race. $$.$seq is unique per call.
 subst() {
-  _f="$1"; _ph="$2"; _val="$3"; _tmp="$_f.tmp.$$"
+  _f="$1"; _ph="$2"; _val="$3"
+  # Unique temp per call via mktemp (in the SAME dir so the final mv is atomic,
+  # not a cross-filesystem copy). `$_f.tmp.$$` alone collided when subst ran
+  # multiple times on one file within a process (_same_content substitutes 3
+  # placeholders on one mktemp file) -> awk 'cannot open file' race.
+  _tmp="$(mktemp "${_f}.tmp.XXXXXX")" || return 1
   PH="$_ph" VAL="$_val" awk '
     BEGIN { ph=ENVIRON["PH"]; val=ENVIRON["VAL"]; L=length(ph) }
     {
@@ -124,6 +133,83 @@ subst() {
       print out s
     }
   ' "$_f" > "$_tmp" && mv "$_tmp" "$_f"
+}
+# _same_content SRC DST — true (0) if the INSTALLED file already equals what we'd
+# write (source with placeholders substituted). Lets upgrades be content-aware:
+# copy only when the shipped file actually CHANGED, skip when identical. Avoids
+# both the old blind skip-if-exists (upgrades never landed) and a blind --force
+# clobber (would wipe user edits every run). Compares the SUBSTITUTED source vs
+# the installed file so placeholder differences don't cause false "changed".
+_same_content() {
+  local _src="$1" _dst="$2"
+  [ -f "$_dst" ] || return 1
+  local _tmp; _tmp="$(mktemp)" || return 1
+  # Substitute ALL THREE placeholders in ONE awk pass (not 3 subst() calls on the
+  # same temp) so there is no repeated temp-file churn to race the git-autosnapshot
+  # cron on /tmp (which produced cosmetic 'awk: cannot open file' noise). Literal
+  # index/substr replace, no regex, order-independent.
+  W="$WS" S="$SESSIONS_DIR" A="$AGENT_ID" awk '
+    BEGIN {
+      n=3
+      ph[1]="DINOMEM_WORKSPACE_PLACEHOLDER";        val[1]=ENVIRON["W"]
+      ph[2]="DINOMEM_AGENT_SESSIONS_PLACEHOLDER"; val[2]=ENVIRON["S"]
+      ph[3]="DINOMEM_AGENT_ID_PLACEHOLDER";           val[3]=ENVIRON["A"]
+    }
+    {
+      s=$0
+      for (i=1;i<=n;i++) {
+        L=length(ph[i]); out=""
+        while ((p=index(s,ph[i]))>0) { out=out substr(s,1,p-1) val[i]; s=substr(s,p+L) }
+        s=out s
+      }
+      print s
+    }
+  ' "$_src" > "$_tmp" 2>/dev/null
+  if cmp -s "$_tmp" "$_dst"; then rm -f "$_tmp"; return 0; else rm -f "$_tmp"; return 1; fi
+}
+# copy_engine_file REL_PATH — the ONE copy primitive (DRY). Copies $SKILL_DIR/REL
+# -> $WS/REL with placeholder substitution, and decides copy-vs-skip by CONTENT,
+# not mere existence, so re-running the installer actually UPGRADES changed engine
+# files (the whole point) while leaving unchanged ones untouched. --force still
+# forces. Handles dry-run + mkdir parent. This replaces the old per-file
+# skip-if-exists blocks AND is what the auto-discovery loops call, so a NEW engine
+# file ships automatically without editing a hardcoded manifest.
+copy_engine_file() {
+  local _rel="$1" _src _dst
+  _src="$SKILL_DIR/$_rel"; _dst="$WS/$_rel"
+  [ -f "$_src" ] || { warn "source missing: $_rel (skipped)"; return 0; }
+  if [ "$FORCE" = 0 ] && _same_content "$_src" "$_dst"; then
+    skip "$_rel (up-to-date)"
+    return 0
+  fi
+  if [ "$DRY_RUN" = 1 ]; then
+    if [ -f "$_dst" ]; then plan "UPGRADE $_rel (content changed)"; else plan "install $_rel"; fi
+    return 0
+  fi
+  mkdir -p "$(dirname "$_dst")"
+  # Copy + substitute ALL THREE placeholders in ONE awk pass (not 3 subst() calls)
+  # to avoid repeated temp-file churn racing the git-autosnapshot cron on /tmp
+  # (which produced cosmetic 'awk: cannot open file' noise on re-runs). Atomic:
+  # write to a same-dir temp, then mv into place.
+  local _ctmp; _ctmp="$(mktemp "${_dst}.tmp.XXXXXX")" || { warn "mktemp failed for $_rel"; return 1; }
+  W="$WS" S="$SESSIONS_DIR" A="$AGENT_ID" awk '
+    BEGIN {
+      n=3
+      ph[1]="DINOMEM_WORKSPACE_PLACEHOLDER";        val[1]=ENVIRON["W"]
+      ph[2]="DINOMEM_AGENT_SESSIONS_PLACEHOLDER"; val[2]=ENVIRON["S"]
+      ph[3]="DINOMEM_AGENT_ID_PLACEHOLDER";           val[3]=ENVIRON["A"]
+    }
+    {
+      s=$0
+      for (i=1;i<=n;i++) {
+        L=length(ph[i]); out=""
+        while ((p=index(s,ph[i]))>0) { out=out substr(s,1,p-1) val[i]; s=substr(s,p+L) }
+        s=out s
+      }
+      print s
+    }
+  ' "$_src" > "$_ctmp" 2>/dev/null && mv "$_ctmp" "$_dst" || { rm -f "$_ctmp"; warn "copy failed: $_rel"; return 1; }
+  if [ -f "$_dst" ]; then ok "$_rel"; fi
 }
 # run: execute a command, or in --dry-run print it (with an optional label).
 # Usage: run "<human label>" <command> [args...]
@@ -299,7 +385,11 @@ else
   ok "kb/vector_db/ clear"
 fi
 # Existing AGENTS.md memory block
-if [ -f "$WS/AGENTS.md" ] && grep -qF "memory_recall" "$WS/AGENTS.md" 2>/dev/null && ! grep -qF "$BEGIN" "$WS/AGENTS.md" 2>/dev/null; then
+# NB: use the literal marker here, NOT $BEGIN — $BEGIN is defined ~1500 lines
+# below (line ~1875), so referencing it in this preflight crashes under `set -u`
+# with 'BEGIN: unbound variable' — and ONLY on a re-run/upgrade (when AGENTS.md
+# already exists with memory_recall), which is exactly the upgrade path. Literal.
+if [ -f "$WS/AGENTS.md" ] && grep -qF "memory_recall" "$WS/AGENTS.md" 2>/dev/null && ! grep -qF "BEGIN:dinomem" "$WS/AGENTS.md" 2>/dev/null; then
   warn "AGENTS.md has an UNMARKED legacy memory_recall section — it will be absorbed into the managed block (no duplicate left)."
 fi
 # Root files size check (per-file + total)
@@ -422,37 +512,30 @@ for d in procedures tools logs memory memory/peers .memory_archive templates; do
   if [ -d "$WS/$d" ]; then skip "$d/ (exists)"; elif [ "$DRY_RUN" = 1 ]; then plan "create dir $d/"; else mkdir -p "$WS/$d"; ok "$d/"; fi
 done
 
-# ── 2) Copy scripts ───────────────────────────────────────────────────────────
-hr "Copying scripts"
-for f in procedures/_cheap_model.py procedures/git_history.py procedures/session_reset.py procedures/auto_session_reset.py procedures/extract_memory.py procedures/extract_user.py procedures/compile_user.py procedures/migrate_prefilled_memory.py procedures/extract_user_test.py procedures/workspace_backup.py templates/peer_rep.md.tmpl; do
-  dst="$WS/$f"
-  if [ -f "$dst" ] && [ "$FORCE" = 0 ]; then
-    skip "$f (exists, use --force to overwrite)"
-  elif [ "$DRY_RUN" = 1 ]; then
-    plan "copy + substitute placeholders -> $f"
-  else
-    mkdir -p "$(dirname "$dst")"
-    cp "$SKILL_DIR/$f" "$dst"
-    subst "$dst" DINOMEM_WORKSPACE_PLACEHOLDER "$WS"
-    subst "$dst" DINOMEM_AGENT_SESSIONS_PLACEHOLDER "$SESSIONS_DIR"
-    subst "$dst" DINOMEM_AGENT_ID_PLACEHOLDER "$AGENT_ID"
-    ok "$f"
-  fi
-done
-
-for f in procedures/memory_cleanup.py procedures/memory_review.py procedures/cleanup_startup_daily.py; do
-  dst="$WS/$f"
-  if [ -f "$dst" ] && [ "$FORCE" = 0 ]; then
-    skip "$f (exists, use --force to overwrite)"
-  elif [ "$DRY_RUN" = 1 ]; then
-    plan "copy + substitute placeholders -> $f"
-  else
-    cp "$SKILL_DIR/$f" "$dst"
-    subst "$dst" DINOMEM_WORKSPACE_PLACEHOLDER "$WS"
-    subst "$dst" DINOMEM_AGENT_SESSIONS_PLACEHOLDER "$SESSIONS_DIR"
-    subst "$dst" DINOMEM_AGENT_ID_PLACEHOLDER "$AGENT_ID"
-    ok "$f"
-  fi
+# ── 2) Copy engine files ──────────────────────────────────────────────────────
+# AUTO-DISCOVERY + CONTENT-AWARE UPGRADE. Every engine file is copied via
+# copy_engine_file (content-hash: upgrades changed files, skips identical, --force
+# overrides). tools/scripts/procedures are DISCOVERED by glob, not a hardcoded
+# list, so a NEW file added to the repo ships automatically — no manifest to drift.
+# This fixes two shipped bugs: (1) hardcoded manifest omitted route.py + the whole
+# config toolchain + gate_lib.sh -> they never installed; (2) skip-if-exists meant
+# re-running never UPGRADED an existing file. Test files (*_test.py) and the
+# installer/uninstaller are excluded by design.
+hr "Copying engine files"
+# templates (explicit — only the shipped ones)
+if [ -f "$SKILL_DIR/templates/peer_rep.md.tmpl" ]; then copy_engine_file templates/peer_rep.md.tmpl; fi
+# procedures/*.py, tools/*.py, scripts/*.sh, scripts/lib/*.sh — auto-discovered
+for _dir in procedures tools scripts scripts/lib; do
+  [ -d "$SKILL_DIR/$_dir" ] || continue
+  for _src in "$SKILL_DIR/$_dir"/*.py "$SKILL_DIR/$_dir"/*.sh; do
+    [ -f "$_src" ] || continue                      # glob-no-match guard
+    _bn="$(basename "$_src")"
+    case "$_bn" in
+      *_test.py) continue ;;                          # test fixtures don't ship
+      install.sh|uninstall.sh) continue ;;            # the installer itself never self-copies
+    esac
+    copy_engine_file "$_dir/$_bn"
+  done
 done
 
 # ── 2b) Install reset-extract hook ──────────────────────────────────────────
