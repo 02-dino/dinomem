@@ -38,6 +38,12 @@ The user implies reacting to a gateway event / lifecycle moment — "every time"
    Provide `--gate` / `--action` TypeScript snippets; the tool scaffolds the
    vetted template.
 6. **Call `hook_tool.py scaffold/list/remove`**.
+7. **Verify it landed (don't assume):** run
+   `tools/route.py verify hook "<hook dir name>"` — exit 0 = the hook dir exists
+   under `$WS/hooks/<name>/` AND `openclaw hooks list` shows it, exit 1 = missing.
+   Remember a hook often needs `openclaw hooks enable <name>` + a gateway restart
+   before it is live; verify confirms it SCAFFOLDED, enablement is the separate
+   step above. On exit 1, the scaffold did not stick — fix and re-verify.
 
 ## Confirm-before-write
 

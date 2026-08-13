@@ -28,6 +28,12 @@ preferences — e.g. "stop doing X", "always Y", "call me Z", "add a tool for…
    TOOLS.md / USER.md).
 2. **Generate the content** for that file.
 3. **Call `config_tool.py`** to apply it.
+4. **Verify it landed (don't assume):** run
+   `tools/route.py verify root "<a unique phrase from what you wrote>" --file <TARGET.md>`
+   — exit 0 = present, exit 1 = missing/failed. If it failed (or the target was a
+   forbidden managed file), the write did NOT stick: fix and re-verify, don't
+   report success. This is the mechanized post-condition for the route (same
+   test-don't-assume rule the arbiter is built on).
 
 ## Confirm-before-write
 

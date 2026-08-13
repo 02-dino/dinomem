@@ -32,6 +32,12 @@ that cron", "cancel the reminder".
 3. **Check for an existing job with the same name** via
    `cron_tool.py list` before adding — never blind-add (duplicates double-fire).
 4. **Call `cron_tool.py add/list/remove`** with the classified params.
+5. **Verify it landed (don't assume):** after an add, run
+   `tools/route.py verify cron "<job name or id>"` — exit 0 = the job is in
+   `openclaw cron list --all`, exit 1 = it did NOT register. On exit 1 the add
+   silently failed (or hit the recurring-agentTurn refusal): fix and re-verify,
+   don't report success. After a remove, confirm the id is GONE (verify should
+   now exit 1).
 
 ## Confirm-before-write
 

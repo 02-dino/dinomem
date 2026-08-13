@@ -305,13 +305,17 @@ pick_batch() {
   return 0
 }
 
-# defer_if_busy <load_ratio> <ceiling>     # v1  -> 0 run now / 1 defer (skip tick)
+# defer_if_busy [load_ratio] [ceiling]     # v2  -> 0 run now / 1 defer (skip tick)
 # Exit 1 (skip THIS tick) if load > ceiling (CPU backpressure). CONTRACT: MUST
 # NOT defer forever — a saturated box must still eventually run, so pair this
 # with guard_by_interval as a STARVATION FLOOR. fail-open: unknown load -> run
 # now (never let a broken sensor stall a real signal).
+# v2: BOTH args optional. Bare `defer_if_busy` self-senses load via
+# sensor_load_ratio and uses a 1.5x-cores default ceiling, so a caller doesn't
+# have to wire the sensor. Robust under `set -u` (no unbound-var on bare call).
 defer_if_busy() {
-  local load_ratio="$1" ceiling="$2"
+  local load_ratio="${1:-}" ceiling="${2:-}"
+  [ -z "$load_ratio" ] && load_ratio="$(sensor_load_ratio 2>/dev/null || echo 0)"
   case "$load_ratio" in (''|*[!0-9.]*) load_ratio=0 ;; esac
   case "$ceiling" in (''|*[!0-9.]*) ceiling=1.5 ;; esac
   # load_ratio is a float (e.g. 0.83). Compare with awk to avoid bash float math.

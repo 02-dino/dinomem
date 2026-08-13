@@ -20,6 +20,11 @@ If it is an always-true rule/identity/preference -> self-config (root file).
 2. Generate `name`, `description` (the trigger surface: WHEN to read + WHAT it gives, <=1 sentence), and `body` (machine-readable steps).
 3. Decide the trigger: description frontmatter is primary. Add `--trigger "<one line>"` ONLY if the description alone is too weak to fire reliably. Never inline the body into AGENTS.md.
 4. Call `skill_tool.py scaffold <slug> --name .. --desc .. --body .. [--trigger ..]`.
+5. **Verify it landed (don't assume):** run `tools/route.py verify skill "<slug>"`
+   — exit 0 = `SKILL.md` exists under `$WS/skills/<slug>/` AND the slug trigger is
+   present in AGENTS.md (a skill with no trigger never fires), exit 1 = missing.
+   On exit 1 the scaffold or the trigger wire did not stick — fix and re-verify,
+   don't report success.
 
 ## Confirm-before-write
 
