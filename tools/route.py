@@ -221,16 +221,158 @@ SCHEMA = {
     ],
     "skill_split": {"trigger": "one_line AGENTS.md when_to_use OR skill description", "body": "SKILL.md on-demand"},
     "tie_break": "trigger_wins_for_placement; steps go in payload/handler/skill; never duplicate into root",
+
+    # ── UPGRADE 1: TOTAL-COST MODEL (frequency-aware) ─────────────────────────
+    # The naive cost_order above ranks by ALWAYS-ON weight only, which treats every
+    # cron as free. FALSE for a high-frequency FULL-CONTEXT cron: it re-pays the
+    # whole bootstrap-root token load on EVERY fire. A */5 full-context agentTurn
+    # fires ~288x/day; that can EXCEED a one-line AGENTS.md rule's per-turn cost.
+    # So the cheapest surface can FLIP with frequency. Fold fire-rate in:
+    #
+    #   total_daily_context_cost =
+    #       always_on_weight_per_turn * turns_per_day          # root files pay this
+    #     + per_fire_context_weight  * fires_per_day           # crons/hooks pay this
+    #
+    # where per_fire_context_weight = FULL bootstrap load if the cron is full-context
+    # (agentTurn without --light-context), ~0 if light-context / command / event.
+    # Hooks fire on events (usually low-rate, light) => ~0. Skills pay ~1 line
+    # always-on + body only when read => still cheapest for recurring task-class work.
+    "total_cost_model": {
+        "why": "always-on ordering treats crons as free; a high-frequency FULL-CONTEXT cron re-pays bootstrap tokens every fire and can cost MORE than a root rule. Rank by TOTAL daily context tokens, not just always-on.",
+        "formula": "total_daily = always_on_per_turn*turns_per_day + per_fire_context*fires_per_day",
+        "inputs": {
+            "always_on_per_turn": "root file: FULL bootstrap share every turn; skill: ~1 line; cron/hook: 0",
+            "per_fire_context": "full-context agentTurn cron: FULL bootstrap load; light-context/command/system-event cron: ~0; hook: ~0",
+            "fires_per_day": "derive from the schedule: */5=288, */15=96, hourly=24, daily=1, event-driven=estimate event rate",
+            "turns_per_day": "conversation turns the agent takes/day (root files are paid on each)",
+        },
+        "flip_rule": "if a cron is FULL-CONTEXT and HIGH-FREQUENCY (fires_per_day large), its total can exceed a one-line AGENTS.md rule. Then: (a) FIRST try to make it light-context (self-contained prompt) -> per_fire_context ~0 -> cron wins again; (b) only if it genuinely needs root persona/rules every fire AND fires rarely, keep full cron; (c) if it is really an always-on behavior mis-modeled as a cron, a root rule may be cheaper -> reconsider surface.",
+        "primary_still": "context-cost remains the PRIMARY axis; this only refines it with frequency. cost_order stays the default when per_fire_context can be driven to ~0 (which light-context usually achieves).",
+        "g1_safe": "pure token-accounting; no market/TA content.",
+    },
+
+    # ── UPGRADE 2: MULTI-AXIS ARBITRATION (tie-breakers beyond context) ───────
+    # When two surfaces are close on total context cost, break the tie on the
+    # OTHER real costs. These are SECONDARY (never override a clear context win),
+    # applied only on near-ties or as explicit overrides for safety.
+    "secondary_axes": {
+        "order": ["total_context_cost(primary)", "failure_blast_radius", "maintenance_staleness", "discoverability"],
+        "failure_blast_radius": "how bad if this surface's content is wrong/breaks? A malformed root file degrades EVERY turn (high blast radius); a broken cron lane is isolated (gate swallows it). Prefer the surface whose failure is CONTAINED when cost is a tie. HARD OVERRIDE: never place something on a surface where a formatting error bricks bootstrap if an isolated surface fits equally.",
+        "maintenance_staleness": "will this content go stale and need edits? Trigger-gated surfaces (cron/hook/skill) are edited in one place; a rule duplicated across root files rots. Prefer single-home surfaces for churny content.",
+        "discoverability": "will a FUTURE session find/apply it when relevant? A skill's thin trigger + a hook's event binding are self-surfacing; a buried root paragraph may be ignored. Prefer self-surfacing placement for conditional behaviors.",
+        "rule": "these NEVER beat a clear total-context winner; they decide near-ties and can HARD-OVERRIDE only for failure_blast_radius (safety).",
+    },
+
+    # ── UPGRADE 3: SAFETY FLOOR (shared with the cron-gate write-path) ────────
+    # route.py is write-free, but the LEAF tools it selects (config_tool/cron_tool/
+    # hook_tool/skill_tool) DO write. The forbidden-target rule above is today a
+    # PLEA to the LLM. It must be ENFORCED at the leaf, via the SAME version-matched
+    # validated-write floor the cron-gate lib uses. The shared primitive is NOT a
+    # bash file -- it's the local `openclaw config` validator itself (version-matched
+    # by construction, offline-proof). Both the bash gate (gate_lib safe_config_write)
+    # and the Python leaf tools are thin adapters over that same CLI.
+    "safety_floor": {
+        "principle": "version-matched local validator is the unbypassable floor; docs are version-pinned enrichment, never authority.",
+        "enforce_at": "leaf writers (config_tool.py etc.), NOT here -- route.py stays write-free.",
+        "rules": [
+            "config writes go through `openclaw config patch/set` (validated, refuses invalid) then `openclaw config validate`; NEVER raw openclaw.json edits.",
+            "forbidden_write_targets (MEMORY.md, USER.md managed block) are BLOCKED programmatically at the leaf, not just documented -- a write attempt to them errors and redirects to the source.",
+            "schema_field_ok: confirm a config field exists via local `openclaw config.schema.lookup` (version-matched) before writing it.",
+        ],
+        "offline": "the validator ships in the installed binary => works offline, matches the exact installed version. 'latest' docs are never the authority.",
+    },
+
+    # ── UPGRADE 4: VERIFICATION (test-don't-assume, mechanized) ───────────────
+    # The docstring says 'VERIFY it landed' but ships no checker. `route.py verify`
+    # confirms a routed write actually reached its surface, turning the plea into a
+    # mechanized post-condition.
+    "verify_contract": {
+        "why": "don't-trust-this-session: a behavior is durable ONLY if it landed on an inherited surface. Verify on disk, don't assume.",
+        "how": {
+            "cron": "`openclaw cron list --all` shows the new job id / name.",
+            "hook": "the hook dir exists under $WS/hooks/<name>/ and `openclaw hooks list` shows it enabled.",
+            "skill": "SKILL.md exists under $WS/skills/<name>/ AND its one-line trigger is present in AGENTS.md.",
+            "root": "grep the intended content in the target root file (AGENTS/SOUL/IDENTITY/TOOLS.md); confirm it is NOT in a forbidden target.",
+        },
+        "cli": "route.py verify <surface> <needle> [--file F] -> exit 0 if present, 1 if missing.",
+    },
 }
+
+def _verify(surface, needle, target_file=None):
+    """Mechanized 'did the routed write actually land' check (test-don't-assume).
+    Returns (ok: bool, detail: str). No writes; read-only probes. Fail-closed:
+    an unknown surface or a probe error returns ok=False (never a false PASS).
+    """
+    import os, subprocess
+    ws = os.environ.get("OPENCLAW_WORKSPACE", os.path.expanduser("~/.openclaw/workspace"))
+    surface = (surface or "").strip().lower()
+
+    def _run(cmd):
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            return (r.returncode, (r.stdout or "") + (r.stderr or ""))
+        except Exception as e:
+            return (127, str(e))
+
+    if surface == "cron":
+        rc, out = _run(["openclaw", "cron", "list", "--all"])
+        if rc == 127:
+            return False, "openclaw CLI unavailable — cannot verify cron (fail-closed)"
+        return (needle in out), ("found in cron list" if needle in out else "NOT in cron list")
+
+    if surface == "hook":
+        hook_dir = os.path.join(ws, "hooks", needle)
+        exists = os.path.isdir(hook_dir)
+        rc, out = _run(["openclaw", "hooks", "list"])
+        listed = (needle in out) if rc != 127 else exists
+        return (exists and listed), (f"hook dir={exists} listed={listed}")
+
+    if surface == "skill":
+        sk = os.path.join(ws, "skills", needle, "SKILL.md")
+        exists = os.path.isfile(sk)
+        agents = os.path.join(ws, "AGENTS.md")
+        trig = False
+        try:
+            with open(agents, encoding="utf-8") as fh:
+                trig = needle in fh.read()
+        except Exception:
+            trig = False
+        return (exists and trig), (f"SKILL.md={exists} trigger_in_AGENTS={trig}")
+
+    if surface == "root":
+        # forbidden-target guard: verifying a write INTO a forbidden target is itself a failure.
+        base = os.path.basename(target_file or "")
+        if base in SCHEMA["forbidden_write_targets"]:
+            return False, f"{base} is a FORBIDDEN write target — content must live in its source, not here"
+        if not target_file:
+            return False, "root verify needs --file <AGENTS|SOUL|IDENTITY|TOOLS.md>"
+        path = target_file if os.path.isabs(target_file) else os.path.join(ws, target_file)
+        try:
+            with open(path, encoding="utf-8") as fh:
+                present = needle in fh.read()
+            return present, (f"found in {base}" if present else f"NOT in {base}")
+        except Exception as e:
+            return False, f"cannot read {base}: {e}"
+
+    return False, f"unknown surface '{surface}' (expected cron|hook|skill|root)"
+
 
 def main():
     p = argparse.ArgumentParser(description="Surface arbiter for dinomem self-modification intents")
     sub = p.add_subparsers(dest="cmd")
     sub.add_parser("classify")
     sub.add_parser("surfaces")
+    v = sub.add_parser("verify", help="confirm a routed write actually landed on its surface (exit 0=present, 1=missing)")
+    v.add_argument("surface", help="cron|hook|skill|root")
+    v.add_argument("needle", help="job name/id, hook/skill dir name, or content substring")
+    v.add_argument("--file", dest="file", default=None, help="root target file (AGENTS.md/SOUL.md/IDENTITY.md/TOOLS.md)")
     args = p.parse_args()
     if args.cmd == "surfaces":
         print(json.dumps(SURFACES, indent=2))
+    elif args.cmd == "verify":
+        ok, detail = _verify(args.surface, args.needle, args.file)
+        print(json.dumps({"surface": args.surface, "needle": args.needle, "ok": ok, "detail": detail}, indent=2))
+        raise SystemExit(0 if ok else 1)
     else:
         print(json.dumps(SCHEMA, indent=2))
 
