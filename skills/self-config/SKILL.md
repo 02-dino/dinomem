@@ -23,6 +23,9 @@ preferences — e.g. "stop doing X", "always Y", "call me Z", "add a tool for…
 
 ## How
 
+> Writing more than a few lines of new code (a rule block, a helper)? Read the
+> **build-quality** skill first — small, DRY, reused, documented, tested.
+
 1. **Read the routing map:** open `tools/config_tool.py` and read its docstring
    — it maps intents to the target file (SOUL.md / IDENTITY.md / AGENTS.md /
    TOOLS.md / USER.md).

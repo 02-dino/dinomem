@@ -16,6 +16,9 @@ If it is an always-true rule/identity/preference -> self-config (root file).
 
 ## How
 
+> The skill body IS code/procedure you're authoring — read the **build-quality**
+> skill first: small, DRY, reused, documented, tested.
+
 1. Read the routing map: open `tools/skill_tool.py` docstring — slug rules, trigger-vs-body split, confirm policy.
 2. Generate `name`, `description` (the trigger surface: WHEN to read + WHAT it gives, <=1 sentence), and `body` (machine-readable steps).
 3. Decide the trigger: description frontmatter is primary. Add `--trigger "<one line>"` ONLY if the description alone is too weak to fire reliably. Never inline the body into AGENTS.md.

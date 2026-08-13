@@ -23,6 +23,9 @@ that cron", "cancel the reminder".
 
 ## How
 
+> Building a gate script or a non-trivial job prompt? Read the **build-quality**
+> skill first — small, DRY, reused, documented, tested.
+
 1. **Read the routing map:** open `tools/cron_tool.py` and read its
    docstring — it defines the 4 classification axes (schedule kind,
    payload+target, delivery, runtime cost tier) and validation rules.

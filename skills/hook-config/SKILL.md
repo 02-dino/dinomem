@@ -22,6 +22,9 @@ The user implies reacting to a gateway event / lifecycle moment — "every time"
 
 ## How
 
+> Writing gate/action TypeScript for the handler? Read the **build-quality**
+> skill first — small, DRY, reused, documented, tested.
+
 1. **Read the routing map:** open `tools/hook_tool.py` and read its docstring —
    it defines Stage A (surface) and Stage B (the 16 valid events).
 2. **Stage A — pick the surface FIRST:**
