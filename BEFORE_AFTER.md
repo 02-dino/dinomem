@@ -185,7 +185,7 @@ Now **every** investing conversation reflects it — no recall, no prompting, no
 | | ❌ Base alone | ✅ With neuron |
 |-|---------------|----------------|
 | **Patterns** | facts stay separate; you connect them manually | synthesizes the emergent insight and injects it every turn |
-| **Contradictions** | old + new belief both sit in memory | flags the conflict; holds the new one back until resolved |
+| **Contradictions** | old + new belief both sit in memory | recognizes a same-subject *update* as supersession — retires the old belief to history (never deletes it), keeps the current truth; only a *genuine* conflict is flagged and held back until resolved |
 | **Recall** | you ask, it searches | stable patterns are *already present* — no recall needed |
 | **Big tasks** | one long session, easy to lose the thread | becomes a **project**: step-by-step plan it executes across sessions, advancing on its own, pausing for approval on anything risky |
 | **Your documents** | not searchable | RAG over contracts, books, PDFs, scanned pages, images — OCR'd by the agent's own vision model (no GPU) |
