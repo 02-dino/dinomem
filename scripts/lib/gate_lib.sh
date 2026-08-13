@@ -325,6 +325,22 @@ defer_if_busy() {
   return 0                      # idle/enough headroom -> run now
 }
 
+# gate_fire_or_defer [ceiling]     # v1  -> 0 fire now / 1 defer this tick
+# The ONE backpressure decision every gate shares, factored out of the gates so
+# they don't each copy-paste the declare-F guard + sensor + ceiling plumbing.
+# Call it AFTER the gate has already decided it WOULD fire (refire guard passed
+# and STATE_FILE stamped) as the final check. Self-senses load. STARVATION-SAFE
+# by contract: caller must have stamped its interval STATE_FILE first, so the
+# daily floor still elapses no matter how many ticks defer. fail-open: if the
+# sensor is unknown, defer_if_busy returns 0 (headroom) -> we FIRE (never block).
+#
+# CONTRACT of the delegate (empirically pinned, do not "simplify" the polarity):
+#   defer_if_busy  rc 0 = headroom/UNKNOWN -> FIRE ;  rc 1 = over ceiling -> DEFER.
+# So this wrapper is a passthrough of that exit status: rc 0 fire, rc 1 defer.
+gate_fire_or_defer() {
+  defer_if_busy "" "${1:-2.0}"   # rc 0 = fire (headroom/unknown), rc 1 = defer (busy)
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Layer D — safety-floor (version-matched, offline-proof, UNBYPASSABLE).  [v1]
 # ─────────────────────────────────────────────────────────────────────────────
