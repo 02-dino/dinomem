@@ -85,10 +85,26 @@ is_active_project() {
   [ "$typ" = "project" ] && [ "$st" = "in_progress" ]
 }
 
+# SEPARATION OF CONCERNS: the Advancer/Improver/Deleter pipeline is the PROJECT
+# state machine — it owns type: project notes ONLY (Improver/C2 hard-filters to
+# `type: project`; a non-project done note is never verified/deleted by it). So:
+#   - type: project (any status) -> pipeline's lane -> NOT the janitor's work.
+#   - NON-project status: done    -> pipeline orphan -> IS the janitor's work
+#       (daily_note_review Rule 2b retires it with a snapshot). So it MUST stay
+#       reviewable here, otherwise nobody ever fires the turn that retires it.
+# Only project notes are skipped; everything else (incl. non-project done) is
+# reviewable so genuine janitor work still triggers the LLM turn.
+is_pipeline_owned() {
+  local f="$1" typ
+  typ=$(grep -E '^type:' "$f" | head -n1 | sed -E 's/^type:[[:space:]]*//' | tr -d '\r' | xargs || true)
+  [ "$typ" = "project" ] && return 0   # project = pipeline lane; all else is reviewable
+  return 1
+}
+
 for f in "$MEMORY_DIR"/_note_*.md; do
   [ -f "$f" ] || continue
   is_fresh_claimed "$f" && continue   # actively held -> not the janitor's business now
-  is_active_project "$f" && continue  # in_progress project -> Advancer's lane, skip (body churns, defeats hash)
+  is_pipeline_owned "$f" && continue  # project OR done -> pipeline's lane, not the janitor's
   reviewable+=("$f")
 done
 
