@@ -571,13 +571,22 @@ fi
 upsert_cron() {
   local keyword="$1" comment="$2" cron_line="$3" label="$4"
   local existing
-  existing=$(crontab -l 2>/dev/null | grep "$keyword" || true)
+  # AGENT-SCOPED MATCH (multi-agent safety): the crontab is per-USER(root), shared
+  # by every agent on this host. A bare `grep "$keyword"` (e.g. memory_graph.py)
+  # matches EVERY agent's line, so `grep -v` would strip another agent's cron.
+  # Scope the match by the workspace fingerprint ("cd $WS &&"), unique per agent,
+  # and suffix the comment marker with [agent:$AGENT_ID]. Fallback to the old
+  # keyword match if $WS is empty (single-agent buyer path is unaffected).
+  local scope
+  if [ -n "${WS:-}" ]; then scope="cd $WS && .*$keyword"; else scope="$keyword"; fi
+  comment="$comment [agent:${AGENT_ID:-default}]"
+  existing=$(crontab -l 2>/dev/null | grep -E "$scope" || true)
   if [ "$existing" = "$cron_line" ]; then
     skip "$label (exists, up to date)"
   elif [ -n "$existing" ]; then
     if [ "$DRY_RUN" = 1 ]; then plan "update cron: $label"; return; fi
-    # Content differs — replace
-    { crontab -l 2>/dev/null | grep -v "$keyword"; echo "# $comment"; echo "$cron_line"; } | crontab -
+    # Content differs — replace (only THIS agent's line)
+    { crontab -l 2>/dev/null | grep -vE "$scope"; echo "# $comment"; echo "$cron_line"; } | crontab -
     ok "$label (updated)"
   else
     if [ "$DRY_RUN" = 1 ]; then plan "register cron: $label"; return; fi
@@ -724,8 +733,21 @@ if [ "$DO_CRON" = 1 ]; then
   if [ "$DRY_RUN" = 1 ]; then
     plan "register (disabled) Daily Note Review + Pending Note Reminder, then create/extend 'Note Cron Gate' (*/15, zero-LLM)"
   else
-    DINOMEM_WS="$WS" python3 - <<'PYEOF'
+    DINOMEM_AGENT_ID="$AGENT_ID" DINOMEM_WS="$WS" python3 - <<'PYEOF'
 import subprocess, json
+import os as _os
+_DINO_AID = (_os.environ.get('DINOMEM_AGENT_ID','') or '').strip().lower()
+def _dino_name_agent_match(j, name):
+    if j.get('name','').strip().lower() != name.strip().lower():
+        return False
+    jaid = (j.get('agentId') or '')
+    jaid = jaid.strip().lower() if isinstance(jaid, str) else ''
+    # single-agent / legacy fallback: if we don't know our agent id, or the
+    # stored job has no agentId, match by name only (preserves buyer path).
+    if not _DINO_AID or not jaid:
+        return True
+    return jaid == _DINO_AID
+# --dino-agent-match-helper--
 
 def _cron_add_argv(job):
     """Build a flag-based `openclaw cron add` argv from a job dict.
@@ -777,6 +799,9 @@ def _cron_add_argv(job):
         # re-paid on every fire otherwise. Only meaningful for message jobs.
         if pay.get('lightContext'):
             a += ['--light-context']
+    _ta = pay.get('toolsAllow') or job.get('toolsAllow')
+    if _ta:
+        a += ['--tools', ','.join(_ta) if isinstance(_ta, (list, tuple)) else str(_ta)]
     st = job.get('sessionTarget')
     if st in ('main', 'isolated'):
         a += ['--session', st]
@@ -803,7 +828,7 @@ def _cron_verify(name):
         data = json.loads(lr.stdout)
         joblist = data if isinstance(data, list) else (data.get('jobs') if isinstance(data.get('jobs'), list) else (data.get('jobs') or {}).get('jobs', []))
         for j in (joblist or []):
-            if j.get('name','').strip().lower() == name.strip().lower():
+            if _dino_name_agent_match(j, name):
                 return j.get('id','') or 'exists'
     except Exception:
         return ''
@@ -822,7 +847,7 @@ def upsert_selfsched(job, label):
             data = json.loads(lr.stdout)
             joblist = data if isinstance(data, list) else (data.get('jobs') if isinstance(data.get('jobs'), list) else (data.get('jobs') or {}).get('jobs', []))
             for j in (joblist or []):
-                if j.get('name','').strip().lower() == name.strip().lower():
+                if _dino_name_agent_match(j, name):
                     existing_id = j.get('id',''); break
     except Exception:
         existing_id = ''
@@ -861,7 +886,7 @@ def _find_cron(name):
         data = json.loads(lr.stdout)
         joblist = data if isinstance(data, list) else (data.get('jobs') if isinstance(data.get('jobs'), list) else (data.get('jobs') or {}).get('jobs', []))
         for j in (joblist or []):
-            if j.get('name','').strip().lower() == name.strip().lower():
+            if _dino_name_agent_match(j, name):
                 return j.get('id','')
     except Exception:
         return ''
@@ -955,7 +980,7 @@ try:
 except Exception:
     _jl = []
 for _cn in _CANON_BASE:
-    _m = [j for j in (_jl or []) if j.get('name','').strip().lower() == _cn.lower()]
+    _m = [j for j in (_jl or []) if _dino_name_agent_match(j, _cn)]
     if len(_m) <= 1:
         continue
     _m.sort(key=lambda j: (j.get('createdAtMs', 0), j.get('updatedAtMs', 0)), reverse=True)
@@ -1084,8 +1109,21 @@ PYEOF
   if [ "$DRY_RUN" = 1 ]; then
     plan "register/refresh OpenClaw cron: Pending Note Reminder (every 3 days 9:00 local)"
   else
-    python3 - <<'PYEOF'
+    DINOMEM_AGENT_ID="$AGENT_ID" python3 - <<'PYEOF'
 import subprocess, json
+import os as _os
+_DINO_AID = (_os.environ.get('DINOMEM_AGENT_ID','') or '').strip().lower()
+def _dino_name_agent_match(j, name):
+    if j.get('name','').strip().lower() != name.strip().lower():
+        return False
+    jaid = (j.get('agentId') or '')
+    jaid = jaid.strip().lower() if isinstance(jaid, str) else ''
+    # single-agent / legacy fallback: if we don't know our agent id, or the
+    # stored job has no agentId, match by name only (preserves buyer path).
+    if not _DINO_AID or not jaid:
+        return True
+    return jaid == _DINO_AID
+# --dino-agent-match-helper--
 
 def _cron_add_argv(job):
     """Build a flag-based `openclaw cron add` argv from a job dict.
@@ -1137,6 +1175,9 @@ def _cron_add_argv(job):
         # re-paid on every fire otherwise. Only meaningful for message jobs.
         if pay.get('lightContext'):
             a += ['--light-context']
+    _ta = pay.get('toolsAllow') or job.get('toolsAllow')
+    if _ta:
+        a += ['--tools', ','.join(_ta) if isinstance(_ta, (list, tuple)) else str(_ta)]
     st = job.get('sessionTarget')
     if st in ('main', 'isolated'):
         a += ['--session', st]
@@ -1163,7 +1204,7 @@ def _cron_verify(name):
         data = json.loads(lr.stdout)
         joblist = data if isinstance(data, list) else (data.get('jobs') if isinstance(data.get('jobs'), list) else (data.get('jobs') or {}).get('jobs', []))
         for j in (joblist or []):
-            if j.get('name','').strip().lower() == name.strip().lower():
+            if _dino_name_agent_match(j, name):
                 return j.get('id','') or 'exists'
     except Exception:
         return ''
@@ -1182,7 +1223,7 @@ def upsert_selfsched(job, label):
             data = json.loads(lr.stdout)
             joblist = data if isinstance(data, list) else (data.get('jobs') if isinstance(data.get('jobs'), list) else (data.get('jobs') or {}).get('jobs', []))
             for j in (joblist or []):
-                if j.get('name','').strip().lower() == name.strip().lower():
+                if _dino_name_agent_match(j, name):
                     existing_id = j.get('id',''); break
     except Exception:
         existing_id = ''
