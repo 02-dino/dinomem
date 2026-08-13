@@ -109,20 +109,72 @@ def _ids_from_dinotrust_config():
 
 
 def _ids_from_cache_file():
-    """Read ~/.dinomem/owner_ids (installer-written). Fail-open."""
+    """Read the installer-written owner-id cache. Fail-open.
+
+    MULTI-AGENT: ~/.dinomem/owner_ids is HOME-global — one file shared by every
+    agent on the host, so two agents with DIFFERENT owners would clobber each
+    other. Prefer a PER-AGENT file ~/.dinomem/owner_ids.<agentId> (written by the
+    installer with the agent's own owner) whenever DINOMEM_AGENT_ID is set, then
+    fall back to the global file (single-agent hosts, legacy installs). An
+    explicit DINOMEM_OWNER_FILE override still wins over both."""
     try:
-        path = os.path.expanduser(os.environ.get(
-            "DINOMEM_OWNER_FILE", "~/.dinomem/owner_ids"))
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
-                return _parse_id_blob(f.read())
+        override = os.environ.get("DINOMEM_OWNER_FILE", "").strip()
+        candidates = []
+        if override:
+            candidates.append(override)
+        else:
+            aid = (os.environ.get("DINOMEM_AGENT_ID", "") or "").strip().lower()
+            if aid:
+                candidates.append("~/.dinomem/owner_ids." + aid)
+            candidates.append("~/.dinomem/owner_ids")
+        for cand in candidates:
+            path = os.path.expanduser(cand)
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                    ids = _parse_id_blob(f.read())
+                if ids:
+                    return ids
+    except Exception:
+        pass
+    return set()
+
+
+def _agent_specific_cache_ids():
+    """Owner ids from a PER-AGENT cache file ONLY (~/.dinomem/owner_ids.<agentId>
+    or an explicit DINOMEM_OWNER_FILE). Empty if there is no agent-specific file.
+    Kept separate from the global-file read so an agent-specific owner can
+    OUTRANK the host's ambient dinotrust config (see _owner_ids ordering)."""
+    try:
+        override = os.environ.get("DINOMEM_OWNER_FILE", "").strip()
+        if override:
+            p = os.path.expanduser(override)
+            if os.path.exists(p):
+                with open(p, "r", encoding="utf-8", errors="replace") as f:
+                    return _parse_id_blob(f.read())
+            return set()
+        aid = (os.environ.get("DINOMEM_AGENT_ID", "") or "").strip().lower()
+        if aid:
+            p = os.path.expanduser("~/.dinomem/owner_ids." + aid)
+            if os.path.exists(p):
+                with open(p, "r", encoding="utf-8", errors="replace") as f:
+                    return _parse_id_blob(f.read())
     except Exception:
         pass
     return set()
 
 
 def _owner_ids():
-    """Resolve owner ids via the smooth chain (memoized, fail-open)."""
+    """Resolve owner ids via the smooth chain (memoized, fail-open).
+
+    ORDER (multi-agent correct):
+      1. DINOMEM_OWNER_IDS / DINOTRUST_OWNER_IDS env  (explicit, per-process)
+      2. PER-AGENT cache file (owner_ids.<agentId> / DINOMEM_OWNER_FILE) — an
+         agent explicitly configured for a specific owner OUTRANKS the host's
+         ambient dinotrust config, so agent B on a shared host is not silently
+         assigned host-owner A.
+      3. dinotrust owner_ids: from openclaw.json  (host primary owner)
+      4. global ~/.dinomem/owner_ids cache file  (legacy single-agent)
+    """
     global _OWNER_CACHE
     if _OWNER_CACHE is not None:
         return _OWNER_CACHE
@@ -132,9 +184,11 @@ def _owner_ids():
         if not ids:
             ids = _parse_id_blob(os.environ.get("DINOTRUST_OWNER_IDS", ""))
         if not ids:
+            ids = _agent_specific_cache_ids()   # per-agent file beats host config
+        if not ids:
             ids = _ids_from_dinotrust_config()
         if not ids:
-            ids = _ids_from_cache_file()
+            ids = _ids_from_cache_file()        # global file (legacy fallback)
     except Exception:
         ids = set()
     _OWNER_CACHE = ids
