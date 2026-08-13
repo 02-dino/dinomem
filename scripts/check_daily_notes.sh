@@ -35,14 +35,25 @@
 # State = a stamp file holding "<epoch> <hash>" of the last run. Written only when
 # we return 0, so cadence is measured from actual runs, not gate-checks.
 #
+# v3 (this): the work-once/hash/interval guard logic is FACTORED OUT into
+#   gate_lib.sh (guard_composite). This script keeps ONLY the note-selection
+#   filtering (what is reviewable); the fire/skip decision is one guard_composite
+#   call. Behavior is UNCHANGED from v2 — same fire/skip decisions.
+#
 # Cost: pure filesystem scan + cheap hash, zero LLM, zero network.
 
 set -uo pipefail
 
 WS="${OPENCLAW_WORKSPACE:-$HOME/.openclaw/workspace}"
+SCRIPTS_DIR="$WS/scripts"
 MEMORY_DIR="$WS/memory"
-STATE_FILE="$WS/scripts/.check_daily_notes.last_run"
+STATE_FILE="$SCRIPTS_DIR/.check_daily_notes.last_run"
 MIN_INTERVAL_SECS=$(( 24 * 3600 ))  # daily floor for the time-based GC guarantee
+
+# The gate harness primitives (work-once guard + sensors + triggers). Factored out
+# into the shared lib so EVERY lane gets the same fail-open, zero-LLM floor.
+# shellcheck source=lib/gate_lib.sh
+[ -f "$SCRIPTS_DIR/lib/gate_lib.sh" ] && source "$SCRIPTS_DIR/lib/gate_lib.sh"
 
 [ -d "$MEMORY_DIR" ] || exit 1
 
@@ -64,11 +75,8 @@ is_fresh_claimed() {
   [ "$age" -lt "$window" ]                            # 0 (true) = fresh claim -> skip
 }
 
-# content hash of a note EXCLUDING the volatile claim lines, so a claimed_at
-# refresh does not look like a content change.
-note_body_hash() {
-  grep -vE '^claimed_(by|at):' "$1" 2>/dev/null | sha256sum 2>/dev/null | cut -d' ' -f1
-}
+# Note: the claim-excluding content hash now lives in gate_lib.sh (gate__body_hash),
+# used by guard_composite below. It is NOT duplicated here.
 
 # Build the set of REVIEWABLE notes (exist AND not freshly claimed by another).
 reviewable=()
@@ -111,36 +119,13 @@ done
 # Nothing reviewable (no notes, or all are live-claimed) -> nothing to do.
 [ "${#reviewable[@]}" -gt 0 ] || exit 1
 
-# Aggregate content hash over all reviewable notes (order-stable via sort).
-agg_hash=$(
-  for f in "${reviewable[@]}"; do
-    printf '%s %s\n' "$(basename "$f")" "$(note_body_hash "$f")"
-  done | sort | sha256sum | cut -d' ' -f1
-)
-
-# Read prior state: "<epoch> <hash>".
-last_run=0
-last_hash=""
-if [ -f "$STATE_FILE" ]; then
-  read -r last_run last_hash < "$STATE_FILE" 2>/dev/null || true
-  case "$last_run" in (''|*[!0-9]*) last_run=0 ;; esac
-fi
-
-# (A) content changed since last run? (claim refreshes excluded by the hash)
-changed=1
-if [ "$last_run" -gt 0 ] && [ -n "$last_hash" ]; then
-  [ "$agg_hash" != "$last_hash" ] && changed=0
-else
-  changed=0   # never run before -> first run fires
-fi
-
-# (b) daily floor elapsed?
-age=$(( now_epoch - last_run ))
-due=1
-[ "$age" -ge "$MIN_INTERVAL_SECS" ] && due=0
-
-if [ "$changed" -eq 0 ] || [ "$due" -eq 0 ]; then
-  printf '%s %s\n' "$now_epoch" "$agg_hash" > "$STATE_FILE" 2>/dev/null || true
+# Fire decision — work-once guard + interval floor, one call, from gate_lib.sh.
+# guard_composite <state_file> <min_secs> <input...>:
+#   = (content changed since last run? hash excludes claim lines)
+#     AND (interval floor elapsed? — daily here).
+#   Stamps "<epoch> <hash>" on fire only, so cadence is measured from real runs.
+#   Behavior is byte-for-byte what this script's inlined v2 logic did.
+if guard_composite "$STATE_FILE" "$MIN_INTERVAL_SECS" "${reviewable[@]}"; then
   exit 0
 fi
 

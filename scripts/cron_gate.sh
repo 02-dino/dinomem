@@ -46,6 +46,18 @@ set -uo pipefail
 WS="${OPENCLAW_WORKSPACE:-$HOME/.openclaw/workspace}"
 SCRIPTS="$WS/scripts"
 
+# Optionally source the efficiency+safety primitive lib (gate_lib.sh). It is
+# harness sugar: sourcing it exposes sensor_* / trigger_p / pick_batch /
+# defer_if_busy / safe_config_write to any lane that wants adaptive or
+# resource-aware behavior. FALLBACK-SAFE by design: the router keeps its OWN
+# inline trigger() below and every base lane works WITHOUT the lib, so a
+# missing/older lib never breaks the router (base installs that predate the lib
+# still run). Failure to source is swallowed.
+if [ -r "$SCRIPTS/lib/gate_lib.sh" ]; then
+  # shellcheck source=lib/gate_lib.sh
+  source "$SCRIPTS/lib/gate_lib.sh" 2>/dev/null || true
+fi
+
 # Job IDs (env-injected; install.sh substitutes real values). Empty => skip lane.
 ADVANCER_ID="${GATE_ADVANCER_ID:-}"
 IMPROVER_ID="${GATE_IMPROVER_ID:-}"
