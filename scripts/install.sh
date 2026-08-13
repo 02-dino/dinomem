@@ -344,7 +344,12 @@ prefilled_memory_guard() {
   fi
   # strip the boilerplate title line + blank lines; is there real content left?
   local body
-  body=$(grep -vE '^\s*$|^#*\s*MEMORY\.md\s*$' "$mm" 2>/dev/null | head -c 400)
+  # NB: `head -c 400` closes the pipe after 400 bytes; grep then gets SIGPIPE and
+  # exits 141. Under `set -o pipefail` that fails the whole pipeline -> set -e kills
+  # the installer (exit 141) ONLY when MEMORY.md has >400B past the filter (i.e. a
+  # real agent with memory, never a fresh/empty install). The truncation is
+  # intentional, so absorb the pipefail with `|| true`.
+  body=$( { grep -vE '^\s*$|^#*\s*MEMORY\.md\s*$' "$mm" 2>/dev/null || true; } | head -c 400 || true)
   if [ -z "$body" ]; then
     return 0   # empty / template-only -> nothing to protect
   fi
@@ -394,7 +399,7 @@ prerouter_user_hint() {
               /END:dinomem-user-map/{skip=0; next}
               skip==0{print}' "$um" 2>/dev/null \
          | grep -vE '^\s*$|^#|About Your Human|Learn about|What to call|Respect the difference|^\s*[-*]?\s*\*\*(Name|Timezone|Pronouns|Notes|What to call them):\*\*|Context|The more you know' \
-         | head -c 200)
+         | head -c 200 || true)   # head closes pipe -> SIGPIPE upstream; absorb under pipefail
   [ -z "$body" ] && return 0
   warn "Pre-router content detected in USER.md (peer facts outside the managed block)."
   warn "  Not a data-loss risk (compile_user preserves it), but it sits INERT — the"
@@ -659,7 +664,7 @@ if [ "$DO_CRON" = 1 ]; then
   fi
   # 2. dinotrust owner_ids: already in openclaw.json
   if [ -z "$OWNER_IDS_RESOLVED" ] && [ -f "$OPENCLAW_JSON" ]; then
-    _DT_IDS="$(grep -oE 'owner_ids:[^]]*\]?' "$OPENCLAW_JSON" 2>/dev/null | head -1 | grep -oE '[0-9]{4,}' | tr '\n' ',' | sed 's/,$//')"
+    _DT_IDS="$( { grep -oE 'owner_ids:[^]]*\]?' "$OPENCLAW_JSON" 2>/dev/null || true; } | head -1 | grep -oE '[0-9]{4,}' | tr '\n' ',' | sed 's/,$//' || true)"   # head -1 closes pipe -> SIGPIPE; absorb under pipefail
     if [ -n "$_DT_IDS" ]; then
       OWNER_IDS_RESOLVED="$_DT_IDS"
       ok "owner id auto-detected from dinotrust config: $OWNER_IDS_RESOLVED"
