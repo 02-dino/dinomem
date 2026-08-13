@@ -357,6 +357,55 @@ def _verify(surface, needle, target_file=None):
     return False, f"unknown surface '{surface}' (expected cron|hook|skill|root)"
 
 
+def _dup_scan(path, min_run=5):
+    """Advisory copy-paste detector for a just-built script (build-quality DRY
+    floor). Flags a block of >= min_run CONSECUTIVE non-trivial lines that appears
+    2+ times -- the exact anti-pattern that shipped wrong this session (a 16-line
+    gate block pasted across two files). HEURISTIC not proof: misses semantic dup,
+    may flag legit repetition, so it is ADVISORY (a hint, not a verdict). Returns
+    (clean, detail). Read-only; fail-closed (error -> clean=False so a broken scan
+    never falsely reports 'no dup').
+    """
+    import os
+    if not path or not os.path.isfile(path):
+        return False, "cannot read %r (dup-scan needs a real file)" % (path,)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            raw = fh.readlines()
+    except Exception as e:
+        return False, "cannot read %s: %s" % (os.path.basename(path), e)
+    trivial = {"{", "}", "fi", "done", "esac", "end", "else", ")", "do", "then"}
+    norm = []
+    for ln in raw:
+        s = ln.strip()
+        if not s or s.startswith("#") or s.startswith("//") or s in trivial:
+            norm.append(None)
+        else:
+            norm.append(s)
+    n = len(norm)
+    seen = {}
+    dup_at = None
+    for i in range(n - min_run + 1):
+        window = norm[i:i + min_run]
+        if any(w is None for w in window):
+            continue
+        key = "\n".join(window)
+        if key in seen and i - seen[key] >= min_run:
+            dup_at = (seen[key], i)
+            break
+        seen.setdefault(key, i)
+    if dup_at is None:
+        return True, "no duplicated block of >=%d lines found" % min_run
+    a, b = dup_at
+    length = min_run
+    while (a + length < b and b + length < n
+           and norm[a + length] is not None and norm[a + length] == norm[b + length]):
+        length += 1
+    return False, ("ADVISORY: lines %d-%d repeat at %d-%d (%d identical lines) -- "
+                   "factor into ONE shared function and call it (build-quality DRY "
+                   "floor). Heuristic; confirm it's real before refactoring."
+                   % (a+1, a+length, b+1, b+length, length))
+
 def main():
     p = argparse.ArgumentParser(description="Surface arbiter for dinomem self-modification intents")
     sub = p.add_subparsers(dest="cmd")
@@ -366,6 +415,9 @@ def main():
     v.add_argument("surface", help="cron|hook|skill|root")
     v.add_argument("needle", help="job name/id, hook/skill dir name, or content substring")
     v.add_argument("--file", dest="file", default=None, help="root target file (AGENTS.md/SOUL.md/IDENTITY.md/TOOLS.md)")
+    d = sub.add_parser("dup", help="advisory copy-paste scan of a just-built script (build-quality DRY floor; exit 0=clean, 1=dup)")
+    d.add_argument("file", help="path to the script/file you just built")
+    d.add_argument("--min-run", dest="min_run", type=int, default=5, help="min consecutive repeated lines to flag (default 5)")
     args = p.parse_args()
     if args.cmd == "surfaces":
         print(json.dumps(SURFACES, indent=2))
@@ -373,6 +425,10 @@ def main():
         ok, detail = _verify(args.surface, args.needle, args.file)
         print(json.dumps({"surface": args.surface, "needle": args.needle, "ok": ok, "detail": detail}, indent=2))
         raise SystemExit(0 if ok else 1)
+    elif args.cmd == "dup":
+        clean, detail = _dup_scan(args.file, args.min_run)
+        print(json.dumps({"file": args.file, "clean": clean, "detail": detail}, indent=2))
+        raise SystemExit(0 if clean else 1)
     else:
         print(json.dumps(SCHEMA, indent=2))
 
