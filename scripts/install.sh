@@ -81,6 +81,24 @@ skip() { printf '  \033[33m[skip]\033[0m %s\n' "$*"; }
 warn() { printf '  \033[33m[warn]\033[0m %s\n' "$*"; }
 fail() { printf '  \033[31m[fail]\033[0m %s\n' "$*"; exit 1; }
 hr()   { printf '\033[1m== %s ==\033[0m\n' "$*"; }
+# openclaw_running: guarded 'is the gateway up?' probe. `openclaw status` can BLOCK
+# indefinitely when the gateway socket/lock is contended, and under `set -e` a bare
+# call in a preflight `if` FREEZES the whole installer (silent kill by the outer
+# session timeout -> 'base installer exited nonzero' with no error). Wrap it in a
+# hard timeout so a hung/absent gateway degrades to 'not running' instead of hanging.
+# One helper, called everywhere (DRY), so this guarantee holds at all sites.
+openclaw_running() {
+  command -v openclaw >/dev/null 2>&1 || return 1
+  timeout 10 openclaw status >/dev/null 2>&1
+}
+# SUDO: surgical auto-elevation for the FEW steps that genuinely need root (system
+# package installs: python/docker). Empty when already root or when sudo is absent,
+# so it degrades to a bare call (which then warns cleanly instead of silently
+# failing). NEVER used for workspace files / cron / config — those MUST stay owned
+# by the invoking user, so running the whole installer as root is WRONG (root-owned
+# files break the user's gateway). This is the noob-proof middle ground: elevate the
+# 2 package steps automatically, keep everything else as the user.
+SUDO=""; [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1 && SUDO="sudo"
 # plan: in --dry-run, print what WOULD happen instead of doing it.
 plan() { printf '  \033[36m[plan]\033[0m %s\n' "$*"; }
 
@@ -159,12 +177,12 @@ if ! command -v python3 &>/dev/null; then
   if command -v brew &>/dev/null; then
     brew install python3 && ok "python3 installed (brew)" || warn "python3 install failed — install manually: https://python.org"
   elif command -v apt-get &>/dev/null; then
-    apt-get install -y software-properties-common 2>/dev/null
-    add-apt-repository -y ppa:deadsnakes/ppa 2>/dev/null || true
-    apt-get update -q && apt-get install -y python3.12 python3.12-venv python3-pip \
-      && ln -sf /usr/bin/python3.12 /usr/local/bin/python3 \
+    $SUDO apt-get install -y software-properties-common 2>/dev/null
+    $SUDO add-apt-repository -y ppa:deadsnakes/ppa 2>/dev/null || true
+    $SUDO apt-get update -q && $SUDO apt-get install -y python3.12 python3.12-venv python3-pip \
+      && $SUDO ln -sf /usr/bin/python3.12 /usr/local/bin/python3 \
       && ok "python3.12 installed (deadsnakes)" \
-      || warn "python3 install failed — install manually: https://python.org"
+      || warn "python3 install failed — run as a user with sudo, or install manually: https://python.org"
   elif command -v curl &>/dev/null; then
     curl https://pyenv.run | bash \
       && export PATH="$HOME/.pyenv/bin:$PATH" \
@@ -250,7 +268,7 @@ else
   ok "Workspace writable: $WS"
 fi
 # OpenClaw running check
-if command -v openclaw >/dev/null 2>&1 && openclaw status >/dev/null 2>&1; then
+if openclaw_running; then
   ok "OpenClaw running"
 else
   warn "OpenClaw not running or not found — config patches will be skipped. Start OpenClaw and re-run."
@@ -446,7 +464,7 @@ else
   rm -rf "$HOOK_DST"
   cp -r "$HOOK_SRC" "$HOOK_DST"
   ok "hooks/dinomem-reset-extract/ copied"
-  if command -v openclaw >/dev/null 2>&1 && openclaw status >/dev/null 2>&1; then
+  if openclaw_running; then
     openclaw hooks enable dinomem-reset-extract >/dev/null 2>&1 \
       && ok "dinomem-reset-extract hook enabled (restart OpenClaw to activate)" \
       || warn "openclaw hooks enable failed — run manually: openclaw hooks enable dinomem-reset-extract"
@@ -469,7 +487,7 @@ else
   rm -rf "$HOOK2_DST"
   cp -r "$HOOK2_SRC" "$HOOK2_DST"
   ok "hooks/dinomem-open-notes/ copied"
-  if command -v openclaw >/dev/null 2>&1 && openclaw status >/dev/null 2>&1; then
+  if openclaw_running; then
     openclaw hooks enable dinomem-open-notes >/dev/null 2>&1 \
       && ok "dinomem-open-notes hook enabled (restart OpenClaw to activate)" \
       || warn "openclaw hooks enable failed — run manually: openclaw hooks enable dinomem-open-notes"
@@ -2042,7 +2060,7 @@ fi
 # gap is loud. Required = Note Cron Gate + Daily Note Review (the janitor spine).
 # Pending Note Reminder is recommended-not-required (a reminder, not the lifecycle).
 REQUIRED_CRON_GAP=0
-if command -v openclaw >/dev/null 2>&1 && openclaw status >/dev/null 2>&1; then
+if openclaw_running; then
   hr "Cron self-check"
   _CRON_LIST="$(openclaw cron list --all --json 2>/dev/null || echo '[]')"
   _MISSING_REQUIRED=""
@@ -2101,7 +2119,7 @@ fi
 # Assert eligibility via `hooks check --json` (grep on the human table is
 # unreliable: emoji wrap splits names). On failure, fall back to installing the
 # hook pack into the always-scanned global ~/.openclaw/hooks/<name>/ and re-enable.
-if command -v openclaw >/dev/null 2>&1 && openclaw status >/dev/null 2>&1; then
+if openclaw_running; then
   hr "Hook liveness self-check"
   GLOBAL_HOOKS_DIR="${OPENCLAW_DIR:-$HOME/.openclaw}/hooks"
   for _hk in dinomem-reset-extract dinomem-open-notes; do
