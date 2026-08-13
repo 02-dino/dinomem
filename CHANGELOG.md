@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.4.3 — 2026-08-13
+
+**Memory-search reliability: graceful embedding fallback.**
+### Fixed
+- **`memory_search` no longer hard-fails when the TEI embed endpoint blips.** The installer wired `memorySearch` to the local TEI server (`openai-compatible` @ `localhost:8080`) but set no `fallback`, so any transient TEI failure/timeout (Docker hiccup, health-check stall, cron reindex) exceeded OpenClaw's hard 15s cap and killed the *entire* search — an all-or-nothing failure users hit repeatedly. Fix: set `memorySearch.fallback: "local"` so a TEI blip degrades to an in-process local embedder (node-llama-cpp, no network/Docker dep) instead of failing. First fallback cold-loads the default GGUF (~300MB) then is instant; the primary TEI still serves the normal path.
+  - Fresh installs now write `fallback: "local"`.
+  - **Idempotent top-up**: existing `openai-compatible` installs missing the field get it added on re-run (skipped custom providers untouched).
+  - `references/openclaw-config-snippet.json5` updated to match.
+
 ## 1.4.2 — 2026-08-11
 
 **Install-reliability patch — the real fix for the cron `--json: command not found` error-loop.**

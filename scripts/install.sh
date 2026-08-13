@@ -1659,9 +1659,19 @@ elif mem_search.get("provider") != "openai-compatible":
         "provider": "openai-compatible",
         "model": "intfloat/multilingual-e5-small",
         "remote": {"baseUrl": "http://localhost:8080/v1"},
+        # Reliability: TEI embed blip/timeout -> in-process local embedder
+        # instead of hard-failing the whole search (avoids repeat 15s timeouts).
+        "fallback": "local",
         "query": {"hybrid": {"vectorWeight": 0.7, "textWeight": 0.3}},
     }
     changed.append("memorySearch -> TEI openai-compatible (localhost:8080)")
+elif not mem_search.get("fallback"):
+    # Existing openai-compatible install missing the reliability fallback:
+    # top it up idempotently so a TEI blip degrades to the local embedder
+    # instead of hard-failing memory_search.
+    mem_search["fallback"] = "local"
+    defaults["memorySearch"] = mem_search
+    changed.append("memorySearch.fallback -> local (reliability top-up)")
 
 # tools.sessions.visibility -> all (cross-agent sessions_send/sessions_history)
 # Default "tree" only covers current session + spawned subagents — blocks cross-agent calls.

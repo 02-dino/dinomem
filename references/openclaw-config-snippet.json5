@@ -93,6 +93,9 @@
         remote: {
           baseUrl: "http://localhost:8080/v1",
         },
+        // Reliability: if the TEI embed endpoint blips/times out, fall back to
+        // an in-process local embedder instead of hard-failing the whole search.
+        fallback: "local",
         // Hybrid search: 70% vector + 30% text (BM25-style)
         query: {
           hybrid: {
