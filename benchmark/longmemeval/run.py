@@ -235,13 +235,16 @@ def _stamp_md(arm, mode, n, metrics, dataset_info, answer_model, judge_model,
         f"- **Official leaderboard / paper:** {LEADERBOARD}",
         "",
         "> Number is comparable to published LongMemEval-S results ONLY when dataset "
-        "line + judge (gpt-4o-class) + hypothesis format match the convention. "
+        "line + a frontier-class judge + hypothesis format match the convention "
+        "(gpt-4o was the reference judge as of 2024; use whatever current frontier "
+        "model matches the convention when you run). "
         "A non-canonical judge makes this directional, not leaderboard-canonical.",
         "",
     ]
     if not metrics.get("canonical_judge"):
         lines.insert(3, "> ⚠️ **Non-canonical judge** — directional number, not "
-                        "leaderboard-canonical. Use a gpt-4o-class judge for a citable figure.")
+                        "leaderboard-canonical. Use a current frontier-class judge "
+                        "(gpt-4o-class or better) for a citable figure.")
     return "\n".join(lines)
 
 
