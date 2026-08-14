@@ -1,0 +1,77 @@
+{
+  "judge_model": "stub",
+  "judge_stamped_as": "stub",
+  "canonical_judge": false,
+  "n_graded": 8,
+  "n_judge_error": 0,
+  "overall_accuracy": 0.625,
+  "task_averaged_accuracy": 0.7,
+  "per_category": {
+    "single-session-user": {
+      "accuracy": null,
+      "n": 0
+    },
+    "single-session-preference": {
+      "accuracy": null,
+      "n": 0
+    },
+    "single-session-assistant": {
+      "accuracy": null,
+      "n": 0
+    },
+    "multi-session": {
+      "accuracy": null,
+      "n": 0
+    },
+    "temporal-reasoning": {
+      "accuracy": null,
+      "n": 0
+    },
+    "knowledge-update": {
+      "accuracy": null,
+      "n": 0
+    },
+    "longitudinal-stable": {
+      "accuracy": 1.0,
+      "n": 3
+    },
+    "longitudinal-superseding": {
+      "accuracy": 0.4,
+      "n": 5
+    }
+  },
+  "abstention_accuracy": null,
+  "abstention_n": 0,
+  "results_file": "/root/.openclaw/workspace-analyst/github/dinomem/benchmark/longitudinal/results/rag_d8_hyp.jsonl.eval-results-stub",
+  "retrieval": {
+    "attributable_questions": 0,
+    "recall_at_k": null,
+    "precision_at_k": null,
+    "avg_retrieved_count": 8.0,
+    "note": "recall/precision over questions with BOTH gold answer_session_ids and engine session attribution; null = engine surfaces no session-level attribution (e.g. base distilled-memory recall)"
+  },
+  "cost": {
+    "avg_context_chars": 332.5,
+    "avg_prompt_tokens": null,
+    "avg_completion_tokens": null,
+    "avg_total_tokens": null,
+    "sum_total_tokens": null,
+    "tokens_measured": 0
+  },
+  "latency": {
+    "avg_recall_ms": 24029.425,
+    "avg_answer_ms": 0.1125
+  },
+  "storage": {
+    "total_bytes": 37031,
+    "memory_bytes": 0,
+    "rag_index_bytes": 37031
+  },
+  "aux_inputs": {
+    "retrieval_log": "/root/.openclaw/workspace-analyst/github/dinomem/benchmark/longitudinal/results/rag_d8_hyp.jsonl.retrieval.jsonl",
+    "gold_dir": "/tmp/dinomem_lab_1bpwquo8/sessions",
+    "lab": "/tmp/dinomem_lab_1bpwquo8",
+    "telemetry_questions": 8,
+    "gold_questions": 8
+  }
+}

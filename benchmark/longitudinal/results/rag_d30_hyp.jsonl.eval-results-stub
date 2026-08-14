@@ -1,0 +1,8 @@
+{"question_id": "birthplace__d30", "hypothesis": "By the way, I was born in Berlin.", "autoeval_label": {"model": "stub", "label": true}}
+{"question_id": "sister_name__d30", "hypothesis": "I called my sister Lena today, we talked for an hour.", "autoeval_label": {"model": "stub", "label": true}}
+{"question_id": "first_car__d30", "hypothesis": "I still remember my first car, a red Volkswagen Golf.", "autoeval_label": {"model": "stub", "label": true}}
+{"question_id": "job__d30", "hypothesis": "Update on work: I'm now working as a barista.", "autoeval_label": {"model": "stub", "label": false}}
+{"question_id": "city__d30", "hypothesis": "I just moved \u2014 I'm living in Berlin now.", "autoeval_label": {"model": "stub", "label": false}}
+{"question_id": "pet__d30", "hypothesis": "Pet update: I have two cats, Momo and Biscuit.", "autoeval_label": {"model": "stub", "label": false}}
+{"question_id": "relationship__d30", "hypothesis": "Update on work: I'm now working as a barista.", "autoeval_label": {"model": "stub", "label": false}}
+{"question_id": "diet__d30", "hypothesis": "Food-wise, I've switched \u2014 I'm vegetarian now.", "autoeval_label": {"model": "stub", "label": false}}

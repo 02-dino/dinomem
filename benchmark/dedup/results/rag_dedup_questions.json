@@ -1,0 +1,32 @@
+[
+  {
+    "question_id": "dog_name__probe",
+    "question": "What is my dog's name?",
+    "answer": "Biscuit",
+    "question_type": "dedup-recall"
+  },
+  {
+    "question_id": "home_city__probe",
+    "question": "Which city do I live in?",
+    "answer": "Porto",
+    "question_type": "dedup-recall"
+  },
+  {
+    "question_id": "job_role__probe",
+    "question": "What do I do for work?",
+    "answer": "data scientist",
+    "question_type": "dedup-recall"
+  },
+  {
+    "question_id": "fav_drink__probe",
+    "question": "What is my favorite drink?",
+    "answer": "green tea",
+    "question_type": "dedup-recall"
+  },
+  {
+    "question_id": "sibling__probe",
+    "question": "What is my brother's name?",
+    "answer": "Marco",
+    "question_type": "dedup-recall"
+  }
+]
