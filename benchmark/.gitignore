@@ -1,3 +1,19 @@
-*/results/
+# Benchmark artifact hygiene.
+# Intermediate + stub run artifacts are REGENERATED (not source) — ignore them.
+# But the FINAL, citable reports (*.md) are committed into the repo so the
+# published result is versioned + reviewable. See per-line rules below.
+
 __pycache__/
 *.pyc
+specs/
+
+# --- results/: ignore generated intermediates, KEEP final reports + provenance ---
+*/results/*
+# un-ignore the citable outputs (negations must come AFTER the broad rule):
+!*/results/.gitkeep
+!*/results/PROVENANCE.md
+!*/results/*.md
+# belt-and-suspenders: never commit stub/eval intermediates even if *.md-adjacent
+*/results/*.eval-results-stub
+*/results/*.jsonl
+*/results/*_hyp.jsonl.log

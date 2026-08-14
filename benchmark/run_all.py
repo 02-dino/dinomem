@@ -46,6 +46,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -256,12 +257,26 @@ def run(args):
         # Only Phase 1 runner supports a cost estimate; call it per arm.
         ph = next((p for p in PHASES if p["id"] == "1"), None)
         est = []
+        total_tokens = 0
         for arm in [a for a in ph["arms"] if (not args.arms or a in args.arms.split(","))]:
             cmd = [sys.executable, HERE / ph["runner"], *_common_args(args, arm),
                    *ph.get("extra", []), "--estimate-only"]
             r = _sh(cmd, args.timeout)
-            est.append({"arm": arm, "estimate": _json_tail(r.stdout) or r.stdout[-400:]})
-        print(json.dumps({"ok": True, "estimate_only": True, "phase1": est}, indent=2))
+            tail = _json_tail(r.stdout) or r.stdout[-400:]
+            # TOKEN-first: sum est_total_tokens across arms (the real cost on subs).
+            # tail is a JSON-string fragment (run.py emits the estimate pre-serialized),
+            # so scrape the field directly rather than json.loads the partial object.
+            m = re.search(r'"est_total_tokens":\s*(\d+)', tail or "")
+            if m:
+                total_tokens += int(m.group(1))
+            est.append({"arm": arm, "estimate": tail})
+        # Phase-1 only; note this is NOT the whole program's token cost.
+        print(json.dumps({"ok": True, "estimate_only": True, "phase1": est,
+                          "phase1_total_tokens_all_arms": total_tokens,
+                          "scope_note": "TOKENS are the headline cost on subscription plans. "
+                                        "This sum covers PHASE 1 (LongMemEval) ONLY across the "
+                                        "selected arms; the full 13-phase program runs many more."},
+                         indent=2))
         return {"ok": True, "estimate_only": True}
 
     if not args.answer_model and any(a in ("base", "neuron") for _, arms in sel for a in arms):

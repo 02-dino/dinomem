@@ -113,31 +113,47 @@ def _price(model: str) -> float:
 
 
 def cost_estimate(n: int, answer_model: str, judge_model: str) -> dict:
-    ans_cost = n * EST_ANSWER_TOKENS / 1000.0 * _price(answer_model)
-    judge_cost = n * EST_JUDGE_TOKENS / 1000.0 * _price(judge_model)
+    # TOKEN-FIRST: on subscription plans the $ is meaningless (flat fee), so the
+    # real, provider-agnostic currency is TOKENS. Tokens are the headline; the $
+    # is a best-effort footnote only (accurate only on metered/pay-go providers).
+    ans_tokens = n * EST_ANSWER_TOKENS
+    judge_tokens = n * EST_JUDGE_TOKENS
+    total_tokens = ans_tokens + judge_tokens
+    ans_cost = ans_tokens / 1000.0 * _price(answer_model)
+    judge_cost = judge_tokens / 1000.0 * _price(judge_model)
     total = ans_cost + judge_cost
     return {
         "n_questions": n,
         "answer_model": answer_model or "gateway-default",
         "judge_model": judge_model or "gateway-default",
+        # --- token-first headline (provider-agnostic; the real cost on subs) ---
+        "est_answer_tokens": ans_tokens,
+        "est_judge_tokens": judge_tokens,
+        "est_total_tokens": total_tokens,
+        # --- $ footnote (metered providers only; ignore on flat-fee subs) ---
         "est_answer_usd": round(ans_cost, 3),
         "est_judge_usd": round(judge_cost, 3),
         "est_total_usd_low": round(total * 0.6, 2),
         "est_total_usd_high": round(total * 1.8, 2),
-        "note": "ROUGH estimate from token heuristics + indicative prices; real "
-                "bill depends on your provider. Prints before any spend.",
+        "note": "TOKEN-first estimate (est_total_tokens = the real cost on "
+                "subscription plans). $ figures are a ROUGH footnote from "
+                "indicative metered prices; ignore on flat-fee subs. Prints "
+                "before any spend.",
     }
 
 
 def print_cost(est: dict):
     print("\n=== COST ESTIMATE (before any spend) ===", file=sys.stderr)
-    print(f"  questions:     {est['n_questions']}", file=sys.stderr)
-    print(f"  answer model:  {est['answer_model']}", file=sys.stderr)
-    print(f"  judge model:   {est['judge_model']}", file=sys.stderr)
-    print(f"  est. answer $: {est['est_answer_usd']}", file=sys.stderr)
-    print(f"  est. judge  $: {est['est_judge_usd']}", file=sys.stderr)
-    print(f"  EST. TOTAL:    ${est['est_total_usd_low']}–${est['est_total_usd_high']} "
-          f"(rough)", file=sys.stderr)
+    print(f"  questions:      {est['n_questions']}", file=sys.stderr)
+    print(f"  answer model:   {est['answer_model']}", file=sys.stderr)
+    print(f"  judge model:    {est['judge_model']}", file=sys.stderr)
+    # TOKENS = the headline (real cost on subscription plans).
+    print(f"  est. answer tok:{est['est_answer_tokens']:>10,}", file=sys.stderr)
+    print(f"  est. judge  tok:{est['est_judge_tokens']:>10,}", file=sys.stderr)
+    print(f"  EST. TOTAL TOK: {est['est_total_tokens']:>10,}", file=sys.stderr)
+    # $ = footnote only (metered providers; ignore on flat-fee subs).
+    print(f"  ($ footnote:    ${est['est_total_usd_low']}–${est['est_total_usd_high']} "
+          f"metered-only, ignore on subs)", file=sys.stderr)
     print("========================================\n", file=sys.stderr)
 
 
