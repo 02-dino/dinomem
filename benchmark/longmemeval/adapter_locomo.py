@@ -62,9 +62,14 @@ from pathlib import Path
 # SHA (never a moving branch) so the fetched bytes are reproducible. If the SHA is
 # later confirmed, set EXPECTED_SHA256 to hard-verify like adapter.py does.
 LOCOMO_REPO = "snap-research/locomo"
-LOCOMO_REVISION = "main"  # TODO(pin): replace with a commit SHA once confirmed
+# Pinned to the last commit that touched data/locomo10.json (2024-08-10,
+# "Cleaned and update QA code"), hard-verified by sha256 below. A commit SHA is
+# immutable, so the raw fetch is reproducible — same integrity discipline as
+# adapter.py's LongMemEval pin. Confirmed via GitHub commits API + downloaded +
+# hashed 2026-08-14 (2805274 bytes, 10 conversations, conv0=199 QAs).
+LOCOMO_REVISION = "cbfbc1dba6bc53d00625212a0f22d55ffee7c1fc"
 LOCOMO_FILE = "data/locomo10.json"
-EXPECTED_SHA256 = None  # set to hard-verify once a commit SHA is pinned
+EXPECTED_SHA256 = "79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4"
 RESOLVE_URL = (
     f"https://raw.githubusercontent.com/{LOCOMO_REPO}/{LOCOMO_REVISION}/{LOCOMO_FILE}"
 )
