@@ -102,6 +102,7 @@ def fetch(out: Path, revision: str = HF_REVISION) -> dict:
         "repo": HF_REPO,
         "revision": revision,
         "file": HF_FILE,
+        "path": str(out),
         "sha256": digest,
         "size": size,
         "hash_verified": verified,
@@ -159,7 +160,8 @@ def _iso(ts) -> str:
     return str(ts)
 
 
-def emit_archive(sample: dict, lab_dir: Path, index: int) -> dict:
+def emit_archive(sample: dict, lab_dir: Path, index: int,
+                 sessions_dir: Path | None = None) -> dict:
     """Write ONE question's haystack_sessions as a dinomem session archive .jsonl
     into <lab_dir>/sessions/, named to match extract_memory's glob
     (*.archived.<iso>.jsonl). Returns {path, sessions, turns, question_id}.
@@ -179,7 +181,11 @@ def emit_archive(sample: dict, lab_dir: Path, index: int) -> dict:
                        or sample.get("answer_sessions") or [])
     qid = sample.get("question_id", f"idx{index}")
 
-    sess_dir = lab_dir / "sessions"
+    # extract_memory.py reads a SPECIFIC SESSIONS_DIR (real layout:
+    # <lab>/agents/<agent>/sessions). The runner passes it via --sessions-dir so
+    # the emitted archive lands exactly where extract globs; without it we fall
+    # back to the flat <lab>/sessions convention (older adapter behavior).
+    sess_dir = Path(sessions_dir) if sessions_dir else (lab_dir / "sessions")
     sess_dir.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y-%m-%dT%H-%M-%S", time.gmtime())
     out = sess_dir / f"{qid}.archived.{stamp}.jsonl"
@@ -201,6 +207,14 @@ def emit_archive(sample: dict, lab_dir: Path, index: int) -> dict:
         emitted_sess_ids.append(sid)
         if not isinstance(sess, list):
             continue
+        # Per-session boundary marker so extract_memory's chunk splitter can break
+        # the (single) archive on real session edges instead of collapsing all
+        # haystack sessions into one oversized chunk. extract accepts type
+        # 'session_start' (and 'session') as a boundary.
+        lines.append(json.dumps({
+            "type": "session_start", "session_idx": si, "session_id": sid,
+            "timestamp": _iso(sdate),
+        }))
         for turn in sess:
             if not isinstance(turn, dict):
                 continue
@@ -276,6 +290,9 @@ def main() -> None:
     pe.add_argument("--dataset", required=True)
     pe.add_argument("--index", type=int, default=0)
     pe.add_argument("--lab", required=True)
+    pe.add_argument("--sessions-dir", default=None,
+                    help="exact dir to write the archive into (matches "
+                         "extract_memory's SESSIONS_DIR); default <lab>/sessions")
     pe.add_argument("--json", action="store_true")
 
     ps = sub.add_parser("schema", help="inspect one sample's schema")
@@ -296,7 +313,8 @@ def main() -> None:
         data = load_dataset(Path(args.dataset))
         if not 0 <= args.index < len(data):
             _fail(f"index {args.index} out of range (0..{len(data)-1})")
-        info = emit_archive(data[args.index], Path(args.lab), args.index)
+        info = emit_archive(data[args.index], Path(args.lab), args.index,
+                            sessions_dir=Path(args.sessions_dir) if args.sessions_dir else None)
         info["smoke"] = _smoke_validate(Path(info["path"]))
         print(json.dumps(info, indent=2) if args.json else
               f"emitted {info['path']} ({info['sessions']} sessions, "

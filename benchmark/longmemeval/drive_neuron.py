@@ -196,6 +196,12 @@ def drive(ws: Path, sandbox_root: Path, timeout: int, review_max_loops: int,
     env["DINOMEM_WORKSPACE"] = str(ws)
     env["OPENCLAW_WORKSPACE"] = str(ws)
     env["PYTHONUNBUFFERED"] = "1"
+    # LongMemEval packs a whole multi-session haystack into ONE archive, so the
+    # extraction LLM must emit a much larger JSON than a normal incremental
+    # session. extract_memory's default LLM_MAX_TOKENS=3000 truncates that JSON
+    # mid-string -> parse fail -> 0 items -> false no_base_memory bail. Give the
+    # pipeline a haystack-sized budget (overridable from the outer env).
+    env.setdefault("LLM_MAX_TOKENS", os.environ.get("LLM_MAX_TOKENS", "16000"))
 
     stages: list[dict] = []
 

@@ -738,8 +738,10 @@ def extract_single_archive_content(filename):
                     current_chunk.append(entry)
                     current_chars += len(entry)
                 continue
-            # Session boundary marker — split chunk here if over limit
-            if entry_type == 'session_start' and current_chars >= ARCHIVE_CHUNK_MAX_CHARS:
+            # Session boundary marker — split chunk here if over limit. Accept
+            # both 'session_start' and the archive header type 'session' as a
+            # boundary (different emitters use different names).
+            if entry_type in ('session_start', 'session') and current_chars >= ARCHIVE_CHUNK_MAX_CHARS:
                 if current_chunk:
                     chunks.append("".join(current_chunk))
                 current_chunk = []
@@ -758,6 +760,14 @@ def extract_single_archive_content(filename):
                 entry = f"[{role.upper()}]: {text.strip()}\n\n"
                 current_chunk.append(entry)
                 current_chars += len(entry)
+                # HARD size cap: never let a boundary-marker-less archive (or one
+                # giant real session) collapse into a single oversized chunk that
+                # blows the LLM prompt (ARG_MAX / empty reply -> silent 0 items).
+                # Force a mid-session split once we exceed the limit.
+                if current_chars >= ARCHIVE_CHUNK_MAX_CHARS:
+                    chunks.append("".join(current_chunk))
+                    current_chunk = []
+                    current_chars = 0
         if current_chunk:
             chunks.append("".join(current_chunk))
         return chunks if chunks else []
@@ -785,6 +795,13 @@ def process_batch_archives(archive_filenames):
     if not LLM_ENABLED:
         return []
     # Build combined content with clear archive separators
+    # A single archive can split into more than BATCH_MAX_CHARS worth of chunks
+    # (a long session, or a benchmark haystack packed into one file). We must NOT
+    # rejoin all chunks and drop the archive when the total exceeds the batch cap
+    # -- that silently loses ALL its memory (0 items, rc=0, no error). Instead cap
+    # each archive to BATCH_MAX_CHARS worth of LEADING chunks (chunk-granular), so
+    # an oversized archive still contributes its first chunks instead of zero, and
+    # always take at least one chunk so a huge first archive is never dropped.
     sections = []
     total_chars = 0
     included = []
@@ -792,11 +809,18 @@ def process_batch_archives(archive_filenames):
         chunks = extract_single_archive_content(filename)
         if not chunks:
             continue
-        content = "".join(chunks)
-        if total_chars + len(content) > BATCH_MAX_CHARS:
+        if total_chars >= BATCH_MAX_CHARS:
             break
+        taken = []
+        for ch in chunks:
+            if taken and total_chars + len(ch) > BATCH_MAX_CHARS:
+                break
+            taken.append(ch)
+            total_chars += len(ch)
+            if total_chars >= BATCH_MAX_CHARS:
+                break
+        content = "".join(taken)
         sections.append(f"=== ARCHIVE: {filename} ===\n{content}\n=== END: {filename} ===\n")
-        total_chars += len(content)
         included.append(filename)
     if not sections:
         return []

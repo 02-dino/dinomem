@@ -98,10 +98,11 @@ def _log(msg: str):
     print(f"[run] {msg}", file=sys.stderr)
 
 
-def _sh(cmd: list[str], timeout: int, capture=True) -> subprocess.CompletedProcess:
+def _sh(cmd: list[str], timeout: int, capture=True,
+        env: dict | None = None) -> subprocess.CompletedProcess:
     _log("$ " + " ".join(str(c) for c in cmd))
     return subprocess.run([str(c) for c in cmd], timeout=timeout,
-                          capture_output=capture, text=True)
+                          capture_output=capture, text=True, env=env)
 
 
 def _price(model: str) -> float:
@@ -298,6 +299,8 @@ def main():
     ap.add_argument("--keep-lab", action="store_true", help="do not teardown the lab (debug)")
     ap.add_argument("--source", default=os.environ.get("DINOMEM_WORKSPACE", ""),
                     help="installed dinomem workspace (source of procedures/tools)")
+    ap.add_argument("--agent-id", default=os.environ.get("DINOMEM_BENCH_AGENT_ID", "analyst"),
+                    help="agent id for the lab workspace layout + neuron overlay (default: analyst)")
     ap.add_argument("--timeout", type=int, default=900)
     ap.add_argument("--estimate-only", action="store_true",
                     help="print the cost estimate and EXIT (no lab, no spend).")
@@ -433,7 +436,21 @@ def main():
             # {ws} = the workspace-<agent> dir (correct --workspace for the installer);
             # {lab} = the sandbox root. Support both tokens.
             ov_cmd = args.overlay_cmd.replace("{ws}", ws).replace("{lab}", lab)
-            ov = _sh(["bash", "-c", ov_cmd], args.timeout)
+            # CONFIG ISOLATION (critical): the neuron installer patches an
+            # openclaw.json (plugins.load.paths / plugins.entries.*.config.
+            # workspaceDir) and defaults to ${OPENCLAW_CONFIG:-$HOME/.openclaw/
+            # openclaw.json} -- i.e. the caller's REAL config. Left unsandboxed it
+            # writes LAB-TEMP paths into the real config; when the lab is torn down
+            # those dangling paths crash-loop the user's gateway (exit 78). Point
+            # the installer at a LAB-LOCAL config/home so every config write stays
+            # inside the sandbox and vanishes with it.
+            lab_ocdir = os.path.join(lab, ".openclaw")
+            os.makedirs(lab_ocdir, exist_ok=True)
+            ov_env = dict(os.environ)
+            ov_env["HOME"] = lab
+            ov_env["OPENCLAW_DIR"] = lab_ocdir
+            ov_env["OPENCLAW_CONFIG"] = os.path.join(lab_ocdir, "openclaw.json")
+            ov = _sh(["bash", "-c", ov_cmd], args.timeout, env=ov_env)
             if ov.returncode != 0:
                 _fail(f"neuron overlay failed: {ov.stderr[-400:]}")
 
