@@ -204,7 +204,7 @@ def write_status(ok, remaining, note=""):
 
 # ═══ SESSION-KEY -> COMPOSITE PEER KEY ════════════════════════════
 # DM session keys end in the sender id, e.g.:
-#   agent:<name>:telegram:direct:1083618205   -> platform=telegram id=1083618205
+#   agent:<name>:telegram:direct:123456789   -> platform=telegram id=123456789
 # Group keys (agent:...:group:-100...:topic:N) are NOT per-person -> skip in BASE.
 _DM_KEY_RE = re.compile(r":([a-z0-9_-]+):direct:([^:]+)$", re.IGNORECASE)
 

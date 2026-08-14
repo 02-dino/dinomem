@@ -3,3 +3,10 @@ __pycache__/
 *.pyo
 .env
 *.log
+
+# Live agent-personal data — never commit (per-install identity, generated peer reps)
+memory/peers/telegram_*.md
+memory/peers/whatsapp_*.md
+memory/peers/signal_*.md
+memory/peers/discord_*.md
+memory/peers/imessage_*.md

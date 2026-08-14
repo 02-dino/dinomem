@@ -2,7 +2,7 @@
 # ── PEER REPRESENTATION SCHEMA (Honcho-port item #1) ─────────────────────────
 # This file documents the rep format. It is NOT a real peer (leading underscore
 # excludes it from routing). extract_user.py writes one file per known person at
-#   memory/peers/<platform>_<platform_id>.md   e.g. peers/telegram_1083618205.md
+#   memory/peers/<platform>_<platform_id>.md   e.g. peers/telegram_123456789.md
 #
 # WHY composite key: bare sender_id is NOT globally unique. Telegram=numeric,
 # WhatsApp=E.164 phone, Signal=UUID, iMessage=handle, Discord=snowflake. Two
@@ -41,7 +41,7 @@ interactions: 0             # meaningful-interaction count (drives derive-gating
 
 ## RELATIONS
 <!-- NEURON-tier. BASE leaves empty. Namespaced subject = filter key + privacy scope.
-     Format: peer:<platform>:<id> -> verb -> object   e.g. peer:telegram:1083618205 -> trades -> ETH
+     Format: peer:<platform>:<id> -> verb -> object   e.g. peer:telegram:123456789 -> trades -> ETH
      Fed into peers_graph.json (NEURON), NOT the global memory graph. Cross-peer
      aggregation ("who's in ETH") = OWNER-ONLY scoped query. -->
 
