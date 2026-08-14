@@ -1996,6 +1996,10 @@ DINOMEM_BODY=$(cat <<'DINOMEM_AGENTS_BODY'
   skills:
     memory_pin: when user says remember/pin/note this, you commit to deferred work, or a todo/reminder/time-bound/project task arises → read skill "memory-pinning" for _pin_/_note_/project format + done_when rules
     self_config: when user implies changing behavior/rules/workflow/persona/tools/preferences → read skill "self-config"
+    cron_config: when user implies scheduling/reminding/recurring checks/automation timing ("every day", "remind me", "check X periodically") → read skill "cron-config"
+    hook_config: when user implies reacting to a gateway event ("every time X happens", on session-start/inbound-message/command/compaction/lifecycle) → read skill "hook-config"
+    skill_config: when user wants the agent to learn a repeatable method/procedure needed sometimes (not every turn) → read skill "skill-config"
+    build_quality: BEFORE writing >a few lines of new self-mod code (a cron gate, hook handler, skill body, tool, lib fn) → read skill "build-quality" (reuse→DRY→minimal→doc-why→test; run route.py dup + route.py verify)
     backup_restore: when user asks to undo/restore a file or memory change, or what backups exist → read skill "backup-restore"
 DINOMEM_AGENTS_BODY
 )
