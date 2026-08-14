@@ -2,3 +2,13 @@
 __pycache__/
 *.pyc
 .lab/
+.rag_index/
+# run artifacts (regenerated each run; keep PROVENANCE.md, drop ephemeral outputs)
+results/*_result.json
+results/*_latest.md
+results/*_metrics.json
+results/*_hypotheses.jsonl
+results/*.retrieval.jsonl
+results/*_cost_estimate.json
+results/comparison.md
+results/*.eval-results-*

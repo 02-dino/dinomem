@@ -17,22 +17,42 @@ THE ISOLATION TRAP (found in code, must be handled):
   procedures/tools into the lab and PATCH the absolute SESSIONS_DIR to the lab's
   own sessions dir. The live install is never modified.
 
-WHAT THIS BUILDS (lab layout mirrors a real dinomem workspace):
-  <lab>/
-    procedures/   (copied from installed base, SESSIONS_DIR patched)
-    tools/        (copied from installed base)
-    memory/       (empty; pipeline writes distilled memory here)
-    sessions/     (the lab session-archive dir; adapter drops the sample .jsonl here)
-    kb/           (vector dbs etc, if the pipeline builds them)
-    logs/
+TWO LAYOUTS:
+  --layout flat  (DEFAULT, base arm): the WS *is* the lab dir. procedures/tools
+    copied from the installed base, extract_memory.py's hardcoded absolute
+    SESSIONS_DIR PATCHED to <lab>/sessions. Self-contained, no installer runs.
+      <lab>/
+        procedures/  tools/  memory/  sessions/  kb/  logs/
+
+  --layout real  (NEURON arm): builds a REAL openclaw-style tree so the neuron
+    installer (scripts/install.sh) can be run against it. The installer derives
+        SESSIONS_DIR = dirname($WS)/agents/$AGENT_ID/sessions
+    (from OPENCLAW_DIR=dirname(WS)), so the WS must be a CHILD of an openclaw root
+    that also holds agents/<agent>/sessions — otherwise the derived path escapes
+    the sandbox. Layout:
+      <lab>/                      <- OPENCLAW_DIR (the sandbox root, carries marker)
+        workspace-<agent>/        <- the WS passed as --workspace to installers
+          procedures/ tools/ memory/ kb/ logs/   (base copied in; NOT patched —
+                                                   neuron installer seds the
+                                                   DINOMEM_AGENT_SESSIONS_PLACEHOLDER)
+        agents/<agent>/sessions/  <- derived SESSIONS_DIR, INSIDE the sandbox;
+                                     adapter drops the sample .jsonl here
+    In real layout we do NOT patch SESSIONS_DIR: the neuron overlay installer
+    rewrites the placeholder to exactly dirname(WS)/agents/<agent>/sessions, which
+    is the sandbox sessions dir by construction. (If the base copy has a hardcoded
+    absolute SESSIONS_DIR rather than the placeholder, we STILL patch it to the
+    sandbox sessions dir as a floor, so a base-only real-layout run is also safe.)
 
 USAGE:
   python3 setup_lab.py --source <installed_dinomem_ws> [--lab <dir>] [--json]
+                       [--layout flat|real] [--agent-id ID]
   python3 setup_lab.py --teardown <lab_dir>
 
-  --source : an INSTALLED dinomem workspace (has procedures/extract_memory.py).
-             Defaults to DINOMEM_WORKSPACE env, else fails loud.
-  --lab    : where to build it. Default: a mktemp -d throwaway.
+  --source   : an INSTALLED dinomem workspace (has procedures/extract_memory.py).
+               Defaults to DINOMEM_WORKSPACE env, else fails loud.
+  --lab      : where to build it. Default: a mktemp -d throwaway.
+  --layout   : flat (default, base arm) | real (neuron arm, openclaw tree).
+  --agent-id : agent id for the real-layout tree. Default: 'lab'.
 
 SAFETY GUARANTEES:
   - The lab dir is a fresh temp dir (or an explicit path you pass); we refuse to
@@ -147,6 +167,74 @@ def _tree_mtime(root: Path) -> float:
     return latest
 
 
+def build_lab_real(source: Path, lab: Path | None, agent_id: str) -> dict:
+    """NEURON-arm layout: an openclaw-style tree so the neuron installer's DERIVED
+    SESSIONS_DIR = dirname(WS)/agents/<agent>/sessions lands INSIDE the sandbox.
+
+    Structure:
+      <root>/                     (OPENCLAW_DIR, carries the lab marker)
+        workspace-<agent>/        (the WS; base copied in, NOT patched by default)
+        agents/<agent>/sessions/  (derived SESSIONS_DIR, inside the sandbox)
+
+    We do NOT patch SESSIONS_DIR here: the neuron overlay installer rewrites the
+    DINOMEM_AGENT_SESSIONS_PLACEHOLDER to exactly this path. BUT if the base copy
+    has a hardcoded absolute SESSIONS_DIR (not the placeholder), we patch it to the
+    sandbox sessions dir as a floor so a base-only real-layout run is still safe.
+    """
+    if lab is None:
+        root = Path(tempfile.mkdtemp(prefix="dinomem_lab_real_"))
+    else:
+        root = Path(lab).resolve()
+        if (root / "MEMORY.md").exists() or (root / "memory").exists():
+            _fail(f"refusing to build real lab into {root}: looks like a real "
+                  "workspace (MEMORY.md/memory/ present). Pass a fresh path.")
+        root.mkdir(parents=True, exist_ok=True)
+
+    (root / LAB_MARKER).write_text(f"dinomem longmemeval REAL lab {uuid.uuid4()}\n")
+
+    ws = root / f"workspace-{agent_id}"
+    sessions = root / "agents" / agent_id / "sessions"
+    for d in (ws / "procedures", ws / "tools", ws / "memory", ws / "kb",
+              ws / "logs", sessions):
+        d.mkdir(parents=True, exist_ok=True)
+
+    # Copy base procedures + tools into the WS (the neuron overlay installer will
+    # overwrite the subset it enhances; copying base first mirrors real install order).
+    for sub in ("procedures", "tools"):
+        src_sub = source / sub
+        if not src_sub.is_dir():
+            continue
+        for f in src_sub.iterdir():
+            if f.is_file() and f.suffix in (".py", ".sh"):
+                shutil.copy2(f, ws / sub / f.name)
+
+    # Floor-patch: only if the copied extract_memory.py has a HARDCODED absolute
+    # SESSIONS_DIR (base style). If it's the placeholder (neuron style already), or
+    # gets overwritten by the neuron installer, the installer's sed handles it.
+    em = ws / "procedures" / "extract_memory.py"
+    floor_patched = False
+    if em.exists():
+        txt = em.read_text(encoding="utf-8")
+        if "DINOMEM_AGENT_SESSIONS_PLACEHOLDER" not in txt:
+            # base-style hardcoded path present -> floor-patch to sandbox sessions
+            floor_patched = _patch_sessions_dir(em, sessions)
+
+    return {
+        "layout": "real",
+        "lab": str(root),
+        "openclaw_dir": str(root),
+        "workspace": str(ws),
+        "agent_id": agent_id,
+        "source": str(source),
+        "sessions_dir": str(sessions),
+        "memory_dir": str(ws / "memory"),
+        "sessions_dir_patched": floor_patched,
+        "overlay_hint": (f"bash <neuron-repo>/scripts/install.sh --workspace {ws} "
+                         f"--agent-id {agent_id} --agree --no-cron --no-auto-base"),
+        "live_source_mtime": _tree_mtime(source),
+        "marker": LAB_MARKER,
+    }
+
 def teardown(lab: str) -> None:
     p = Path(lab).resolve()
     if not (p / LAB_MARKER).exists():
@@ -160,6 +248,10 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Build/teardown an isolated dinomem lab WS")
     ap.add_argument("--source", help="installed dinomem workspace (default: $DINOMEM_WORKSPACE)")
     ap.add_argument("--lab", help="lab dir to build (default: mktemp -d throwaway)")
+    ap.add_argument("--layout", choices=("flat", "real"), default="flat",
+                    help="flat (default, base arm) | real (neuron arm, openclaw tree)")
+    ap.add_argument("--agent-id", default="lab",
+                    help="agent id for --layout real tree (default: lab)")
     ap.add_argument("--teardown", help="teardown the given lab dir and exit")
     ap.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     args = ap.parse_args()
@@ -169,9 +261,20 @@ def main() -> None:
         return
 
     source = resolve_source(args.source)
-    info = build_lab(source, args.lab)
+    if args.layout == "real":
+        info = build_lab_real(source, args.lab, args.agent_id)
+    else:
+        info = build_lab(source, args.lab)
     if args.json:
         print(json.dumps(info, indent=2))
+    elif args.layout == "real":
+        print(f"REAL-layout lab root: {info['lab']}")
+        print(f"  workspace (--workspace for installers): {info['workspace']}")
+        print(f"  agent-id: {info['agent_id']}")
+        print(f"  sessions dir (drop sample .jsonl here): {info['sessions_dir']}")
+        print(f"  floor-patched SESSIONS_DIR: {info['sessions_dir_patched']}")
+        print(f"  neuron overlay:\n    {info['overlay_hint']}")
+        print(f"teardown with: python3 setup_lab.py --teardown {info['lab']}")
     else:
         print(f"lab workspace: {info['lab']}")
         print(f"  sessions dir (drop sample .jsonl here): {info['sessions_dir']}")

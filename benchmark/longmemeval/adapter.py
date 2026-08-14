@@ -170,6 +170,13 @@ def emit_archive(sample: dict, lab_dir: Path, index: int) -> dict:
     file (extract_memory splits on session boundaries internally)."""
     sessions = sample.get("haystack_sessions") or []
     dates = sample.get("haystack_dates") or []
+    # Per-session ids (needed to attribute a retrieved turn back to a gold
+    # answer-session for retrieval precision/recall). Fall back to synthetic
+    # s<idx> ids if the release omits haystack_session_ids.
+    sess_ids = sample.get("haystack_session_ids") or []
+    # Gold: which session(s) actually contain the evidence for the answer.
+    answer_sess_ids = (sample.get("answer_session_ids")
+                       or sample.get("answer_sessions") or [])
     qid = sample.get("question_id", f"idx{index}")
 
     sess_dir = lab_dir / "sessions"
@@ -186,8 +193,12 @@ def emit_archive(sample: dict, lab_dir: Path, index: int) -> dict:
 
     prev = None
     turn_count = 0
+    emitted_sess_ids = []
     for si, sess in enumerate(sessions):
         sdate = dates[si] if si < len(dates) else None
+        # session id: dataset's own if present, else synthetic stable s<idx>
+        sid = str(sess_ids[si]) if si < len(sess_ids) else f"s{si}"
+        emitted_sess_ids.append(sid)
         if not isinstance(sess, list):
             continue
         for turn in sess:
@@ -199,6 +210,9 @@ def emit_archive(sample: dict, lab_dir: Path, index: int) -> dict:
             lines.append(json.dumps({
                 "type": "message", "id": mid, "parentId": prev,
                 "timestamp": _iso(sdate),
+                # session_idx + session_id let a retrieved chunk be attributed
+                # back to a gold answer-session (retrieval precision/recall).
+                "session_idx": si, "session_id": sid,
                 "message": {"role": role,
                             "content": [{"type": "text", "text": text}]},
             }))
@@ -206,8 +220,22 @@ def emit_archive(sample: dict, lab_dir: Path, index: int) -> dict:
             turn_count += 1
 
     out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    # Gold sidecar: which session ids hold the answer evidence, plus the full
+    # emitted-session-id list. score.py's retrieval metrics read this to compute
+    # precision/recall of a retrieval set against the gold answer-sessions.
+    gold = {
+        "question_id": qid,
+        "answer_session_ids": [str(x) for x in answer_sess_ids],
+        "emitted_session_ids": emitted_sess_ids,
+        "n_sessions": len(sessions),
+    }
+    (sess_dir / f"{qid}.gold.json").write_text(
+        json.dumps(gold, indent=2), encoding="utf-8")
+
     return {"path": str(out), "sessions": len(sessions),
             "turns": turn_count, "question_id": qid,
+            "answer_session_ids": gold["answer_session_ids"],
             "question": sample.get("question"),
             "answer": sample.get("answer"),
             "question_type": sample.get("question_type"),
