@@ -538,6 +538,32 @@ for _dir in procedures tools scripts scripts/lib; do
   done
 done
 
+# benchmark/ — the evaluation program (run_all.py + phase builders/runners + READMEs).
+# NESTED tree (subdirs), plain .py/.md, no placeholder substitution needed, so it is
+# copied recursively (not via copy_engine_file's per-file awk pass). Without this the
+# harness shipped in the git repo but NEVER reached an installed workspace, so
+# `python3 benchmark/run_all.py --source .` didn't exist for users. Excludes throwaway
+# results/specs/pycache + test files. find-based so NEW phase dirs ship automatically.
+if [ -d "$SKILL_DIR/benchmark" ]; then
+  hr "Copying evaluation benchmark (benchmark/)"
+  while IFS= read -r _bsrc; do
+    _brel="${_bsrc#$SKILL_DIR/}"                     # path relative to skill root
+    _bdst="$WS/$_brel"
+    case "$_brel" in
+      */results/*|*/specs/*|*/__pycache__/*|*.pyc|*_test.py) continue ;;
+    esac
+    if [ "$FORCE" = 0 ] && _same_content "$_bsrc" "$_bdst"; then
+      skip "$_brel (up-to-date)"; continue
+    fi
+    if [ "$DRY_RUN" = 1 ]; then
+      if [ -f "$_bdst" ]; then plan "UPGRADE $_brel"; else plan "install $_brel"; fi
+      continue
+    fi
+    mkdir -p "$(dirname "$_bdst")"
+    if cp "$_bsrc" "$_bdst"; then ok "$_brel"; else warn "copy failed: $_brel"; fi
+  done < <(find "$SKILL_DIR/benchmark" -type f \( -name '*.py' -o -name '*.md' -o -name '*.json' -o -name '*.jsonl' -o -name '*.txt' \))
+fi
+
 # ── 2b) Install reset-extract hook ──────────────────────────────────────────
 hr "Reset-extract hook (0-delay memory pipeline on /new /reset)"
 HOOK_SRC="$SKILL_DIR/hooks/dinomem-reset-extract"
