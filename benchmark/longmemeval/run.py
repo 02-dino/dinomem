@@ -266,7 +266,13 @@ def main():
     ap.add_argument("--recall", choices=["base", "command"], default=None,
                     help="override recall (default: base for base arm, command for neuron)")
     ap.add_argument("--overlay-cmd", default=os.environ.get("DINOMEM_BENCH_OVERLAY_CMD", ""),
-                    help="neuron arm: command to apply the neuron overlay onto the lab")
+                    help="neuron arm: command that applies the neuron overlay onto the lab "
+                    "WS. {ws}/{lab} are substituted. The canonical form (from the neuron "
+                    "installer) is:  bash <neuron-repo>/scripts/install.sh --workspace {ws} "
+                    "--agent-id <id> --agree --no-cron --no-auto-base  — note --no-auto-base "
+                    "is REQUIRED for arm fairness: base is already laid down, so the overlay "
+                    "must NOT re-refresh base from GitHub mid-run (breaks isolation + "
+                    "protocol-hash reproducibility). See .env.example.")
     ap.add_argument("--sample-index", type=int, default=0,
                     help="which dataset instance's haystack becomes the lab memory")
     ap.add_argument("--determinism", action="store_true",
