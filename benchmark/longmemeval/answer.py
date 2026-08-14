@@ -342,10 +342,15 @@ def main():
             # distilled memory items (source=file); command/rag units may carry a
             # session_id. We record whatever attribution the engine provides.
             retrieved_sids = []
+            retrieved_dia_ids = []
             for c in ctx:
                 sid = c.get("session_id") or c.get("sid")
                 if sid:
                     retrieved_sids.append(str(sid))
+                # dia_id: LoCoMo turn-level evidence attribution (absent otherwise)
+                did = c.get("dia_id")
+                if did:
+                    retrieved_dia_ids.append(str(did))
             retrieved_sources = [c.get("source", "?") for c in ctx]
             ctx_chars = sum(len(c.get("text", "")) for c in ctx)
             t_ans0 = time.perf_counter()
@@ -367,6 +372,7 @@ def main():
                 "question_id": qid,
                 "retrieved_count": len(ctx),
                 "retrieved_session_ids": retrieved_sids,
+                "retrieved_dia_ids": retrieved_dia_ids,
                 "retrieved_sources": retrieved_sources,
                 "context_chars": ctx_chars,
                 "recall_ms": recall_ms,

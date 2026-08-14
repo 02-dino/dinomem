@@ -219,8 +219,22 @@ def compute_aux_metrics(rlog: dict, gold: dict, lab: Path | None) -> dict:
             answer_ms.append(r["answer_ms"])
 
         g = gold.get(qid)
-        got = set(str(x) for x in (r.get("retrieved_session_ids") or []))
-        want = set(str(x) for x in (g.get("answer_session_ids") if g else []) or [])
+        # DUAL-GRANULARITY gold: LoCoMo ships turn-level evidence dia_ids (finer,
+        # native), LongMemEval ships session-level answer_session_ids. Prefer the
+        # finest gold BOTH sides can express: if the gold has evidence_dia_ids AND
+        # the engine surfaced dia_ids, measure at TURN granularity; else fall back
+        # to session granularity. This makes the LoCoMo metric honest (adversarial
+        # Qs with empty evidence are excluded from recall/precision by the
+        # `want`-nonempty gate, exactly as they should be).
+        want_dia = set(str(x) for x in (g.get("evidence_dia_ids") if g else []) or [])
+        got_dia = set(str(x) for x in (r.get("retrieved_dia_ids") or []))
+        if want_dia and got_dia:
+            granularity = "turn"
+            want, got = want_dia, got_dia
+        else:
+            granularity = "session"
+            got = set(str(x) for x in (r.get("retrieved_session_ids") or []))
+            want = set(str(x) for x in (g.get("answer_session_ids") if g else []) or [])
         if want and got:
             attributable += 1
             hit = got & want
@@ -292,6 +306,9 @@ def main():
     ap.add_argument("--gold-dir", help="dir of <qid>.gold.json sidecars (adapter emit) for "
                     "retrieval recall/precision. Default: <lab>/sessions")
     ap.add_argument("--lab", help="lab dir — measured for storage-size metric (memory + index)")
+    ap.add_argument("--dataset", choices=["longmemeval", "locomo"], default="longmemeval",
+                    help="dataset family — selects the judge-prompt routing for the "
+                    "question categories (LoCoMo names map onto upstream templates)")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
 
@@ -332,16 +349,35 @@ def main():
         gold = rentry.get("answer", "")
         hypothesis = entry.get("hypothesis", "")
         is_abs = "_abs" in str(qid)
-        prompt = get_anscheck_prompt(qtype, question, gold, hypothesis, abstention=is_abs)
+        # LoCoMo uses its own reasoning-type names; the vendored (pinned) upstream
+        # judge only knows LongMemEval's 6 tasks. Translate LoCoMo categories to
+        # the closest upstream judge template WITHOUT editing the vendored file:
+        #   single-hop/multi-hop/open-domain -> 'multi-session' (generic contains-answer),
+        #   temporal                          -> 'temporal-reasoning' (off-by-one tolerant),
+        #   adversarial                       -> abstention path (unanswerable check).
+        judge_task = qtype
+        judge_abs = is_abs
+        if args.dataset == "locomo":
+            if qtype == "adversarial" or rentry.get("is_adversarial"):
+                judge_abs = True
+                judge_task = "adversarial"
+            elif qtype == "temporal":
+                judge_task = "temporal-reasoning"
+            else:  # single-hop | multi-hop | open-domain | category_N
+                judge_task = "multi-session"
+        prompt = get_anscheck_prompt(judge_task, question, gold, hypothesis, abstention=judge_abs)
         label, raw = judge_via_gateway(prompt, judge, args.timeout)
         if raw.startswith("__ERROR__"):
             n_judge_error += 1
         entry_out = dict(entry)
         entry_out["autoeval_label"] = {"model": canonical_label, "label": bool(label)}
         graded_entries.append(entry_out)
-        if qtype in per_cat:
-            per_cat[qtype].append(1 if label else 0)
-        if is_abs:
+        # per-category accounting uses the DATASET's own category (LoCoMo names
+        # are added to per_cat on the fly so LoCoMo per-category accuracy renders).
+        if qtype not in per_cat:
+            per_cat[qtype] = []
+        per_cat[qtype].append(1 if label else 0)
+        if judge_abs:
             abstention.append(1 if label else 0)
         n_graded += 1
         if n_graded % 10 == 0:

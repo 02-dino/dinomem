@@ -12,3 +12,4 @@ results/*.retrieval.jsonl
 results/*_cost_estimate.json
 results/comparison.md
 results/*.eval-results-*
+results/*_locomo_ref.json

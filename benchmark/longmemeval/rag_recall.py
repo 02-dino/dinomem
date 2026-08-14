@@ -154,6 +154,8 @@ def build_corpus(lab: Path) -> list[dict]:
             sid = rec.get("session_id")
             if sid is None:
                 sid = f"s{rec.get('session_idx', sess_idx)}"
+            # dia_id: LoCoMo turn-level evidence key (absent for LongMemEval).
+            dia_id = rec.get("dia_id", "")
             # a new session boundary in the emit is a user turn following an
             # assistant turn is NOT reliable; the adapter concatenates sessions
             # into one archive without a per-session marker, so we track a
@@ -176,6 +178,7 @@ def build_corpus(lab: Path) -> list[dict]:
                     "role": role,
                     "ts": ts,
                     "session_id": str(sid),
+                    "dia_id": str(dia_id),
                 })
             turn_idx += 1
             prev_role = role
@@ -307,6 +310,7 @@ def query(lab: Path, question: str, k: int, model_name: str) -> list[dict]:
         seen_src.add(src)
         out.append({"source": src, "text": rec["text"],
                     "session_id": rec.get("session_id", ""),
+                    "dia_id": rec.get("dia_id", ""),
                     "score": round(float(sims[int(i)]), 6)})
         if len(out) >= k:
             break

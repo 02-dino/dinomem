@@ -60,6 +60,7 @@ def protocol_hash(dataset_info: dict, answer_model: str, judge_model: str,
     """
     key = json.dumps({
         "protocol_version": PROTOCOL_VERSION,
+        "dataset_family": dataset_info.get("family"),
         "dataset_line": dataset_info.get("line"),
         "dataset_revision": dataset_info.get("revision"),
         "dataset_sha256": dataset_info.get("sha256"),
@@ -143,15 +144,24 @@ def print_cost(est: dict):
 # ---------------------------------------------------------------------------
 def _run_pipeline_once(arm, lab_info, dataset_path, sample_index, n, qids_file,
                        answer_model, judge_model, recall, overlay_cmd,
-                       out_prefix, timeout) -> dict:
-    """One full answer+score pass over the (already-converged) lab. Returns metrics."""
+                       out_prefix, timeout, dataset_family="longmemeval",
+                       ref_path=None) -> dict:
+    """One full answer+score pass over the (already-converged) lab. Returns metrics.
+
+    dataset_family: 'longmemeval' | 'locomo' — selects score.py judge routing.
+    ref_path: the reference the scorer grades against. For LongMemEval this IS the
+      dataset file. For LoCoMo the dataset is a list-of-conversations, so the
+      caller passes an answer.py-shaped per-question ref file (built by
+      adapter_locomo questions) instead.
+    """
     lab = Path(lab_info["lab"])
     hyp = RESULTS / f"{out_prefix}_hypotheses.jsonl"
     metrics_out = RESULTS / f"{out_prefix}_metrics.json"
+    ref = ref_path or dataset_path
 
     # ANSWER
     ans_cmd = [sys.executable, HERE / "answer.py",
-               "--lab", lab, "--dataset", dataset_path, "--out", hyp,
+               "--lab", lab, "--dataset", ref, "--out", hyp,
                "--recall", recall, "--json"]
     if qids_file:
         ans_cmd += ["--qids-file", qids_file]
@@ -165,7 +175,8 @@ def _run_pipeline_once(arm, lab_info, dataset_path, sample_index, n, qids_file,
 
     # SCORE
     score_cmd = [sys.executable, HERE / "score.py",
-                 "--hyp", hyp, "--ref", dataset_path,
+                 "--hyp", hyp, "--ref", ref,
+                 "--lab", str(lab), "--dataset", dataset_family,
                  "--metrics-out", metrics_out, "--json"]
     if judge_model:
         score_cmd += ["--judge", judge_model]
@@ -242,8 +253,11 @@ def main():
     mode.add_argument("--full", action="store_true", help="whole LongMemEval-S (needs --yes)")
     ap.add_argument("--n", type=int, default=20, help="sample size (sample mode)")
     ap.add_argument("--yes", action="store_true", help="confirm a --full (paid) run")
+    ap.add_argument("--dataset", choices=["longmemeval", "locomo"], default="longmemeval",
+                    help="benchmark family. longmemeval=1 haystack/question; "
+                    "locomo=1 conversation/many questions (uses adapter_locomo).")
     ap.add_argument("--dataset-line", choices=["original", "cleaned"], default="cleaned",
-                    help="which official dataset line (cleaned=current standard)")
+                    help="which official LongMemEval dataset line (cleaned=current standard)")
     ap.add_argument("--answer-model", default=os.environ.get("DINOMEM_BENCH_ANSWER_MODEL", ""))
     ap.add_argument("--judge-model", default=os.environ.get("DINOMEM_BENCH_JUDGE_MODEL", ""))
     ap.add_argument("--recall", choices=["base", "command"], default=None,
@@ -306,23 +320,31 @@ def main():
     _log(f"lab = {lab}  ws = {ws}  layout = {lab_info.get('layout','flat')}")
 
     dataset_tmp = None
+    # LoCoMo: one conversation carries MANY questions, so answer.py grades against
+    # an answer.py-shaped per-question REF file (built by adapter_locomo questions),
+    # NOT the raw dataset. LongMemEval grades against the dataset directly.
+    ref_path = None
+    adapter_mod = "adapter_locomo.py" if args.dataset == "locomo" else "adapter.py"
     try:
         # ---- 2. adapter: fetch (ephemeral) + emit sample haystack -> lab sessions ----
         fetch_out = Path(lab_info["lab"]) / ".dataset_tmp"
-        fetch_cmd = [sys.executable, HERE / "adapter.py", "fetch",
+        fetch_cmd = [sys.executable, HERE / adapter_mod, "fetch",
                      "--out", fetch_out, "--json"]
-        # dataset-line knob (adapter may accept --dataset-line; harmless if pinned)
-        fr = _sh(fetch_cmd + ["--dataset-line", args.dataset_line], args.timeout)
-        if fr.returncode != 0:
-            # retry without the flag for older adapter builds
-            fr = _sh(fetch_cmd, args.timeout)
+        # dataset-line knob is LongMemEval-only; LoCoMo has a single file.
+        if args.dataset == "longmemeval":
+            fr = _sh(fetch_cmd + ["--dataset-line", args.dataset_line], args.timeout)
             if fr.returncode != 0:
-                _fail(f"adapter fetch failed: {fr.stderr[-400:]}")
+                fr = _sh(fetch_cmd, args.timeout)  # retry w/o flag for older builds
+        else:
+            fr = _sh(fetch_cmd, args.timeout)
+        if fr.returncode != 0:
+            _fail(f"{adapter_mod} fetch failed: {fr.stderr[-400:]}")
         fetch_info = json.loads(fr.stdout[fr.stdout.find("{"):])
         dataset_path = fetch_info.get("path") or fetch_info.get("file")
         dataset_tmp = dataset_path
         dataset_info = {
-            "line": args.dataset_line,
+            "family": args.dataset,
+            "line": args.dataset_line if args.dataset == "longmemeval" else "locomo10",
             "file": Path(dataset_path).name if dataset_path else "?",
             "revision": fetch_info.get("revision"),
             "sha256": fetch_info.get("sha256"),
@@ -333,10 +355,10 @@ def main():
         # flat: <lab>/sessions ; real: <lab>/agents/<agent>/sessions. adapter reads
         # the sessions_dir from the lab_info the runner passes through --sessions-dir
         # when present; else falls back to --lab convention.
-        emit_cmd = [sys.executable, HERE / "adapter.py", "emit",
+        emit_cmd = [sys.executable, HERE / adapter_mod, "emit",
                     "--dataset", dataset_path, "--index", args.sample_index,
                     "--lab", lab, "--json"]
-        if lab_info.get("sessions_dir"):
+        if args.dataset == "longmemeval" and lab_info.get("sessions_dir"):
             emit_cmd += ["--sessions-dir", lab_info["sessions_dir"]]
         er = _sh(emit_cmd, args.timeout)
         if er.returncode != 0:
@@ -344,7 +366,19 @@ def main():
             er = _sh([c for c in emit_cmd if c not in ("--sessions-dir", lab_info.get("sessions_dir"))],
                      args.timeout)
             if er.returncode != 0:
-                _fail(f"adapter emit failed: {er.stderr[-400:]}")
+                _fail(f"{adapter_mod} emit failed: {er.stderr[-400:]}")
+
+        # LoCoMo: build the per-question REF file for this conversation so answer.py
+        # + score.py operate per-question (the dataset itself is 1 conversation).
+        if args.dataset == "locomo":
+            ref_path = str(RESULTS / f"{args.arm}_locomo_ref.json")
+            q_cmd = [sys.executable, HERE / "adapter_locomo.py", "questions",
+                     "--dataset", dataset_path, "--index", args.sample_index,
+                     "--out", ref_path]
+            qr = _sh(q_cmd, args.timeout)
+            if qr.returncode != 0:
+                _fail(f"adapter_locomo questions failed: {qr.stderr[-400:]}")
+            _log(f"locomo per-question ref -> {ref_path}")
 
         # ---- 2a. RAG arm: build the embedding index over the raw emitted haystack ----
         # The rag arm has NO dinomem pipeline and NO distilled memory to converge;
@@ -413,12 +447,14 @@ def main():
         n_arg = args.n if mode_name == "sample" else None
         m1 = _run_pipeline_once(args.arm, lab_info, dataset_path, args.sample_index,
                                 n_arg, None, args.answer_model, args.judge_model,
-                                recall, args.overlay_cmd, f"{args.arm}", args.timeout)
+                                recall, args.overlay_cmd, f"{args.arm}", args.timeout,
+                                dataset_family=args.dataset, ref_path=ref_path)
         determinism = None
         if args.determinism:
             m2 = _run_pipeline_once(args.arm, lab_info, dataset_path, args.sample_index,
                                     n_arg, None, args.answer_model, args.judge_model,
-                                    recall, args.overlay_cmd, f"{args.arm}_run2", args.timeout)
+                                    recall, args.overlay_cmd, f"{args.arm}_run2", args.timeout,
+                                    dataset_family=args.dataset, ref_path=ref_path)
             o1, o2 = m1.get("overall_accuracy"), m2.get("overall_accuracy")
             drift = abs((o1 or 0) - (o2 or 0))
             determinism = {
