@@ -157,23 +157,43 @@ def _common_args(args, arm):
         c += ["--overlay-cmd", args.overlay_cmd]
     return c
 
+def _available_arms(args):
+    """Which arms this install can actually run.
+      rag   : always (pure embedding, no model, no neuron).
+      base  : always present (this IS the base repo).
+      neuron: ONLY if an --overlay-cmd was given (neuron is an install-time overlay;
+              a base-only user has no neuron tools to drive). Auto-dropped otherwise
+              so base-only installs degrade gracefully instead of failing loud."""
+    avail = {"rag", "base"}
+    if args.overlay_cmd:
+        avail.add("neuron")
+    return avail
+
 def _selected(args):
     want_ph = set(p.strip() for p in args.phases.split(",")) if args.phases else None
     want_arm = set(a.strip() for a in args.arms.split(",")) if args.arms else None
+    avail = _available_arms(args)
     out = []
+    skipped_neuron_only = []
     for ph in PHASES:
         if want_ph and ph["id"] not in want_ph:
             continue
-        arms = [a for a in ph["arms"] if (not want_arm or a in want_arm)]
+        arms = [a for a in ph["arms"]
+                if (not want_arm or a in want_arm) and a in avail]
         if not arms:
+            # a neuron-only phase (4b/5b) on a base-only install lands here — record
+            # it so we can tell the user WHY it was skipped, not silently drop it.
+            if all(a == "neuron" for a in ph["arms"]) and "neuron" not in avail:
+                skipped_neuron_only.append(ph["id"])
             continue
         out.append((ph, arms))
-    return out
+    return out, skipped_neuron_only
 
 def _plan(args):
     rows = []
     total_runs = 0
-    for ph, arms in _selected(args):
+    sel, _skipped = _selected(args)
+    for ph, arms in sel:
         if ph.get("is_ablation"):
             runs = 12  # 6 mechanisms x (baseline+ablated), baseline-cached in practice
             rows.append({"phase": ph["id"], "title": ph["title"], "arms": ["neuron"],
@@ -185,20 +205,31 @@ def _plan(args):
     return rows, total_runs
 
 def run(args):
-    sel = _selected(args)
+    sel, skipped_neuron_only = _selected(args)
     if not sel:
         _err("nothing selected — check --phases/--arms filters")
         return {"ok": False, "reason": "empty_selection"}
+
+    # Base-only install (no --overlay-cmd) => neuron arm auto-dropped, neuron-only
+    # phases skipped with a clear reason. This is the graceful-degradation path.
+    if skipped_neuron_only:
+        _warn(f"base-only install (no --overlay-cmd): skipping neuron-only phase(s) "
+              f"{','.join(skipped_neuron_only)} (4b promotion / 5b ablation need the "
+              f"neuron overlay). Pass --overlay-cmd to include them.")
 
     if args.dry_run:
         rows, total = _plan(args)
         paid = any(a in ("base", "neuron") for _, arms in sel for a in arms)
         print(json.dumps({"ok": True, "dry_run": True, "phases": rows,
                           "total_runs": total,
+                          "neuron_available": "neuron" in _available_arms(args),
+                          "skipped_neuron_only": skipped_neuron_only,
                           "spend": ("PAID (base/neuron arms present)" if paid
                                     else "FREE (rag-only)"),
-                          "hint": "drop base/neuron for a $0 run, or pass --estimate-only "
-                                  "for a Phase-1 cost estimate"}, indent=2))
+                          "hint": ("base-only: pass --overlay-cmd to add the neuron arm + "
+                                   "phases 4b/5b" if not args.overlay_cmd
+                                   else "drop base/neuron for a $0 run, or --estimate-only "
+                                        "for a Phase-1 cost estimate")}, indent=2))
         return {"ok": True, "dry_run": True}
 
     if args.estimate_only:

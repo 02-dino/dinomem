@@ -365,6 +365,8 @@ python3 benchmark/run_all.py --source . \
 
   It runs each phase in dependency order (standard → longitudinal → supersession/dedup → pattern/promotion/behavior → poisoning → ablation) and renders one unified scorecard that puts **quality next to its cost/latency/storage** — no advantage claim without its price. `--dry-run` and `--estimate-only` never spend; a partial run still produces a valid report (anything unrun is listed honestly, not hidden).
 
+  **Base-only installs degrade gracefully.** The `neuron` arm and the two neuron-only phases (4b promotion, 5b ablation) require the neuron overlay — a different pipeline (L2 graph / L3 synthesis+contradiction / L4 promotion) with its own retrieval tool (`hybrid_recall`). If you don't pass `--overlay-cmd`, `run_all.py` **auto-drops the neuron arm and skips 4b/5b with a printed reason** rather than failing; you still get the full rag-vs-base comparison. Add `--overlay-cmd` later to light up the neuron arm and those phases.
+
 > Deeper introspection — *why* a specific memory is here and what lifecycle state it's in — lives in **dinomem-neuron** (`explain_memory.py`, `lifecycle_state.py`).
 
 ---
