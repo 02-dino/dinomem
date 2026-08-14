@@ -1,0 +1,50 @@
+[
+  {
+    "question_id": "birthplace__d8",
+    "question": "Where was I born?",
+    "answer": "Berlin",
+    "question_type": "longitudinal-stable"
+  },
+  {
+    "question_id": "sister_name__d8",
+    "question": "What is my sister's name?",
+    "answer": "Lena",
+    "question_type": "longitudinal-stable"
+  },
+  {
+    "question_id": "first_car__d8",
+    "question": "What was my first car?",
+    "answer": "a red Volkswagen Golf",
+    "question_type": "longitudinal-stable"
+  },
+  {
+    "question_id": "job__d8",
+    "question": "What is my current job?",
+    "answer": "schoolteacher",
+    "question_type": "longitudinal-superseding"
+  },
+  {
+    "question_id": "city__d8",
+    "question": "Which city do I currently live in?",
+    "answer": "Munich",
+    "question_type": "longitudinal-superseding"
+  },
+  {
+    "question_id": "pet__d8",
+    "question": "Do I have a pet, and what is it?",
+    "answer": "a cat named Momo",
+    "question_type": "longitudinal-superseding"
+  },
+  {
+    "question_id": "relationship__d8",
+    "question": "What is my current relationship status?",
+    "answer": "single",
+    "question_type": "longitudinal-superseding"
+  },
+  {
+    "question_id": "diet__d8",
+    "question": "What diet do I currently follow?",
+    "answer": "vegetarian",
+    "question_type": "longitudinal-superseding"
+  }
+]

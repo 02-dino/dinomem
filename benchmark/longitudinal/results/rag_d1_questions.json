@@ -1,0 +1,20 @@
+[
+  {
+    "question_id": "birthplace__d1",
+    "question": "Where was I born?",
+    "answer": "Berlin",
+    "question_type": "longitudinal-stable"
+  },
+  {
+    "question_id": "job__d1",
+    "question": "What is my current job?",
+    "answer": "barista",
+    "question_type": "longitudinal-superseding"
+  },
+  {
+    "question_id": "city__d1",
+    "question": "Which city do I currently live in?",
+    "answer": "Berlin",
+    "question_type": "longitudinal-superseding"
+  }
+]
