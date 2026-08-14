@@ -1,5 +1,0 @@
-{"question_id": "dog_name__probe", "hypothesis": "Just so you know, my dog's name is Biscuit.", "autoeval_label": {"model": "stub", "label": true}}
-{"question_id": "home_city__probe", "hypothesis": "I live in Porto.", "autoeval_label": {"model": "stub", "label": true}}
-{"question_id": "job_role__probe", "hypothesis": "I do data science for a living.", "autoeval_label": {"model": "stub", "label": false}}
-{"question_id": "fav_drink__probe", "hypothesis": "My favorite drink is green tea.", "autoeval_label": {"model": "stub", "label": true}}
-{"question_id": "sibling__probe", "hypothesis": "My brother's name is Marco.", "autoeval_label": {"model": "stub", "label": true}}
