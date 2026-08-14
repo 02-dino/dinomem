@@ -91,6 +91,22 @@ ABLATIONS = {
         "spec_flag": None, "spec_name": None, "build_out": None,
         "metric": "overall",
         "why": "weak-signal control: topic index shouldn't move core accuracy much."},
+    "temporal_metadata": {
+        # PDF §8 named arm: 'without temporal metadata'. valid_time.py is the bitemporal
+        # (valid_at/invalid_at) engine; ablating it should degrade current-vs-stale.
+        "stage": "valid_time.py", "phase": "supersession",
+        "runner": "supersession/supersession_run.py", "build": "supersession/supersession_build.py",
+        "spec_flag": "--subjects", "spec_name": "subjects.json", "build_out": "subjects",
+        "metric": "supersession_correct_pct",
+        "why": "bitemporal valid_time metadata is what preserves current-vs-history (3a)."},
+    "dedup": {
+        # PDF §8 named arm: 'without dedup/review'. memory_dedup_check.py is the semantic
+        # dedup gate; ablating it should bloat the corpus (dedup phase 3b).
+        "stage": "memory_dedup_check.py", "phase": "dedup",
+        "runner": "dedup/dedup_run.py", "build": "dedup/dedup_build.py",
+        "spec_flag": "--corpus", "spec_name": "corpus.json", "build_out": "corpus",
+        "metric": "dedup_rate",
+        "why": "semantic dedup gate is the corpus-compaction mechanism (3b)."},
 }
 
 def _log(m): print(f"[ablation_run] {m}", file=sys.stderr)

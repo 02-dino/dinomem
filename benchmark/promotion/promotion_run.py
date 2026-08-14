@@ -129,8 +129,31 @@ def _read_promotion_state(lab_info):
             surface = " ".join(str(e.get(f, "")) for f in ("pattern", "rule_line"))
             srcs = e.get("sources") or []
             surface += " " + " ".join(str(s) for s in srcs)
-            trusted.append({"key": k, "surface": surface.lower()})
+            # reinforce_count at trusted = promotion LATENCY (how much evidence before it
+            # graduated). memory_promote graduates at GRADUATE_REINFORCE reinforcing runs.
+            trusted.append({"key": k, "surface": surface.lower(),
+                            "reinforce_count": e.get("reinforce_count")})
     return trusted
+
+def _read_retired(lab_info):
+    """Read the demoted/retired insight archive (memory/_history/demoted_insights.jsonl).
+    memory_promote.retire_insight() appends here on every expire/demote (trusted ->
+    invalidated). Returns list of {surface, reason} or [] if none."""
+    ws = Path(lab_info.get("workspace", lab_info["lab"]))
+    hf = ws / "memory" / "_history" / "demoted_insights.jsonl"
+    if not hf.exists():
+        return []
+    out = []
+    try:
+        for line in hf.read_text().splitlines():
+            if not line.strip():
+                continue
+            e = json.loads(line)
+            surf = " ".join(str(e.get(f, "")) for f in ("pattern", "rule_line")).lower()
+            out.append({"surface": surf, "reason": e.get("reason", "")})
+    except Exception:  # noqa: BLE001
+        return out
+    return out
 
 def _classify_promotions(trusted, reliable_subjects, unreliable_subjects, facts_spec):
     """Attribute each trusted entry to reliable / unreliable / unmatched by keyword.
@@ -245,6 +268,25 @@ def run_arm(args):
         precision = round(len(pr) / n_promoted_attributed, 3) if n_promoted_attributed else None
         recall_m = round(len(pr) / manifest["n_reliable"], 3) if manifest["n_reliable"] else None
         false_rate = round(len(pu) / n_promoted_attributed, 3) if n_promoted_attributed else None
+        # promotion_latency = mean reinforce_count among trusted entries (evidence
+        # before graduation). memory_promote graduates at GRADUATE_REINFORCE; a
+        # higher mean = the gate demanded more corroboration before trusting. PDF §6C.
+        rc = [t["reinforce_count"] for t in trusted if isinstance(t.get("reinforce_count"), (int, float))]
+        promotion_latency = round(sum(rc) / len(rc), 2) if rc else None
+        # retirement_accuracy = of the UNRELIABLE facts that got (wrongly) trusted,
+        # fraction later retired/demoted (appear in demoted_insights archive). Measures
+        # whether invalidated knowledge stops influencing behavior. PDF §6C.
+        retired = _read_retired(lab_info)
+        retired_surfaces = " ".join(r["surface"] for r in retired)
+        # attribute retirements to the unreliable subjects (same keyword join used above)
+        n_unrel_trusted = len(pu)
+        n_unrel_retired = 0
+        for subj in pu:
+            leaf = subj.split(".")[-1].lower()
+            if leaf and leaf in retired_surfaces:
+                n_unrel_retired += 1
+        retirement_accuracy = (round(100 * n_unrel_retired / n_unrel_trusted, 1)
+                               if n_unrel_trusted else None)
         result.update({
             "promotion_supported": True,
             "n_trusted_entries": len(trusted),
@@ -253,10 +295,16 @@ def run_arm(args):
             "promotion_precision": precision,
             "promotion_recall": recall_m,
             "false_promotion_rate": false_rate,
+            "promotion_latency": promotion_latency,          # PDF §6C: evidence before trust
+            "n_retired": len(retired),
+            "retirement_accuracy": retirement_accuracy,      # PDF §6C: invalid knowledge retired
             "note": "promotion attributed to subjects by keyword; unmatched_trusted_keys "
-                    "are trusted entries hitting no labeled subject (audit).",
+                    "are trusted entries hitting no labeled subject (audit). "
+                    "promotion_latency=mean reinforce_count at trust; retirement_accuracy="
+                    "unreliable-trusted entries later demoted (may be null if none wrongly trusted).",
         })
         _log(f"  precision={precision} recall={recall_m} false_promotion={false_rate} "
+             f"latency={promotion_latency} retirement_acc={retirement_accuracy} "
              f"recall_retained={result['recall_retained_pct']}%")
 
     out = Path(args.out) if args.out else RESULTS / f"promotion_{args.arm}.json"

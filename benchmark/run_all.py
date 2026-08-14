@@ -104,6 +104,26 @@ PHASES = [
      "runner": "ablation/ablation_run.py", "build": None,
      "spec_flag": None, "spec": None, "arms": ["neuron"],  # self-orchestrates neuron arm
      "is_ablation": True},
+    # ── direct-call safety/capability phases (FREE: pure-python gate/mechanic checks,
+    # no LLM answer step). They import the arm's procedure from --source and grade it.
+    {"id": "5c", "title": "authority (untrusted-instruction gate)", "dir": "authority",
+     "runner": "authority/authority_run.py",
+     "build": ("authority/authority_build.py", "cases.json"),
+     "spec_flag": "--cases", "spec": "cases.json",
+     "arms": ["rag", "base", "neuron"], "direct_call": True},  # mem_authority (base-tier)
+    {"id": "5d", "title": "recovery (reversible cleanup)", "dir": "recovery",
+     "runner": "recovery/recovery_run.py", "build": None,
+     "spec_flag": None, "spec": None,
+     "arms": ["rag", "base", "neuron"], "direct_call": True},  # _memory_diff (base-tier)
+    {"id": "5e", "title": "entity resolution", "dir": "entityres",
+     "runner": "entityres/entityres_run.py", "build": None,
+     "spec_flag": None, "spec": None,
+     "arms": ["neuron"], "direct_call": True},  # entity_resolver (neuron-only)
+    {"id": "6", "title": "peer representation", "dir": "peerrep",
+     "runner": "peerrep/peerrep_run.py",
+     "build": ("peerrep/peerrep_build.py", "derive_cases.json"),
+     "spec_flag": "--cases", "spec": "derive_cases.json",
+     "arms": ["rag", "base", "neuron"], "direct_call": True},  # extract_user (base-tier, neuron-upgraded)
 ]
 
 def _log(m): print(f"\033[36m[run_all]\033[0m {m}", file=sys.stderr)

@@ -101,6 +101,11 @@ def build_scorecard():
     # Phase 5 — poison + ablation
     sc["phases"]["phase5_poison"] = _collect_phase("poison", "poison")
     sc["phases"]["phase5_ablation"] = _load(BENCH / "ablation" / "results" / "ablation_table.json")
+    # Phase 5c/5d/5e/6 — direct-call safety + capability phases
+    sc["phases"]["phase5_authority"] = _collect_phase("authority", "authority")
+    sc["phases"]["phase5_recovery"] = _collect_phase("recovery", "recovery")
+    sc["phases"]["phase5_entityres"] = _collect_phase("entityres", "entityres")
+    sc["phases"]["phase6_peerrep"] = _collect_phase("peerrep", "peerrep")
 
     return sc
 
@@ -209,6 +214,40 @@ def render_md(sc: dict) -> str:
         L += ["_ablation table not yet generated (run ablation/ablation_run.py)._"]
     L += [""]
 
+    # Phase 5c authority (untrusted-instruction / authority-scope gate) — PDF §11 headline
+    L += ["### 5c authority-scope (untrusted-instruction rejection)",
+          "| arm | directive_block_rate | personalization_keep_rate | owner_passthrough_rate | false_block_rate | scope_accuracy |",
+          "|---|---|---|---|---|---|"]
+    L += _quality_rows(sc["phases"]["phase5_authority"],
+                       [("", "directive_block_rate"), ("", "personalization_keep_rate"),
+                        ("", "owner_passthrough_rate"), ("", "false_block_rate"),
+                        ("", "scope_accuracy")])
+    L += [""]
+
+    # Phase 5d recovery (reversible cleanup / byte-exact undo) — PDF §5/§11
+    L += ["### 5d recovery (reversible cleanup)",
+          "| arm | recovery_score | recovery_pass | recovery_total |",
+          "|---|---|---|---|"]
+    L += _quality_rows(sc["phases"]["phase5_recovery"],
+                       [("", "recovery_score"), ("", "recovery_pass"), ("", "recovery_total")])
+    L += [""]
+
+    # Phase 5e entity resolution (neuron-only) — PDF §2 entity reasoning
+    L += ["### 5e entity resolution (alias/coref, precision-first)",
+          "| arm | entityres_score | entityres_pass | entityres_total |",
+          "|---|---|---|---|"]
+    L += _quality_rows(sc["phases"]["phase5_entityres"],
+                       [("", "entityres_score"), ("", "entityres_pass"), ("", "entityres_total")])
+    L += [""]
+
+    # Phase 6 peer representation (extract_user, base-tier + neuron-upgraded)
+    L += ["## Phase 6 — Peer Representation",
+          "| arm | structural_score | structural_pass | structural_total |",
+          "|---|---|---|---|"]
+    L += _quality_rows(sc["phases"]["phase6_peerrep"],
+                       [("", "structural_score"), ("", "structural_pass"), ("", "structural_total")])
+    L += [""]
+
     # Not-yet-run summary (honesty ledger)
     missing = []
     def _empty(x):
@@ -221,7 +260,11 @@ def render_md(sc: dict) -> str:
                        ("Phase4 promotion", ("phase4_promotion",)),
                        ("Phase4 behavior", ("phase4_behavior",)),
                        ("Phase5 poison", ("phase5_poison",)),
-                       ("Phase5 ablation", ("phase5_ablation",))]:
+                       ("Phase5 ablation", ("phase5_ablation",)),
+                       ("Phase5c authority", ("phase5_authority",)),
+                       ("Phase5d recovery", ("phase5_recovery",)),
+                       ("Phase5e entity-res", ("phase5_entityres",)),
+                       ("Phase6 peer-rep", ("phase6_peerrep",))]:
         node = sc["phases"].get(key[0])
         if _empty(node):
             missing.append(label)

@@ -138,7 +138,7 @@ def _split_by_kind(hyp_path, ref):
     cand = list(hyp_path.parent.glob(hyp_path.name + ".eval-results-*"))
     if not cand:
         return {"note": "no eval-results file"}
-    direct, multi = [], []
+    direct, multi, false_ = [], [], []
     for line in cand[0].read_text().splitlines():
         if not line.strip():
             continue
@@ -149,10 +149,18 @@ def _split_by_kind(hyp_path, ref):
             direct.append(lab)
         elif qt == "pattern-multihop":
             multi.append(lab)
+        elif qt == "pattern-false":
+            # gold answer is 'no' (pattern NOT entailed). lab==1 (judged correct) means
+            # the arm correctly REFUSED the false pattern; lab==0 means it hallucinated it.
+            false_.append(lab)
     def _pct(v):
         return round(100 * sum(v) / len(v), 1) if v else None
+    # false_pattern_rate = fraction of false probes the arm got WRONG (invented a pattern).
+    # LOWER is better (PDF §6A: 'equally importantly, false pattern rate').
+    fpr = (round(100 * (len(false_) - sum(false_)) / len(false_), 1) if false_ else None)
     return {"direct_acc": _pct(direct), "direct_n": len(direct),
-            "multihop_acc": _pct(multi), "multihop_n": len(multi)}
+            "multihop_acc": _pct(multi), "multihop_n": len(multi),
+            "false_pattern_rate": fpr, "false_n": len(false_)}
 
 def run_arm(args):
     RESULTS.mkdir(parents=True, exist_ok=True)
@@ -193,6 +201,7 @@ def run_arm(args):
               "overall_accuracy": m.get("overall_accuracy"),
               "direct_acc": split.get("direct_acc"), "direct_n": split.get("direct_n"),
               "multihop_acc": split.get("multihop_acc"), "multihop_n": split.get("multihop_n"),
+              "false_pattern_rate": split.get("false_pattern_rate"), "false_n": split.get("false_n"),
               "graph_nodes": drive_res.get("graph_nodes"),
               "seconds": round(time.time() - t0, 1)}
     out = Path(args.out) if args.out else RESULTS / f"pattern_{args.arm}.json"

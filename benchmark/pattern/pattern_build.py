@@ -109,10 +109,43 @@ FILLER = [
     "Wrapped up early today.",
 ]
 
+# ── DISTRACTORS (PDF §6A 'equally importantly, false pattern rate'). Each distractor
+# states edges that DO NOT compose into the tempting cross-node relation. The
+# false-pattern probe asks the tempting (but UNSUPPORTED) multi-hop question; the
+# CORRECT answer is 'no'/'unknown'. A system that hallucinates a pattern from
+# coincidence answers 'yes' -> that's a false pattern. LOWER false_pattern_rate =
+# better (doesn't invent structure that was never entailed). ──────────────────────
+DISTRACTORS = [
+    {"id": "dx_sharedname", "edges": [
+        {"a": "Alex Kim",  "rel": "works_at", "b": "Acme",  "tpl": "Alex Kim works at Acme."},
+        {"a": "Alex Rossi", "rel": "works_at", "b": "Globex", "tpl": "Alex Rossi works at Globex."},
+     ],
+     # tempting false pattern: same first name => same person / same company. NOT entailed.
+     "false_probe": {"q": "Do Alex Kim and Alex Rossi work at the same company?",
+                     "answer": "no", "trap": "shared-first-name != same entity"}},
+    {"id": "dx_cooccur", "edges": [
+        {"a": "Sam", "rel": "attended", "b": "the Tuesday meeting", "tpl": "Sam attended the Tuesday meeting."},
+        {"a": "Lee", "rel": "attended", "b": "the Tuesday meeting", "tpl": "Lee attended the Tuesday meeting."},
+     ],
+     # tempting false pattern: co-attendance => a reporting/managing relation. NOT entailed.
+     "false_probe": {"q": "Does Sam manage Lee?",
+                     "answer": "no", "trap": "co-occurrence != hierarchy"}},
+    {"id": "dx_temporal", "edges": [
+        {"a": "the outage", "rel": "happened_on", "b": "Monday", "tpl": "The outage happened on Monday."},
+        {"a": "the deploy",  "rel": "happened_on", "b": "Monday", "tpl": "A routine deploy also happened on Monday."},
+     ],
+     # tempting false pattern: same-day => causation. NOT entailed.
+     "false_probe": {"q": "Did the deploy cause the outage?",
+                     "answer": "no", "trap": "same-day != causal"}},
+]
+
 def build_chains(seed: int) -> dict:
     edges_total = sum(len(c["edges"]) for c in CHAINS)
+    dx_edges = sum(len(d["edges"]) for d in DISTRACTORS)
     return {"schema": SCHEMA_VERSION, "seed": seed, "n_chains": len(CHAINS),
-            "n_edges": edges_total, "chains": CHAINS, "_filler_seed": seed}
+            "n_edges": edges_total, "chains": CHAINS,
+            "n_distractors": len(DISTRACTORS), "n_distractor_edges": dx_edges,
+            "distractors": DISTRACTORS, "_filler_seed": seed}
 
 def emit_archive(spec: dict, labroot: Path) -> dict:
     sess_dir = labroot / "sessions"
@@ -124,9 +157,10 @@ def emit_archive(spec: dict, labroot: Path) -> dict:
     # forces the store to relate across time, not just adjacent chunks)
     turns = []
     day = 1
-    maxlen = max(len(c["edges"]) for c in spec["chains"])
+    all_groups = spec["chains"] + spec.get("distractors", [])
+    maxlen = max(len(c["edges"]) for c in all_groups)
     for i in range(maxlen):
-        for c in spec["chains"]:
+        for c in all_groups:
             if i < len(c["edges"]):
                 e = c["edges"][i]
                 turns.append({"day": day, "chain": c["id"], "rel": e["rel"],
@@ -175,9 +209,21 @@ def write_gold(spec: dict, labroot: Path, out_questions: Path) -> dict:
                 n_direct += 1
             else:
                 n_multi += 1
+    # false-pattern probes: the tempting-but-unsupported question; correct answer = 'no'.
+    n_false = 0
+    for d in spec.get("distractors", []):
+        fp = d["false_probe"]
+        qid = f"{d['id']}__false"
+        gold = {"question_id": qid, "question": fp["q"], "answer": fp["answer"],
+                "question_type": "pattern-false", "distractor": d["id"], "hops": 0,
+                "trap": fp["trap"], "is_adversarial": True}
+        (sess_dir / f"{qid}.gold.json").write_text(json.dumps(gold, indent=2), encoding="utf-8")
+        questions.append({"question_id": qid, "question": fp["q"], "answer": fp["answer"],
+                          "question_type": "pattern-false", "hops": 0})
+        n_false += 1
     out_questions.write_text(json.dumps(questions, indent=2), encoding="utf-8")
     return {"n_probes": len(questions), "n_direct": n_direct, "n_multihop": n_multi,
-            "questions": str(out_questions)}
+            "n_false": n_false, "questions": str(out_questions)}
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Phase 4a latent-pattern/relationship builder")
