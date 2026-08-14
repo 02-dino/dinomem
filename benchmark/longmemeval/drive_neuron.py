@@ -174,7 +174,12 @@ NEURON_STAGES = [
 ]
 
 def drive(ws: Path, sandbox_root: Path, timeout: int, review_max_loops: int,
-          live_source: Path | None, live_source_mtime: float | None) -> dict:
+          live_source: Path | None, live_source_mtime: float | None,
+          skip_stages: set[str] | None = None) -> dict:
+    # skip_stages = neuron L2/L3/L4 script names to ABLATE (Phase 5b). When the graph
+    # stage itself is ablated, the graph-node assertion is relaxed so the ablated run
+    # can still 'converge' (the whole point is measuring life WITHOUT that mechanism).
+    skip_stages = skip_stages or set()
     ws = ws.resolve()
     if not ws.exists():
         _fail(f"workspace dir does not exist: {ws}")
@@ -232,8 +237,13 @@ def drive(ws: Path, sandbox_root: Path, timeout: int, review_max_loops: int,
                 break
             prev_sig = cur_sig
 
-    # ---- NEURON L2/L3/L4 stages, forced in prod cron order ----
+    # ---- NEURON L2/L3/L4 stages, forced in prod cron order (minus ablated) ----
     for script_name, reasoning in NEURON_STAGES:
+        if script_name in skip_stages:
+            stages.append({"stage": f"neuron:{script_name}", "ran": False, "ok": True,
+                           "rc": None, "ablated": True})
+            _log(f"stage 'neuron:{script_name}': ABLATED (5b skip)")
+            continue
         stages.append(_run_stage(f"neuron:{script_name}", procs / script_name,
                                  ws, env, timeout, reasoning=reasoning))
 
@@ -244,7 +254,8 @@ def drive(ws: Path, sandbox_root: Path, timeout: int, review_max_loops: int,
     # Base memory must materialize (same as base arm) AND the neuron graph must have
     # nodes (else L2/L3 features are inert and hybrid_recall's graph leg is empty).
     base_ok = mem["item_files"] > 0 or mem["memory_md_bytes"] > 0
-    graph_ok = graph["nodes"] > 0
+    graph_ablated = "memory_graph.py" in skip_stages
+    graph_ok = graph_ablated or graph["nodes"] > 0
 
     # ---- ISOLATION TRIPWIRE ----
     iso = {"checked": False}
@@ -265,6 +276,7 @@ def drive(ws: Path, sandbox_root: Path, timeout: int, review_max_loops: int,
     elif not graph_ok:
         reason = ("no_graph_nodes (memory_graph produced 0 nodes — neuron L2 "
                   "did not materialize; hybrid_recall graph leg would be empty)")
+    # note: when graph_ablated, graph_ok is forced True (ablation is intentional)
     elif iso["checked"] and not iso["untouched"]:
         reason = "ISOLATION VIOLATION: live source mtime changed during run"
 
@@ -280,13 +292,16 @@ def main():
     ap.add_argument("--live-source", help="live install dir to assert untouched (isolation tripwire)")
     ap.add_argument("--live-source-mtime", type=float, help="expected live source mtime from setup_lab.py")
     ap.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    ap.add_argument("--skip-stage", action="append", default=[], metavar="SCRIPT",
+                    help="ablate a neuron stage by script name (Phase 5b); repeatable. "
+                         "e.g. --skip-stage memory_graph.py --skip-stage memory_promote.py")
     args = ap.parse_args()
 
     ws = Path(args.ws)
     sandbox_root = Path(args.sandbox_root) if args.sandbox_root else ws.resolve().parent
     live_source = Path(args.live_source) if args.live_source else None
     result = drive(ws, sandbox_root, args.timeout, args.review_max_loops,
-                   live_source, args.live_source_mtime)
+                   live_source, args.live_source_mtime, skip_stages=set(args.skip_stage))
 
     if args.json:
         print(json.dumps(result, indent=2))

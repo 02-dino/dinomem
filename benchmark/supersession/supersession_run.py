@@ -107,9 +107,12 @@ def _drive_arm(arm: str, lab_info: dict, source: str, overlay_cmd: str,
         ov = _sh(["bash", "-c", overlay_cmd.replace("{ws}", ws).replace("{lab}", lab)], timeout)
         if ov.returncode != 0:
             _fail(f"neuron overlay failed: {ov.stderr[-300:]}")
-        dr = _sh([sys.executable, LM / "drive_neuron.py", "--ws", ws,
-                  "--sandbox-root", lab, "--live-source", source,
-                  "--live-source-mtime", mtime, "--json"], timeout)
+        _dn = [sys.executable, LM / "drive_neuron.py", "--ws", ws,
+               "--sandbox-root", lab, "--live-source", source,
+               "--live-source-mtime", mtime, "--json"]
+        for _sk in filter(None, os.environ.get("DINOMEM_BENCH_SKIP_STAGE", "").split(",")):
+            _dn += ["--skip-stage", _sk]   # Phase 5b ablation forward
+        dr = _sh(_dn, timeout)
         # neuron recall = hybrid_recall with per-probe --as-of (bitemporal). answer.py
         # substitutes {as_of} if present in the recall command (see below).
         recall_cmd = (f'{sys.executable} {ws}/tools/hybrid_recall.py "{{q}}" '

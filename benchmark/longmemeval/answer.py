@@ -315,8 +315,9 @@ def main():
     ap.add_argument("--qids-file", help="file of question_ids (one per line) to answer")
     ap.add_argument("--model", default=os.environ.get("DINOMEM_BENCH_ANSWER_MODEL", ""),
                     help="answer model (default env DINOMEM_BENCH_ANSWER_MODEL, else gateway default)")
-    ap.add_argument("--recall", choices=["base", "command"], default="base",
-                    help="base=lexical over lab markdown (base arm); command=external recall (neuron arm)")
+    ap.add_argument("--recall", choices=["base", "command", "none"], default="base",
+                    help="base=lexical over lab markdown (base arm); command=external recall (neuron arm); "
+                         "none=NO retrieval (empty context; the memory-OFF A/B condition, Phase 4c)")
     ap.add_argument("--topk", type=int, default=8, help="retrieved units per question")
     ap.add_argument("--max-tokens", type=int, default=512)
     ap.add_argument("--timeout", type=int, default=120)
@@ -357,7 +358,9 @@ def main():
                 _log(f"skip item {i}: no question_id")
                 continue
             t_recall0 = time.perf_counter()
-            if args.recall == "base":
+            if args.recall == "none":
+                ctx = []          # memory-OFF: pure-parametric answer, no context
+            elif args.recall == "base":
                 ctx = base_recall(question, units, args.topk)
             else:
                 ctx = command_recall(question, args.topk)
