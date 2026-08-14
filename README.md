@@ -348,6 +348,22 @@ python3 scripts/weekly_stats.py --workspace .  # how many facts/insights, recent
 
 - **Transparent + reversible.** `_memory_diff.py` is the audit trail: see *what* the memory did, and *undo any change byte-exact* via its `restore_ref`. Nothing is a black box.
 - **Prove recall quality (citable).** Want a hard number on how well the memory answers — on the same benchmark the papers use? Run the LongMemEval-S harness in [`benchmark/longmemeval/`](benchmark/longmemeval/): it measures dinomem on the public LongMemEval-S dataset with the official scorer, in an isolated throwaway workspace (your real memory is never touched). That's the on-demand "does it actually work" proof.
+- **Run the WHOLE evaluation with one command.** Beyond that single benchmark, dinomem ships a full multi-phase evaluation program — standard benchmarks *plus* the harder questions a memory system should answer (does it stay correct as facts change? does the corpus stay compact? does it resist poisoning?). You don't need to know the phase order or per-runner flags; there's one front door:
+
+```bash
+# See the whole plan first — free, no spend, no lab touched:
+python3 benchmark/run_all.py --source . --dry-run
+
+# Free floor only (RAG arm needs no LLM):
+python3 benchmark/run_all.py --source . --arms rag
+
+# Full comparison (needs a real model to build/answer memory):
+python3 benchmark/run_all.py --source . \
+    --answer-model gpt-4o-mini --judge-model gpt-4o
+# → runs every phase in order, then writes benchmark/scorecard/results/scorecard.md
+```
+
+  It runs each phase in dependency order (standard → longitudinal → supersession/dedup → pattern/promotion/behavior → poisoning → ablation) and renders one unified scorecard that puts **quality next to its cost/latency/storage** — no advantage claim without its price. `--dry-run` and `--estimate-only` never spend; a partial run still produces a valid report (anything unrun is listed honestly, not hidden).
 
 > Deeper introspection — *why* a specific memory is here and what lifecycle state it's in — lives in **dinomem-neuron** (`explain_memory.py`, `lifecycle_state.py`).
 
