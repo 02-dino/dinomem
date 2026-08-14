@@ -105,12 +105,64 @@ guard_by_interval() {
   return 1
 }
 
-# guard_composite <state_file> <min_secs> <input...>     # v1  -> 0 fire / 1 skip
-# = guard_by_hash AND guard_by_interval evaluated over ONE state file.
+# gate__crash_signature <note...>     # 0 if ANY note looks like a crashed worker
+# CRASH SIGNATURE: a project note that is in_progress with a STALE live-session-*
+# claim on an UNFINISHED step = a live worker that died mid-step and never
+# released. This is distinct from a PAUSED-at-safety-gate note (Advancer released
+# the claim -> no live-session claim) which must STAY throttled. Detecting a crash
+# lets the composite guard fire the Advancer IMMEDIATELY (bypass the daily floor)
+# instead of waiting up to min_interval to resume dropped work.
+#   stale = claimed_at older than GATE_CRASH_STALE_SECS (default 1800 = 30min,
+#           matching claim_note.sh LIVE_WINDOW_MIN so writer+guard agree).
+# Fail-CLOSED for the crash path only (unparseable/missing -> NOT a crash -> no
+# early fire), so a bad parse can never spuriously wake the LLM; the normal
+# hash/interval terms still decide. Frontmatter parse matches claim_note.sh:
+# bare `key: value` block ending at the first blank line (also tolerates a
+# leading `---` fenced block).
+gate__crash_signature() {
+  local now_epoch; now_epoch=$(date -u +%s 2>/dev/null || echo 0)
+  [ "$now_epoch" -gt 0 ] || return 1   # no clock -> can't age -> not a crash
+  local stale_secs="${GATE_CRASH_STALE_SECS:-1800}"
+  local f
+  for f in "$@"; do
+    [ -f "$f" ] || continue
+    # pull frontmatter fields (first block only; stop at blank line).
+    local fm status cur_by cur_at
+    fm=$(awk '
+      NR==1 && $0=="---" { fenced=1; infm=1; next }
+      NR==1 && /^#/       { infm=1; next }
+      NR==1              { exit }
+      infm && fenced && $0=="---" { exit }
+      infm && !fenced && NF==0    { exit }
+      infm { print }
+    ' "$f" 2>/dev/null)
+    status=$(printf '%s\n' "$fm"   | grep -m1 '^status:'     | sed 's/^status:[[:space:]]*//')
+    cur_by=$(printf '%s\n' "$fm"   | grep -m1 '^claimed_by:' | sed 's/^claimed_by:[[:space:]]*//')
+    cur_at=$(printf '%s\n' "$fm"   | grep -m1 '^claimed_at:' | sed 's/^claimed_at:[[:space:]]*//')
+    # must be an in_progress note, held by a live-session-* claimant.
+    [ "$status" = "in_progress" ] || continue
+    case "$cur_by" in live-session-*) : ;; *) continue ;; esac
+    [ -n "$cur_at" ] || continue
+    local ce; ce=$(date -u -d "$cur_at" +%s 2>/dev/null || echo "")
+    [ -n "$ce" ] || continue                 # unparseable -> not a crash
+    [ "$ce" -le "$now_epoch" ] || continue    # future-dated -> not a crash
+    # STALE live claim on an in_progress note = crashed worker.
+    if [ $(( now_epoch - ce )) -ge "$stale_secs" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# guard_composite <state_file> <min_secs> <input...>     # v1+crash -> 0 fire / 1 skip
+# = guard_by_hash AND guard_by_interval evaluated over ONE state file, PLUS an
+# early-fire crash-detect term (added 2026-08-14): a crashed live worker's note
+# (stale live-session claim on an unfinished in_progress step) fires immediately
+# so dropped work resumes in ~one tick instead of waiting the daily floor.
 # This IS today's refire_should_fire(); kept name-compatible via backward-alias
 # (guard_composite is the primitive; alias below for callers already sourcing
-# the old neuron shim). Behavior-identical to the proven v1 refire guard:
-# fires iff (never-run OR content changed) OR (interval floor elapsed).
+# the old neuron shim). Non-crash behavior identical to the proven v1 refire
+# guard: fires iff (never-run OR content changed) OR (interval floor elapsed).
 guard_composite() {
   local state_file="$1" min_interval="$2"; shift 2
   local -a inputs=("$@")
@@ -142,7 +194,13 @@ guard_composite() {
   local due=1
   [ "$age" -ge "$min_interval" ] && due=0
 
-  if [ "$changed" -eq 0 ] || [ "$due" -eq 0 ]; then
+  # (c) crash-detect early-fire: a crashed live worker's note resumes NOW,
+  #     bypassing the daily floor. Fail-closed (helper returns 1 on any doubt),
+  #     so this can only ADD fires for genuine crashes, never suppress a normal one.
+  local crashed=1
+  gate__crash_signature "${inputs[@]}" && crashed=0
+
+  if [ "$changed" -eq 0 ] || [ "$due" -eq 0 ] || [ "$crashed" -eq 0 ]; then
     printf '%s %s\n' "$now_epoch" "$agg_hash" > "$state_file" 2>/dev/null || true
     return 0
   fi
