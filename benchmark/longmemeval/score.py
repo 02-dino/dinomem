@@ -365,8 +365,34 @@ def main():
                 judge_task = "temporal-reasoning"
             else:  # single-hop | multi-hop | open-domain | category_N
                 judge_task = "multi-session"
-        prompt = get_anscheck_prompt(judge_task, question, gold, hypothesis, abstention=judge_abs)
-        label, raw = judge_via_gateway(prompt, judge, args.timeout)
+        if judge == "stub":
+            # OFFLINE-CI sentinel: no gateway call, no spend. Deterministic
+            # substring grader (gold tokens present in hypothesis, case-insensitive).
+            # NOT a real judge — canonical_judge stays False so no result is ever
+            # mistaken for a citable number. Used by longitudinal_run --stub-judge
+            # and any offline smoke. A real run passes a frontier-class --judge.
+            gl = str(gold).lower().strip()
+            hl = str(hypothesis).lower()
+            if judge_abs:
+                label = any(t in hl for t in ("not mention", "no information",
+                            "cannot", "don't know", "do not know", "unanswer"))
+            else:
+                label = bool(gl) and gl in hl
+            raw = f"__STUB__ {label}"
+        else:
+            # Build the official judge prompt only for a REAL gateway call. The
+            # vendored (pinned) upstream get_anscheck_prompt only knows the 6
+            # LongMemEval tasks (+ our LoCoMo translation above); an unknown
+            # question_type (e.g. Phase-2 'longitudinal-*') raises NotImplementedError.
+            # For those we fall back to the generic contains-answer template so the
+            # pinned file stays byte-unchanged.
+            try:
+                prompt = get_anscheck_prompt(judge_task, question, gold, hypothesis,
+                                             abstention=judge_abs)
+            except NotImplementedError:
+                prompt = get_anscheck_prompt("multi-session", question, gold,
+                                             hypothesis, abstention=judge_abs)
+            label, raw = judge_via_gateway(prompt, judge, args.timeout)
         if raw.startswith("__ERROR__"):
             n_judge_error += 1
         entry_out = dict(entry)

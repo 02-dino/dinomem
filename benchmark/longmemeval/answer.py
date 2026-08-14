@@ -36,6 +36,7 @@ import re
 import subprocess
 import sys
 import shutil
+import time
 from pathlib import Path
 
 STOPWORDS = set("""a an the of to in on at for and or but is are was were be been being
@@ -205,8 +206,31 @@ ANSWER_SYS = (
 )
 
 
+def _stub_answer(question: str, contexts: list[dict]) -> tuple[str, dict]:
+    """OFFLINE-CI answer: NO gateway call, NO spend. Returns the single retrieved
+    memory line whose text best token-overlaps the question, verbatim, as the
+    'answer'. NOT a real reader model — it does zero synthesis/superseding, so a
+    naive-RAG stub arm will surface whatever chunk ranks first (stale OR current).
+    That is exactly the naive floor we want offline: it exercises the whole
+    pipeline (recall→answer→score) at $0 and lets the stub JUDGE grade contains-
+    answer. A real run passes --model for genuine synthesis. Marked stub in meta
+    so no offline number is mistaken for a model-answered result."""
+    if not contexts:
+        return "I don't know.", {"model": "stub", "route": "stub"}
+    ql = set(re.findall(r"[a-z0-9]+", question.lower()))
+    best, best_ov = contexts[0], -1
+    for c in contexts:
+        ov = len(ql & set(re.findall(r"[a-z0-9]+", c.get("text", "").lower())))
+        if ov > best_ov:
+            best, best_ov = c, ov
+    return best.get("text", "").strip(), {"model": "stub", "route": "stub",
+                                           "overlap": best_ov}
+
+
 def compose_answer(question: str, contexts: list[dict], model: str,
                    max_tokens: int, timeout: int) -> tuple[str, dict]:
+    if model == "stub":
+        return _stub_answer(question, contexts)
     ctx_block = "\n\n".join(
         f"[memory {i+1}] ({c.get('source','?')})\n{c['text']}"
         for i, c in enumerate(contexts)
