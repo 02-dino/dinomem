@@ -146,7 +146,7 @@ def _resolve_node_dir():
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
-SESSIONS_DIR = Path("DINOMEM_AGENT_SESSIONS_PLACEHOLDER")  # rewritten at install (mirrors extract_user)
+SESSIONS_DIR = Path("DINOMEM_AGENT_SESSIONS_PLACEHOLDER")
 MEMORY_DIR = Path(__file__).parent.parent / "memory"
 PROCESSED_LOG = MEMORY_DIR / ".processed_archives.json"
 COMPACTION_LOG = MEMORY_DIR / ".compaction_counts.json"
@@ -635,8 +635,49 @@ def call_llm(prompt, max_tokens=None, reasoning=False, model=None):
         _route = f"cheap={_no_reason_model}"
     else:
         _route = "default"
-    # Try OpenClaw gateway first
+
+    # ── PROVIDER-DIRECT FIRST for cheap (reasoning=False) calls (2026-08-01) ──
+    # WHY: the gateway CLI path (`capability model run`) has NO --agent/--account
+    # flag, so every cheap cron call LOGS under the default account (kaka689) even
+    # though it runs the correct cheap model. Posting DIRECTLY to the provider with
+    # the buyer's own key (same resolvers the fallback already uses) fixes the
+    # attribution AND drops the ~600MB Node cold-boot per call — identical win to
+    # the OCR rework. reasoning=True (quality) stays on the gateway so it keeps the
+    # OpenClaw default model + thinking level. Best-effort: any miss (no key/base,
+    # HTTP error) falls straight through to the gateway CLI below — behavior-safe.
+    if (not reasoning) and _no_reason_model:
+        try:
+            _dk = get_api_key_from_openclaw(_no_reason_model)
+            _db = get_api_base_from_model(_no_reason_model)
+            if _dk and _db:
+                _dfmt = get_api_format_from_model(_no_reason_model)
+                log(f"   \U0001f680 Provider-direct ({_no_reason_model}, no gateway)...")
+                _ok, _txt = _make_llm_request(
+                    _no_reason_model, _dk, _db, full_prompt, max_tokens,
+                    reasoning=False, api_format=_dfmt)
+                if _ok and _txt:
+                    log(f"   \u2705 Provider-direct successful ({_no_reason_model})")
+                    return True, _txt
+                log(f"   \u26a0\ufe0f  Provider-direct miss ({str(_txt)[:120]}); trying gateway...")
+        except Exception as _e:
+            log(f"   \u26a0\ufe0f  Provider-direct error ({_e}); trying gateway...")
+
+    # ── ARG_MAX GUARD (bug #12): the gateway CLI passes the prompt as a --prompt
+    # ARGUMENT. A big haystack (LongMemEval packs ~500k chars into one archive)
+    # exceeds the OS argv limit -> `[Errno 7] Argument list too long` -> the whole
+    # gateway leg dies. The HTTP paths (provider-direct above + direct fallback
+    # below) send the prompt in the request BODY, so they have no such limit.
+    # When the prompt is too large to be a safe CLI arg, SKIP the gateway CLI and
+    # go straight to the HTTP fallback (which handles reasoning=True too). 96 KiB
+    # is well under typical ARG_MAX (128 KiB+) yet leaves headroom for env+argv.
+    _ARG_SAFE_BYTES = 96 * 1024
+    _prompt_too_big = len(full_prompt.encode("utf-8", "ignore")) > _ARG_SAFE_BYTES
+    if _prompt_too_big:
+        log(f"   ⚠️  Prompt {len(full_prompt)} chars > ARG_MAX-safe {_ARG_SAFE_BYTES}B — skipping gateway CLI (arg limit), using HTTP fallback")
+    # Try OpenClaw gateway first (unless the prompt is too big to be a CLI arg)
     try:
+        if _prompt_too_big:
+            raise RuntimeError("prompt exceeds ARG_MAX-safe size; routed to HTTP fallback")
         log(f"   🔄 Calling OpenClaw gateway ({_route})...")
         _oc = _shutil.which("openclaw") or "/home/linuxbrew/.linuxbrew/bin/openclaw"
         _env = dict(os.environ)
@@ -794,7 +835,7 @@ def process_batch_archives(archive_filenames):
     """Process multiple archives in a single LLM call. Returns list of summary dicts."""
     if not LLM_ENABLED:
         return []
-    # Build combined content with clear archive separators
+    # Build combined content with clear archive separators.
     # A single archive can split into more than BATCH_MAX_CHARS worth of chunks
     # (a long session, or a benchmark haystack packed into one file). We must NOT
     # rejoin all chunks and drop the archive when the total exceeds the batch cap
@@ -847,6 +888,7 @@ Each object in the array must have this structure:
   "corrections": ["[correction] exact mistake + correct behavior"],
   "operational": ["[operational] exact names/paths/values + behavioral default"],
   "user_preferences": ["permanent user trait or boundary"],
+  "user_facts": ["[user_fact] durable first-person fact the user stated about THEMSELVES"],
   "topics": ["#hashtag"],
   "relations": ["Subject → verb → Object"],
   "entities": ["Name | type: person|project|tool|concept|org"]
@@ -854,6 +896,7 @@ Each object in the array must have this structure:
 
 Rules:
 - EVERY insight MUST start with [factual], [pattern], [lesson], [uncertain], or [preference]
+- [user_fact] = a DURABLE fact the user stated about THEMSELVES (their own life/identity), NOT a preference and NOT a world-fact. Capture education, occupation/employer, location, relationships/family, health/allergies, possessions, personal history/biography. Extract on FIRST mention (do not wait for repetition). First-person cues: "I graduated...", "I work at...", "I live in...", "my wife/sister/son...", "I'm allergic to...", "I switched jobs to...". This is distinct from [preference] (a behavioral trait/boundary like 'wants terse replies') and from [factual] (a universal truth like a GDPR rule). Err on the side of extracting — a person's biographical facts are high-value recall. End with [ctx:max 5 words][conf:X.X].
 - [relation] = explicit relationship between two named concepts: "Subject → verb → Object" format. Only extract when relationship is clear and non-trivial. Examples: "Project Advancer → depends on → sessions_spawn", "Komunitech pricing → affects → workshop conversion rate", "memory_graph.py → reads from → memory/*.md". Max 3 per archive. Skip obvious/trivial ones.
 - [entity] = named concept worth tracking as a node: "Name | type: person|project|tool|concept|org". Only extract proper nouns, named tools, projects, people, orgs. Skip generic terms. Max 5 per archive.
 - [factual] = structural truths, NOT transient events
@@ -865,7 +908,13 @@ Rules:
 - Return empty arrays if nothing worth remembering for that archive
 - JSON array only, no explanation outside JSON"""
     log(f"   🔄 Batch analyzing {len(included)} archives: {archive_list}...")
-    success, response = call_llm(prompt, max_tokens=2000 * len(included), reasoning=False)
+    # bug #12: honor the outer LLM_MAX_TOKENS floor. A big haystack needs a large
+    # OUTPUT budget or the JSON gets truncated mid-string -> parse fail -> "empty"
+    # -> silent needle loss. 2000/archive is fine for normal incremental sessions
+    # but far too small for a LongMemEval haystack; drive_neuron sets
+    # LLM_MAX_TOKENS=16000 for exactly this, so take the MAX of the two.
+    _batch_budget = max(2000 * len(included), LLM_MAX_TOKENS)
+    success, response = call_llm(prompt, max_tokens=_batch_budget, reasoning=False)
     if not success:
         log(f"   ⚠️  Batch LLM failed: {response}")
         return []
@@ -885,7 +934,7 @@ Rules:
                 item.get('context', '').strip() or
                 item.get('insights') or item.get('decisions') or
                 item.get('corrections') or item.get('operational') or
-                item.get('user_preferences')
+                item.get('user_preferences') or item.get('user_facts')
             )
             summary = {
                 'archive': item.get('archive', ''),
@@ -899,6 +948,7 @@ Rules:
                 'corrections': item.get('corrections', []),
                 'operational': item.get('operational', []),
                 'user_preferences': item.get('user_preferences', []),
+                'user_facts': item.get('user_facts', []),
                 'topics': item.get('topics', []),
                 'relations': item.get('relations', []),
                 'entities': item.get('entities', [])
@@ -916,14 +966,95 @@ Rules:
         log(f"   ⚠️  Batch processing error: {e}")
         return []
 
+# Per-call INPUT window for a single archive. A huge archive (e.g. a LongMemEval
+# haystack of ~500k chars packed into one file) MUST NOT be sent in one LLM call:
+# (a) the response gets cut by the request timeout mid-JSON -> parse fail -> "empty"
+#     -> SILENT loss of everything incl facts deep in the haystack, and
+# (b) model extraction quality degrades badly on a 500k-char prompt.
+# Instead we window the archive's chunks into <=WINDOW_MAX_CHARS passes, extract
+# each window separately, and MERGE. Every part of the haystack reaches the LLM.
+WINDOW_MAX_CHARS = 80000
+
+def _merge_summaries(summaries, archive_filename):
+    """Merge N per-window summary dicts into one archive summary (union of list
+    fields, first non-empty context). De-dupes exact-duplicate lines."""
+    if not summaries:
+        return None
+    today = datetime.now().strftime("%Y-%m-%d")
+    merged = {
+        'type': 'agent_memory', 'date': today,
+        'source_id': _source_id_from_archive(archive_filename),
+        'context': '', 'insights': [], 'source_scores': [], 'decisions': [],
+        'corrections': [], 'operational': [], 'user_preferences': [],
+        'user_facts': [], 'topics': [], 'relations': [], 'entities': [],
+    }
+    list_keys = ('insights', 'source_scores', 'decisions', 'corrections',
+                 'operational', 'user_preferences', 'user_facts', 'topics',
+                 'relations', 'entities')
+    seen = {k: set() for k in list_keys}
+    for s in summaries:
+        if s in (None, "LLM_FAILED"):
+            continue
+        if not merged['context'] and s.get('context', '').strip():
+            merged['context'] = s['context']
+        for k in list_keys:
+            for item in s.get(k, []) or []:
+                key = item.strip().lower()
+                if key and key not in seen[k]:
+                    seen[k].add(key)
+                    merged[k].append(item)
+    return merged
+
 def process_single_archive(archive_filename):
-    """Process one archive file through LLM. Returns summary dict or None."""
+    """Process one archive file through LLM. Returns summary dict or None.
+
+    Large archives are WINDOWED (multiple sequential LLM calls, merged) so a
+    haystack that exceeds a single-call safe size never truncates or drops its
+    deep content."""
     if not LLM_ENABLED:
         return None
-    content = extract_archive_content([archive_filename])
+    # WINDOWING: if this archive's chunks exceed one safe window, split into
+    # multiple passes so nothing (incl facts deep in the haystack) is lost.
+    _chunks = extract_single_archive_content(archive_filename)
+    if _chunks and sum(len(c) for c in _chunks) > WINDOW_MAX_CHARS:
+        windows, cur, cur_len = [], [], 0
+        for ch in _chunks:
+            if cur and cur_len + len(ch) > WINDOW_MAX_CHARS:
+                windows.append(cur); cur, cur_len = [], 0
+            cur.append(ch); cur_len += len(ch)
+        if cur:
+            windows.append(cur)
+        log(f"   🪟  {archive_filename}: {sum(len(c) for c in _chunks)} chars > {WINDOW_MAX_CHARS} — windowing into {len(windows)} pass(es)")
+        win_summaries, any_fail = [], False
+        for wi, win in enumerate(windows):
+            sub = _process_archive_text("".join(win), archive_filename,
+                                        window_label=f"{wi+1}/{len(windows)}")
+            if sub == "LLM_FAILED":
+                any_fail = True  # retry whole archive next run rather than store partial
+                break
+            if sub:
+                win_summaries.append(sub)
+        if any_fail:
+            return "LLM_FAILED"
+        merged = _merge_summaries(win_summaries, archive_filename)
+        if not merged or not any(merged.get(k) for k in (
+                'context', 'insights', 'source_scores', 'decisions', 'corrections',
+                'operational', 'user_preferences', 'user_facts')):
+            log(f"   ℹ️  Nothing memorable across {len(windows)} window(s) of {archive_filename}")
+            return None
+        log(f"   ✅ Windowed extract {archive_filename}: {len(merged['insights'])} insights, {len(merged['user_facts'])} user_facts, {len(merged['decisions'])} decisions across {len(windows)} pass(es)")
+        return merged
+    # small archive -> single pass (original path)
+    content = "".join(_chunks) if _chunks else extract_archive_content([archive_filename])
     if not content.strip():
         log(f"   ℹ️  No content in {archive_filename}, skipping")
         return None
+    return _process_archive_text(content, archive_filename)
+
+def _process_archive_text(content, archive_filename, window_label=None):
+    """Extract memory items from one block of archive text (a whole small archive,
+    or one window of a large one). Returns summary dict | None | 'LLM_FAILED'."""
+    _wl = f" [window {window_label}]" if window_label else ""
     prompt = f"""You are an AI agent writing your own memory notes.
 Read this SINGLE conversation session and extract ONLY knowledge worth recalling later.
 
@@ -957,6 +1088,9 @@ Required JSON structure:
   "user_preferences": [
     "What you learned about the user's style, preferences, or boundaries — permanent traits only"
   ],
+  "user_facts": [
+    "[user_fact] A DURABLE fact the user stated about THEMSELVES: education, occupation/employer, location, relationships/family, health/allergies, possessions, personal history. Extract on FIRST mention. Distinct from user_preferences (behavioral trait) and from [factual] (universal truth)."
+  ],
   "topics": ["#hashtag topics covered, lowercase, no spaces"],
   "relations": ["Subject → verb → Object"],
   "entities": ["Name | type: person|project|tool|concept|org"]
@@ -976,14 +1110,18 @@ Rules:
 - EVERY [operational], [decision], [correction] item MUST end with a [ctx:...] tag: one short phrase (max 5 words) describing the session context. Example: [ctx:github push session], [ctx:cron restore fix], [ctx:user correction]. Keep it minimal.
 - [relation] = explicit relationship between two named concepts: "Subject → verb → Object" format. Only extract when relationship is clear and non-trivial. Max 3 per archive.
 - [entity] = named concept worth tracking as a node: "Name | type: person|project|tool|concept|org". Only extract proper nouns, named tools, projects, people, orgs. Skip generic terms. Max 5 per archive.
+- [user_fact] = a DURABLE first-person fact about the user's OWN life/identity (education, job/employer, location, family/relationships, health/allergies, possessions, biography). Extract on FIRST mention — do NOT wait for repetition. First-person cues: "I graduated...", "I work at...", "I live in...", "my wife/sister/son...", "I'm allergic to...". This is NOT a [preference] (behavioral trait) and NOT a [factual] (universal truth). A person's biographical facts are high-value recall — err on the side of extracting. End with [ctx:...][conf:X.X].
 - Return empty arrays if nothing is worth remembering
 - No markdown inside JSON values, plain text only
 - Focus on RECALLABLE knowledge, not operational logs
 - JSON only, no explanation outside the JSON"""
-    log(f"   🔄 Analyzing {archive_filename}...")
-    success, response = call_llm(prompt, max_tokens=1500, reasoning=False, model=NO_REASONING_MODEL)
+    log(f"   🔄 Analyzing {archive_filename}{_wl}...")
+    # Output budget must fit the JSON for a full window; honor the env floor
+    # (was hardcoded 1500 -> truncated on big windows -> Unterminated string).
+    _single_budget = max(4000, LLM_MAX_TOKENS)
+    success, response = call_llm(prompt, max_tokens=_single_budget, reasoning=False, model=NO_REASONING_MODEL)
     if not success:
-        log(f"   ⚠️  LLM failed for {archive_filename}: {response}")
+        log(f"   ⚠️  LLM failed for {archive_filename}{_wl}: {response}")
         # Sentinel: transient LLM failure (retry next run) vs genuinely-empty
         # session (None). Prevents silent-permanent-loss on marked-processed.
         return "LLM_FAILED"
@@ -1009,6 +1147,7 @@ Rules:
             'corrections': llm_output.get('corrections', []),
             'operational': llm_output.get('operational', []),
             'user_preferences': llm_output.get('user_preferences', []),
+            'user_facts': llm_output.get('user_facts', []),
             'topics': llm_output.get('topics', []),
             'relations': llm_output.get('relations', []),
             'entities': llm_output.get('entities', [])
@@ -1020,7 +1159,8 @@ Rules:
             summary['decisions'] or
             summary['corrections'] or
             summary['operational'] or
-            summary['user_preferences']
+            summary['user_preferences'] or
+            summary['user_facts']
         )
         if not has_content:
             log(f"   ℹ️  Nothing memorable in {archive_filename}, skipping")
@@ -1153,38 +1293,18 @@ def _strip_meta_tags(text):
     return re.sub(r'\s*\[(ctx|expires):[^\]]*\]', '', text).strip()
 
 def _get_tei_embedding(text):
-    """Get single embedding from TEI. Returns vector or None.
-
-    Resilient to transient TEI unavailability (cold start, cron-storm queueing,
-    reload windows): retries with backoff instead of failing on the first blip.
-    Fail-soft: returns None only after all attempts exhaust, so the caller's
-    dedup/contradiction path degrades gracefully rather than crashing.
-    Tunable via env: DINOMEM_EMBED_TIMEOUT (s), DINOMEM_EMBED_RETRIES.
-    """
-    import urllib.request as _ur
-    import time as _t
-    _embed_url = os.environ.get("DINOMEM_EMBED_URL", "http://localhost:8080/v1/embeddings")
+    """Get single embedding from TEI. Returns vector or None."""
     try:
-        _timeout = float(os.environ.get("DINOMEM_EMBED_TIMEOUT", "20"))
-    except (TypeError, ValueError):
-        _timeout = 20.0
-    try:
-        _retries = int(os.environ.get("DINOMEM_EMBED_RETRIES", "2"))
-    except (TypeError, ValueError):
-        _retries = 2
-    payload = json.dumps({"input": [text], "model": ""}).encode()
-    for _attempt in range(_retries + 1):
-        try:
-            req = _ur.Request(_embed_url, data=payload,
-                              headers={"Content-Type": "application/json"}, method="POST")
-            with _ur.urlopen(req, timeout=_timeout) as resp:
-                data = json.loads(resp.read())
-            return data["data"][0]["embedding"]
-        except Exception:
-            if _attempt < _retries:
-                _t.sleep(0.5 * (2 ** _attempt))  # 0.5s, 1.0s backoff
-                continue
-            return None
+        import urllib.request as _ur
+        payload = json.dumps({"input": [text], "model": ""}).encode()
+        _embed_url = os.environ.get("DINOMEM_EMBED_URL", "http://localhost:8080/v1/embeddings")
+        req = _ur.Request(_embed_url, data=payload,
+                          headers={"Content-Type": "application/json"}, method="POST")
+        with _ur.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read())
+        return data["data"][0]["embedding"]
+    except Exception:
+        return None
 
 def _cosine_sim(a, b):
     dot = sum(x * y for x, y in zip(a, b))
@@ -1544,6 +1664,13 @@ def write_memory_file(summary, dedup=True, seed_verdict=None):
     corrections = summary.get('corrections', [])
     operational = summary.get('operational', [])
     prefs = summary.get('user_preferences', [])
+    user_facts = summary.get('user_facts', [])
+    # Prefix user_facts with [user_fact] tag if not already present
+    user_facts = [
+        uf if uf.startswith('[user_fact]') else f'[user_fact] {uf}'
+        for uf in user_facts
+        if uf.strip()
+    ]
     topics = summary.get('topics', [])
     relations = summary.get('relations', [])
     # Prefix relations with [relation] tag if not already present
@@ -1607,6 +1734,7 @@ def write_memory_file(summary, dedup=True, seed_verdict=None):
         ('correction', corrections),
         ('operational', operational),
         ('preference', prefs),
+        ('user_fact', user_facts),
         ('relation', relations),
         ('entity', entities),
     ]

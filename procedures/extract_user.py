@@ -204,7 +204,7 @@ def write_status(ok, remaining, note=""):
 
 # ═══ SESSION-KEY -> COMPOSITE PEER KEY ════════════════════════════
 # DM session keys end in the sender id, e.g.:
-#   agent:<name>:telegram:direct:123456789   -> platform=telegram id=123456789
+#   agent:<name>:telegram:direct:1083618205   -> platform=telegram id=1083618205
 # Group keys (agent:...:group:-100...:topic:N) are NOT per-person -> skip in BASE.
 _DM_KEY_RE = re.compile(r":([a-z0-9_-]+):direct:([^:]+)$", re.IGNORECASE)
 
@@ -226,6 +226,109 @@ def composite_key(platform, platform_id):
 
 def peer_path(platform, platform_id):
     return PEERS_DIR / f"{composite_key(platform, platform_id)}.md"
+
+# ═══ PEER GRAPH (NEURON — SEPARATE from global memory_graph.json) ═════════════
+# Privacy-by-construction (OQ6): peer edges NEVER touch the global graph. This is
+# a standalone JSON keyed by namespaced subject `peer:<platform>:<id>`. A scoped
+# graph_search reads it and enforces active-speaker isolation; cross-peer
+# aggregation is OWNER-ONLY. Fail-open: any error leaves the graph untouched.
+PEERS_GRAPH_FILE = PEERS_DIR / "peers_graph.json"
+PEERS_GRAPH_LOCK = Path("/tmp/dinomem_peers_graph.lock")
+
+def _peer_subject(platform, platform_id):
+    """Namespaced subject id. The `peer:` prefix is the privacy filter key."""
+    return f"peer:{platform}:{platform_id}"
+
+def _load_peers_graph():
+    """Return the peers graph dict, or a fresh empty skeleton. Fail-open."""
+    skel = {"version": 1, "kind": "peers_graph", "nodes": {}, "edges": []}
+    try:
+        if PEERS_GRAPH_FILE.exists():
+            data = json.loads(PEERS_GRAPH_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and "edges" in data:
+                data.setdefault("nodes", {})
+                data.setdefault("version", 1)
+                data.setdefault("kind", "peers_graph")
+                return data
+    except Exception as e:
+        log(f"   ⚠️  peers_graph load failed ({e}); starting fresh")
+    return skel
+
+def _atomic_write_json(path, data):
+    """Write JSON atomically (tmp + rename). Fail-open (returns False)."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
+        return True
+    except Exception as e:
+        log(f"   ⚠️  atomic write failed ({path.name}): {e}")
+        return False
+
+def upsert_peer_edges(platform, platform_id, relations, ts):
+    """Merge derived relation edges into peers_graph.json under a flock.
+    relations: list of {verb, object, confidence}. Subject is ALWAYS this peer
+    (namespaced) — privacy-by-construction. Dedup on (subject, verb, object).
+    Fail-open: any failure leaves the graph unchanged and never breaks derive.
+    Returns count of edges added/updated (0 on no-op or failure)."""
+    rels = [r for r in (relations or []) if isinstance(r, dict)
+            and sanitize_text(r.get("object", "")).strip()
+            and sanitize_text(r.get("verb", "")).strip()]
+    if not rels:
+        return 0
+    subj = _peer_subject(platform, platform_id)
+    lock_fh = None
+    try:
+        import fcntl
+        lock_fh = open(PEERS_GRAPH_LOCK, "w")
+        fcntl.flock(lock_fh, fcntl.LOCK_EX)
+    except Exception:
+        lock_fh = None  # fail-open: proceed without lock rather than drop edges
+    try:
+        g = _load_peers_graph()
+        g["nodes"].setdefault(subj, {"type": "peer", "platform": platform,
+                                     "platform_id": str(platform_id)})
+        index = {(e.get("subject"), e.get("verb"), e.get("object")): e
+                 for e in g["edges"]}
+        n = 0
+        for r in rels:
+            verb = sanitize_text(r.get("verb", "")).strip().lower()
+            obj = sanitize_text(r.get("object", "")).strip()
+            conf = r.get("confidence", 0.7)
+            try:
+                conf = float(conf)
+            except Exception:
+                conf = 0.7
+            obj_node = f"obj:{obj.lower()}"
+            g["nodes"].setdefault(obj_node, {"type": "object", "label": obj})
+            key = (subj, verb, obj)
+            if key in index:
+                e = index[key]
+                e["confidence"] = max(e.get("confidence", 0.0), conf)
+                e["last_seen"] = ts
+                e["count"] = e.get("count", 1) + 1
+            else:
+                edge = {"subject": subj, "verb": verb, "object": obj,
+                        "object_node": obj_node, "confidence": conf,
+                        "first_seen": ts, "last_seen": ts, "count": 1}
+                g["edges"].append(edge)
+                index[key] = edge
+            n += 1
+        if n:
+            _atomic_write_json(PEERS_GRAPH_FILE, g)
+        return n
+    except Exception as e:
+        log(f"   ⚠️  upsert_peer_edges failed: {e}")
+        return 0
+    finally:
+        if lock_fh is not None:
+            try:
+                import fcntl
+                fcntl.flock(lock_fh, fcntl.LOCK_UN)
+                lock_fh.close()
+            except Exception:
+                pass
 
 
 # ═══ ARCHIVE CONTENT (delegate to extract_memory's hardened splitter) ════════
@@ -391,15 +494,18 @@ Return STRICT JSON (no markdown fence), shape:
   "facts": [{{"text": "<stated/identity fact>", "confidence": 0.0-1.0}}],
   "beat": [{{"text": "<revealed-behavior / theory-of-mind INFERENCE>", "confidence": 0.0-1.0}}],
   "ledger": ["<their call/outcome as observed, if any>"],
+  "relations": [{{"verb": "<relationship verb>", "object": "<the thing/asset/concept they relate to>", "confidence": 0.0-1.0}}],
   "supersedes": [{{"old": "<existing line this contradicts>", "new": "<corrected fact>"}}]
 }}
 
 Rules:
 - Empty arrays are VALID and expected when nothing new/salient is present. Do NOT invent.
+- "facts" = DURABLE stated/identity facts about THIS person's own life: education, occupation/employer, location, relationships/family, health/allergies, possessions, personal history/biography. Capture on FIRST mention (do not wait for repetition). First-person cues: "I graduated in X", "I work at Y", "I live in Z", "my wife/sister/son...", "I'm allergic to...", "I switched jobs to...". These are HARD facts (go in "facts"), distinct from theory-of-mind inferences ("beat") and typed relations. A person's biography is high-value recall — err on the side of extracting durable life-facts.
 - confidence: stated-by-person=0.9+, strong inference=0.7, weak inference=0.5.
 - A CORRECTION/contradiction of an existing line -> put it in "supersedes".
 - Theory-of-mind inferences ("prefers raw data", "low risk tolerance") go in "beat" with confidence, never as hard facts.
 - Never write facts about anyone OTHER than this person.
+- "relations" (NEURON): typed edges FROM this person TO a thing/asset/concept. verb = the relationship (e.g. "trades", "holds", "asks_about", "prefers", "distrusts"), object = the target (e.g. "ETH", "raw orderbook data", "leverage"). ONLY clear, non-trivial edges. Max 4. The subject is ALWAYS this person -- never emit an edge about anyone else. Skip if nothing clear.
 """
 
 
@@ -538,21 +644,50 @@ def apply_derive(platform, platform_id, derived):
         if t and t not in txt:
             ledger_lines.append(f"- {t}  (ts: {today})")
 
+    # NEURON: RELATIONS tier. Write namespaced edge lines into the rep's
+    # RELATIONS section (human-readable) AND upsert into peers_graph.json
+    # (traversable). Dedup on exact edge line in-file.
+    rel_lines = []
+    subj = _peer_subject(platform, platform_id)
+    for r in (derived.get("relations") or []):
+        if not isinstance(r, dict):
+            continue
+        verb = sanitize_text(r.get("verb", "")).strip().lower()
+        obj = sanitize_text(r.get("object", "")).strip()
+        if not verb or not obj:
+            continue
+        c = r.get("confidence", 0.7)
+        line = f"- {subj} → {verb} → {obj}  (conf: {c}, ts: {today})"
+        if line.split("  (conf")[0] not in txt:
+            rel_lines.append(line)
+
     if fact_lines:
         txt = _append_under(txt, "FACTS", fact_lines); changed = True
     if beat_lines:
         txt = _append_under(txt, "BEAT", beat_lines); changed = True
     if ledger_lines:
         txt = _append_under(txt, "LEDGER", ledger_lines); changed = True
+    if rel_lines:
+        txt = _append_under(txt, "RELATIONS", rel_lines); changed = True
 
     if changed:
         txt = re.sub(r"^last_updated:.*$", f"last_updated: {today}", txt, count=1, flags=re.MULTILINE)
         try:
             p.write_text(txt, encoding="utf-8")
-            log(f"   ✍️  rep updated: {p.name} (+{len(fact_lines)}F +{len(beat_lines)}B +{len(ledger_lines)}L)")
+            log(f"   ✍️  rep updated: {p.name} (+{len(fact_lines)}F +{len(beat_lines)}B +{len(ledger_lines)}L +{len(rel_lines)}R)")
         except Exception as e:
             log(f"   ⚠️  rep write failed ({p.name}): {e}")
             return False
+
+    # Upsert edges into the SEPARATE peers_graph.json (privacy-by-construction).
+    # Fail-open: graph failure never blocks the rep write above.
+    try:
+        added = upsert_peer_edges(platform, platform_id, derived.get("relations"), today)
+        if added:
+            log(f"   🔗 peers_graph: +{added} edge(s) for {subj}")
+    except Exception as e:
+        log(f"   ⚠️  peers_graph upsert skipped ({e})")
+
     return changed
 
 
@@ -616,8 +751,128 @@ def process_archive(filename):
     return True
 
 
+# ═══ PEERS-SCOPED COMPACTOR (NEURON — decay, never age-delete) ═════════════
+# Confidence DECAY on staleness, NEVER deletion of the rep file. Each pass:
+#   - facts/beat lines carrying (conf: X, ts: Y): if the line was NOT touched this
+#     pass, decay conf by DECAY_PER_PASS. Below DECAY_FLOOR -> move to PROVENANCE
+#     as [DECAYED], do NOT hard-delete (audit trail preserved).
+#   - LEDGER + RELATIONS lines are NOT decayed (events/edges are durable history).
+#   - The rep FILE is never deleted (owner-purge only). Empty rep stays as a stub.
+_CONF_TS_RE = re.compile(r"\(conf:\s*([0-9.]+)\s*,\s*ts:\s*([0-9-]+)\)")
+_DECAYED_PREFIX_RE = re.compile(r"^(?:\[DECAYED [0-9-]+\]\s*)+")
+# The rep's canonical section order. compact_rep REBUILDS from this so structure
+# can never drift (no duplicate headers, blank line after each header preserved).
+_SECTION_ORDER = ["FACTS", "BEAT", "RELATIONS", "LEDGER", "PROVENANCE"]
+
+def _decay_section(body, today, decayed_out):
+    """Decay every '(conf: X, ts: Y)' line in a FACTS/BEAT section body. Lines whose
+    ts == today are fresh (not decayed). Below-floor lines are removed and their
+    CLEANED text (no old [DECAYED] prefix, no conf tag) is pushed to decayed_out.
+    Returns (kept_line_list, changed)."""
+    kept, changed = [], False
+    for ln in body.splitlines():
+        if not ln.strip():
+            continue  # drop blank lines; rebuild adds spacing deterministically
+        m = _CONF_TS_RE.search(ln)
+        if not m:
+            kept.append(ln); continue
+        try:
+            conf = float(m.group(1)); ts = m.group(2)
+        except Exception:
+            kept.append(ln); continue
+        if ts == today:
+            kept.append(ln); continue  # fresh this pass, don't decay
+        new_conf = round(conf - DECAY_PER_PASS, 4)
+        if new_conf < DECAY_FLOOR:
+            # strip leading '- ', any prior [DECAYED ...] prefixes, and the conf tag
+            core = _CONF_TS_RE.sub("", ln).strip().lstrip("- ").strip()
+            core = _DECAYED_PREFIX_RE.sub("", core).strip()
+            decayed_out.append(core)
+            changed = True
+            continue
+        ln2 = _CONF_TS_RE.sub(f"(conf: {new_conf}, ts: {ts})", ln, count=1)
+        kept.append(ln2)
+        changed = True
+    return kept, changed
+
+def _parse_sections(txt):
+    """Return (frontmatter_and_title, {SECTION: [nonblank body lines]}). Robust to
+    duplicate/mangled headers: bodies for the same header name are concatenated."""
+    parts = re.split(r"(^## .+$)", txt, flags=re.MULTILINE)
+    head = parts[0]
+    sections = {}
+    i = 1
+    while i < len(parts):
+        name = parts[i].strip("# ").strip().upper()
+        body = parts[i + 1] if i + 1 < len(parts) else ""
+        lines = [l for l in body.splitlines() if l.strip()]
+        sections.setdefault(name, []).extend(lines)
+        i += 2
+    return head, sections
+
+def compact_rep(path):
+    """Apply one decay pass to a single rep file, REBUILDING from canonical section
+    order so structure can never drift. Fail-open; NEVER deletes the file."""
+    try:
+        txt = path.read_text(encoding="utf-8")
+    except Exception as e:
+        log(f"   ⚠️  compact read failed ({path.name}): {e}")
+        return False
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    head, sections = _parse_sections(txt)
+    decayed = []
+    changed_any = False
+    for name in ("FACTS", "BEAT"):
+        body = "\n".join(sections.get(name, []))
+        kept, ch = _decay_section(body, today, decayed)
+        sections[name] = kept
+        changed_any = changed_any or ch
+    if decayed:
+        prov = sections.setdefault("PROVENANCE", [])
+        for d in decayed:
+            prov.append(f"- [DECAYED {today}] {d}")
+    if not (changed_any or decayed):
+        return False
+    # Rebuild deterministically: canonical order, one blank line after each header.
+    out = [head.rstrip("\n") + "\n"]
+    for name in _SECTION_ORDER:
+        out.append(f"\n## {name}\n")
+        for ln in sections.get(name, []):
+            out.append(ln + "\n")
+    # any unexpected extra sections (defensive) appended at end, once
+    for name, lines in sections.items():
+        if name not in _SECTION_ORDER:
+            out.append(f"\n## {name}\n")
+            for ln in lines:
+                out.append(ln + "\n")
+    txt2 = "".join(out)
+    txt2 = re.sub(r"^last_updated:.*$", f"last_updated: {today}", txt2, count=1, flags=re.MULTILINE)
+    try:
+        path.write_text(txt2, encoding="utf-8")
+        log(f"   🧹 compacted {path.name}: {len(decayed)} decayed-out, decay pass applied")
+        return True
+    except Exception as e:
+        log(f"   ⚠️  compact write failed ({path.name}): {e}")
+    return False
+
+def run_compaction():
+    """Sweep all peer reps with one decay pass. Never deletes a rep file."""
+    if not PEERS_DIR.exists():
+        log("✅ no peers dir — nothing to compact")
+        return
+    reps = sorted(PEERS_DIR.glob("*.md"))
+    if not reps:
+        log("✅ no peer reps — nothing to compact")
+        return
+    n = sum(1 for r in reps if compact_rep(r))
+    log(f"✅ compaction pass: {n}/{len(reps)} rep(s) changed")
+
 # ═══ MAIN ═══════════════════════════════════════════
 def main():
+    # --compact mode: run a decay sweep instead of archive derive.
+    if "--compact" in sys.argv:
+        run_compaction()
+        return
     # Single-flight lock (mirror extract_memory) — fail-open if lock unavailable.
     lock_fh = None
     try:
