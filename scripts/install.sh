@@ -1420,7 +1420,7 @@ def upsert_selfsched(job, label):
 # Same rationale as Daily Note Review: light verification/reminder work, not
 # deep reasoning. Pin to the cheap/non-reasoning model when DINOMEM_CHEAP_MODEL
 # is set; unset -> agent default (default-safe).
-_cheap = os.environ.get("DINOMEM_CHEAP_MODEL", "").strip()
+_cheap = _os.environ.get("DINOMEM_CHEAP_MODEL", "").strip()  # fix#8: block imports 'os as _os' only; bare os here -> NameError
 job = {
     "name": "Pending Note Reminder",
     "schedule": {"kind": "cron", "expr": "0 9 */3 * *"},
