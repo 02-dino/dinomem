@@ -1671,7 +1671,11 @@ def write_memory_file(summary, dedup=True, seed_verdict=None):
         for uf in user_facts
         if uf.strip()
     ]
-    topics = summary.get('topics', [])
+    # Cap shared topics: after windowing, _merge_summaries unions topics across
+    # ALL windows, so a single fact would otherwise inherit the ENTIRE haystack's
+    # ~50 topics (a degree-fact tagged 'seaturtles', 'dnd5e'...), diluting
+    # topic-based retrieval. Keep a small shared slice.
+    topics = (summary.get('topics', []) or [])[:8]
     relations = summary.get('relations', [])
     # Prefix relations with [relation] tag if not already present
     relations = [
