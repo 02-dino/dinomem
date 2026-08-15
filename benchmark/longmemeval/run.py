@@ -880,10 +880,20 @@ def main():
             # inside the sandbox and vanishes with it.
             lab_ocdir = os.path.join(lab, ".openclaw")
             os.makedirs(lab_ocdir, exist_ok=True)
+            lab_cfg = os.path.join(lab_ocdir, "openclaw.json")
+            # SEED the lab-local config BEFORE the overlay runs. Without this the
+            # installer's `[ -f "$OPENCLAW_JSON" ] || OPENCLAW_JSON=$OPENCLAW_DIR/...`
+            # fallback fires (the redirected path doesn't exist yet) and it
+            # retargets a real config -> dead lab paths leak in -> gateway
+            # crash-loop. An existing stub makes the -f check pass so EVERY
+            # plugin/config write lands here and vanishes with the lab.
+            if not os.path.exists(lab_cfg):
+                with open(lab_cfg, "w", encoding="utf-8") as _f:
+                    _f.write("{}\n")
             ov_env = dict(os.environ)
             ov_env["HOME"] = lab
             ov_env["OPENCLAW_DIR"] = lab_ocdir
-            ov_env["OPENCLAW_CONFIG"] = os.path.join(lab_ocdir, "openclaw.json")
+            ov_env["OPENCLAW_CONFIG"] = lab_cfg
             ov = _sh(["bash", "-c", ov_cmd], args.timeout, env=ov_env)
             # SUCCESS is verified by ARTIFACT, not exit code alone. The neuron
             # installer runs a trailing self-check (hook-eligibility probe, config
