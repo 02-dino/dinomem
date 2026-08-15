@@ -42,26 +42,30 @@ Nothing is hardcoded. You pick; we recommend and warn.
 
 ### Cost — shown before every run
 
-`run.py` **prints a cost estimate before it spends anything.** A `--full` run is
+`run.py` **prints a token estimate before it spends anything.** A `--full` run is
 **gated**: without `--yes` it prints the estimate (including any cost warning) and
 **stops** — so you never launch a paid run blind. `--yes` = "I saw the estimate,
-proceed." Estimate (all three buckets — INGEST is the dominant one):
+proceed."
+
+**Tokens are the headline — the invariant.** $ figures move with provider pricing and
+go stale, so the estimate reports TOKENS by default and $ is **opt-in** (`--show-usd`).
+All three buckets, INGEST dominant:
 
 ```
-est_cost ≈ N × [ ingest_tokens/Q × price(cheap_model)      # base/neuron only, ~93%
-              + answer_tokens/Q × price(answer_model)
-              + judge_tokens/Q  × price(judge_model) ]
+est_tokens ≈ N × [ ingest_tokens/Q      # base/neuron only, ~94%, on your CHEAP model
+                 + answer_tokens/Q
+                 + judge_tokens/Q ]
 ```
 
-| Mode | Scale | Ballpark* |
+| Mode | Scale | Tokens (base arm) |
 |-|-|-|
-| `--sample` (default, N=20) | fast smoke check | ~$0.7–2 |
-| `--full` (all LongMemEval-S, 500 Q) | the citation-grade number | ~$18–54 |
+| `--sample` (default, N=20) | fast smoke check | ~2.8M |
+| `--full` (all LongMemEval-S, 500 Q) | the citation-grade number | ~70M |
 
-\* With **ingest on a budget cheap model** (see below). If your cheap tier is UNSET,
-ingest rides your pricey default model and the full run costs **~10–50× more** —
-`run.py` prints a loud **COST WARNING** and the `--full` gate tells you to fix it first.
-The printed estimate always uses *your* resolved models, not these numbers.
+INGEST is ~94% of that and runs on your **cheap** tier (`DINOMEM_CHEAP_MODEL` →
+`compaction.model` anchor). If that tier is **UNSET**, ingest rides your pricey default
+model — `run.py` prints a loud **COST WARNING** and the `--full` gate tells you to fix
+it first. (That warning is a *token-cost* issue, not a $ figure — it's always shown.)
 
 **Which arm runs?** `--arm` defaults to **what you installed**: neuron if a neuron
 overlay is detected (`DINOMEM_BENCH_OVERLAY_CMD` set, or a neuron repo/pipeline stage
@@ -80,44 +84,54 @@ whole haystack into memory once per question — that dominates (~94% of tokens)
 `base` + `neuron` pay it; the `rag` arm ingests locally via TEI (~free). A naive
 answer+judge-only estimate under-reports by ~50×.
 
-**Two things the estimate now gets right (both shipped after windowing landed):**
+**Two things the estimate gets right (both shipped after windowing landed):**
 
 1. **Windowing overhead is included.** An oversized haystack is read across ~N
    windowed LLM calls (each re-paying the extraction prompt scaffold), so ingest is
    **not** just `haystack_size × questions`. The estimate applies a `×1.2` windowing
    multiplier — the *realistic* figure, not a floor. (LongMemEval-S ingest is ~138k
    tok/Q, not the raw ~115k.)
-2. **Ingest is priced at your CHEAP model, not the answerer.** Ingest runs on
-   dinomem's non-reasoning tier (`DINOMEM_CHEAP_MODEL` → `compaction.model` anchor →
-   fallback). The estimate resolves that model the same way the pipeline does and
-   prices the 94% bucket at *it* — so a cheap ingest model makes the run cheap.
-   **If nothing resolves (UNSET), ingest rides your pricey default → loud warning.**
+2. **Ingest is attributed to your CHEAP model, not the answerer.** Ingest runs on
+   dinomem's non-reasoning tier — so a cheap ingest model keeps the run cheap, and an
+   UNSET cheap tier (ingest on your pricey default) is what the warning flags.
 
-Full start-to-finish (2,486 Q × 3 arms) ≈ **~274M tokens** (windowed). Tokens are the
-invariant; **$ depends on the models YOU pick** — the command prints a price-tier table:
+Price the whole program (all datasets × all arms, no `--source`, no spend):
 
-| Tier (you choose) | Whole run |
+```bash
+python3 run.py --estimate-all              # tokens only (default)
+python3 run.py --estimate-all --show-usd   # + indicative $ footnote
+```
+
+Full start-to-finish (2,486 Q × 3 arms) ≈ **~274M tokens** (windowed). LongMemEval-S
+alone (skip LoCoMo) ≈ **~118M tok**. Per-Q counts are a **FLOOR GUESS** — run a small
+`--sample` first to measure the true windowed per-Q tokens before committing.
+
+<details>
+<summary>💲 Indicative $ (opt-in, <code>--show-usd</code> — volatile, don't trust as gospel)</summary>
+
+$ moves with provider pricing and repricing, so it's a footnote, not the headline.
+With the same ~274M-token whole-program run, blended per tier:
+
+| Tier (you choose) | Whole program |
 |-|-|
 | budget (flash/mini/haiku) | ~$82 |
 | mid (sonnet/gpt-4o) | ~$1,094 |
 | frontier (opus/gpt-4-class) | ~$5,471 |
 
-→ With ingest on a **budget cheap model** and answer/judge at mid tier, the
-recommended real-world figure is **~$180** for the whole thing — vs **~$1,105** if
-you leave the cheap tier UNSET (ingest on the pricey default). Set your cheap model.
+Because ingest (94%) runs on your **cheap** model, the realistic figure with a budget
+ingest model + mid answer/judge is **~$180** for the whole thing — vs **~$1,105** if
+the cheap tier is UNSET (ingest on the pricey default). Set your cheap model.
 
-**Recommended setup** (a suggestion, not a lock — free to override with
+</details>
+
+**Recommended setup** (a suggestion, not a lock — override with
 `--answer-model`/`--judge-model`):
 - Answerer + judge both at a **frontier/mid tier** (gpt-4o, sonnet-4.6, or equivalent).
 - **Cross-vendor** — answerer and judge from **different vendors** (Anthropic vs OpenAI
   vs …). Never same-vendor both sides: a same-family judge can favor its own family's
   style (self-scoring bias). `run.py` **warns** if it detects a same-vendor pair.
-- So e.g. **sonnet-4.6 answerer + gpt-4o judge** (≈ ~$930) *or* **gpt-4o answerer +
-  sonnet-4.6 judge** — just not same vendor on both.
-
-Per-Q token counts are a **FLOOR GUESS** — run a small `--sample` first to measure real
-per-Q tokens before committing the full budget. LongMemEval-S alone (skip LoCoMo) is
-~118M tok (~half).
+- So e.g. **sonnet-4.6 answerer + gpt-4o judge** *or* **gpt-4o answerer + sonnet-4.6
+  judge** — just not same vendor on both.
 
 ## Run
 

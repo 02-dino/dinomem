@@ -426,7 +426,7 @@ def estimate_all(answer_model: str, judge_model: str, cheap_model: str = "") -> 
     }
 
 
-def print_estimate_all(est: dict):
+def print_estimate_all(est: dict, show_usd: bool = False):
     e = lambda s: print(s, file=sys.stderr)
     e("\n=== FULL RUN ESTIMATE — ALL datasets x ALL arms (before any spend) ===")
     e(f"  arms: {', '.join(est['arms'])}  |  ingest paid by: "
@@ -442,16 +442,23 @@ def print_estimate_all(est: dict):
       f"{est['grand_total_tokens']:>15,}")
     e(f"  >>> {est['grand_total_tokens']:,} TOTAL TOKENS (~{est['grand_total_tokens']/1e6:.1f}M) "
       f"— ingest dominates ({est['ingest_tokens']/est['grand_total_tokens']*100:.0f}%)")
-    # --- $ is model-dependent: a price table, YOU pick the model ---
-    e("\n  $ COST (you choose the models — token count above is fixed; $ = tokens x price):")
-    for name, usd in est["usd_by_tier"].items():
-        e(f"    {name:42} ~${usd:,.0f}")
-    e(f"  INGEST priced at: {est.get('ingest_model','?')} (from {est.get('ingest_model_source','?')})")
-    e(f"  RECOMMENDED example ({est['recommended_pair']}, ingest on cheap tier): ~${est['recommended_usd']:,.0f}")
+    e(f"  INGEST runs on: {est.get('ingest_model','?')} (from {est.get('ingest_model_source','?')})")
+    # The cost WARNING is NOT $ — it flags an UNSET cheap tier (which balloons TOKEN
+    # cost on the wrong model). Always show it, regardless of --show-usd.
     if est.get('cost_warning'):
         e("  " + "!"*66)
         e(f"  ⚠️  COST WARNING: {est['cost_warning']}")
         e("  " + "!"*66)
+    # --- $ is OPT-IN (--show-usd). Volatile per provider/day -> tokens are the
+    #     invariant headline above; $ is only an indicative footnote when asked. ---
+    if show_usd:
+        e("\n  $ FOOTNOTE (indicative only — volatile per provider/day; tokens above are the truth):")
+        for name, usd in est["usd_by_tier"].items():
+            e(f"    {name:42} ~${usd:,.0f}")
+        e(f"  RECOMMENDED example ({est['recommended_pair']}, ingest on cheap tier): ~${est['recommended_usd']:,.0f}")
+    else:
+        e("  ($ figures hidden — pass --show-usd for an indicative price footnote. "
+          "Tokens are the invariant; $ moves with provider pricing.)")
     e("  RECOMMENDATION: answerer + judge at frontier/mid tier, from DIFFERENT vendors")
     e("  (anthropic vs openai vs …) — never same-vendor both sides (self-scoring bias).")
     e("  You're free to pick any via --answer-model/--judge-model; this is a suggestion.")
@@ -484,11 +491,10 @@ def print_cost(est: dict):
     if _ing:
         print(f"    >>> ingest is {_ing/est['est_total_tokens']*100:.0f}% of the bill "
               f"(the haystack read into memory, x{est.get('window_ingest_multiplier',1.0)} for windowing)", file=sys.stderr)
-    # $ = footnote only (metered providers; ignore on flat-fee subs).
-    print(f"  ($ footnote:    ${est['est_total_usd_low']}–${est['est_total_usd_high']} "
-          f"metered-only, ignore on subs)", file=sys.stderr)
     print("  NOTE: per-Q ingest is a GUESS — run a small --sample first to measure the "
           "true windowed per-Q tokens before committing the full budget.", file=sys.stderr)
+    # The cost WARNING is NOT a $ figure — it flags an UNSET cheap tier, which
+    # inflates the TOKEN cost on the wrong model. Always show it, regardless of $.
     if est.get('cost_warning'):
         print("  " + "!"*66, file=sys.stderr)
         print(f"  ⚠️  COST WARNING: {est['cost_warning']}", file=sys.stderr)
@@ -687,6 +693,12 @@ def main():
     ap.add_argument("--estimate-all", action="store_true",
                     help="print the FULL start-to-finish estimate (ALL datasets x "
                          "ALL arms) and EXIT. No --source needed, no spend.")
+    ap.add_argument("--show-usd", action="store_true",
+                    help="also print an INDICATIVE $ footnote. OFF by default: $ is "
+                    "volatile (moves with provider pricing/day) and goes stale; TOKENS "
+                    "are the invariant headline and are ALWAYS shown. The cost WARNING "
+                    "(unset cheap tier) is always shown too — it is a token-cost issue, "
+                    "not a $ figure.")
     args = ap.parse_args()
 
     # Resolve the dynamic --arm default: run what the user HAS. Neuron is an
@@ -703,7 +715,7 @@ def main():
     if args.estimate_all:
         est = estimate_all(args.answer_model, args.judge_model,
                            cheap_model=getattr(args, "cheap_model", ""))
-        print_estimate_all(est)
+        print_estimate_all(est, show_usd=getattr(args, "show_usd", False))
         RESULTS.mkdir(parents=True, exist_ok=True)
         (RESULTS / "full_run_estimate.json").write_text(json.dumps(est, indent=2))
         print(json.dumps({"estimate_all": True, "estimate": est}, indent=2))
