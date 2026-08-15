@@ -121,6 +121,13 @@ def build_lab(source: Path, lab: Path | None) -> dict:
     #    reads the LAB sessions dir, not the live agent's. Live copy untouched.
     patched = _patch_sessions_dir(lab / "procedures" / "extract_memory.py",
                                   lab / "sessions")
+    # 4b. SWEEP every other copied proc for baked live-sessions paths (session_reset
+    #     etc). HARD-REFUSE if any live ref survives (isolation invariant).
+    sweep = _sandbox_all_procedures(lab / "procedures", lab / "sessions")
+    if sweep["remaining_live_refs"]:
+        _fail("ISOLATION FAILURE: live-sessions path still present in copied procs "
+              f"after patch: {sweep['remaining_live_refs']} — refusing to build a lab "
+              "that would read/archive the user's LIVE sessions.")
 
     live_source_mtime = _tree_mtime(source)
 
@@ -130,20 +137,34 @@ def build_lab(source: Path, lab: Path | None) -> dict:
         "sessions_dir": str(lab / "sessions"),
         "memory_dir": str(lab / "memory"),
         "sessions_dir_patched": patched,
+        "procs_sandboxed": sweep,
         "live_source_mtime": live_source_mtime,
         "marker": LAB_MARKER,
     }
 
 
+# Any absolute live-sessions path baked into a copied procedure. This is THE
+# isolation trap: several base procs hardcode /root/.openclaw/agents/<agent>/
+# sessions and IGNORE DINOMEM_WORKSPACE, so a lab run would read/ARCHIVE the
+# user's LIVE sessions (proven 2026-08-15: session_reset.py renamed 20 live orphan
+# files). We must rewrite EVERY such path in EVERY copied proc, not just
+# extract_memory.py's SESSIONS_DIR. Matches the literal live path in all shapes:
+#   SESSIONS_DIR = Path("/root/.openclaw/agents/analyst/sessions")
+#   os.environ.get("...") or "/root/.openclaw/agents/analyst/sessions"
+#   SESSIONS_DEFAULT = "/root/.openclaw/agents/analyst/sessions"
+_LIVE_SESSIONS_RE = re.compile(
+    r'(["\'])(/root/\.openclaw/agents/[A-Za-z0-9_-]+/sessions)\1')
+
+
 def _patch_sessions_dir(extract_py: Path, lab_sessions: Path) -> bool:
-    """Rewrite `SESSIONS_DIR = Path("/abs/.../sessions")` to the lab sessions dir.
-    Returns True if a substitution happened. Fail-loud if the anchor is missing
-    (means the code changed and this patcher is stale — do NOT silently run
-    unsandboxed)."""
+    """Rewrite the SESSIONS_DIR anchor in extract_memory.py to the lab sessions
+    dir. Kept as the fail-loud anchor check for the MAIN proc; the broader sweep
+    (_sandbox_all_procedures) then rewrites EVERY live-sessions literal in EVERY
+    copied proc. Fail-loud if the anchor is missing (code changed -> stale
+    patcher -> refuse to run unsandboxed)."""
     if not extract_py.exists():
         _fail(f"lab extract_memory.py missing at {extract_py}; copy step failed")
     text = extract_py.read_text(encoding="utf-8")
-    # match: SESSIONS_DIR = Path("....../sessions")   (single or double quotes)
     pat = re.compile(r'^(SESSIONS_DIR\s*=\s*Path\()\s*["\'][^"\']*["\']\s*(\))',
                      re.MULTILINE)
     new, n = pat.subn(rf'\g<1>"{lab_sessions.as_posix()}"\g<2>', text)
@@ -153,6 +174,31 @@ def _patch_sessions_dir(extract_py: Path, lab_sessions: Path) -> bool:
               "unsandboxed (would read the live sessions dir).")
     extract_py.write_text(new, encoding="utf-8")
     return True
+
+
+def _sandbox_all_procedures(procs_dir: Path, lab_sessions: Path) -> dict:
+    """Sweep EVERY copied procedure and rewrite ANY absolute live-sessions path
+    (/root/.openclaw/agents/*/sessions) to the lab's sessions dir. This closes the
+    isolation trap beyond extract_memory: session_reset.py, session_ingest.py,
+    reset_all_analysis_sessions.py, note_creation_audit.py all bake the live path.
+    Returns {patched_files, replacements, remaining_live_refs}. remaining>0 is a
+    HARD isolation failure (caller must refuse to run)."""
+    lab = lab_sessions.as_posix()
+    patched, total_repl = [], 0
+    for py in sorted(procs_dir.glob("*.py")):
+        text = py.read_text(encoding="utf-8")
+        new, n = _LIVE_SESSIONS_RE.subn(rf'\g<1>{lab}\g<1>', text)
+        if n:
+            py.write_text(new, encoding="utf-8")
+            patched.append(py.name)
+            total_repl += n
+    # verify: NO copied proc may still reference the live agents/sessions path
+    remaining = []
+    for py in sorted(procs_dir.glob("*.py")):
+        if _LIVE_SESSIONS_RE.search(py.read_text(encoding="utf-8")):
+            remaining.append(py.name)
+    return {"patched_files": patched, "replacements": total_repl,
+            "remaining_live_refs": remaining}
 
 
 def _write_lab_config(openclaw_dir: Path, agent_id: str,
@@ -280,6 +326,17 @@ def build_lab_real(source: Path, lab: Path | None, agent_id: str) -> dict:
             # base-style hardcoded path present -> floor-patch to sandbox sessions
             floor_patched = _patch_sessions_dir(em, sessions)
 
+    # SWEEP every copied proc for baked live-sessions paths (session_reset etc.)
+    # -> lab sessions. HARD-REFUSE if any live ref survives. This closes the
+    # 2026-08-15 isolation leak where session_reset.py archived LIVE orphans.
+    # (Neuron installer may re-copy some procs after this; run.py re-verifies
+    # post-overlay via the drive_base pre-flight guard.)
+    sweep = _sandbox_all_procedures(ws / "procedures", sessions)
+    if sweep["remaining_live_refs"]:
+        _fail("ISOLATION FAILURE: live-sessions path still present in copied procs "
+              f"after patch: {sweep['remaining_live_refs']} — refusing to build a lab "
+              "that would read/archive the user's LIVE sessions.")
+
     # A1 (bug #12): wire the lab's NATIVE memory index to local TEI so
     # OpenClaw's indexer (the neuron graph leg's dependency) builds in-lab
     # WITHOUT an OpenAI key. Root == OPENCLAW_DIR, so the config goes at
@@ -296,6 +353,7 @@ def build_lab_real(source: Path, lab: Path | None, agent_id: str) -> dict:
         "sessions_dir": str(sessions),
         "memory_dir": str(ws / "memory"),
         "sessions_dir_patched": floor_patched,
+        "procs_sandboxed": sweep,
         "lab_config": lab_config,
         "overlay_hint": (f"bash <neuron-repo>/scripts/install.sh --workspace {ws} "
                          f"--agent-id {agent_id} --agree --no-cron --no-auto-base"),

@@ -141,6 +141,27 @@ def drive(lab: Path, timeout: int, review_max_loops: int,
     if not procs.exists():
         _fail(f"lab has no procedures/ dir: {procs}")
 
+    # ---- PRE-FLIGHT ISOLATION GUARD (defense in depth) ----
+    # setup_lab sweeps live-sessions paths out of the copied procs, but the neuron
+    # overlay installer may re-copy some AFTER that. So RE-VERIFY here, right
+    # before we run the front door: if ANY copied proc still references the live
+    # /root/.openclaw/agents/*/sessions path, REFUSE to run. This is the guard
+    # that would have stopped the 2026-08-15 leak (session_reset archived LIVE
+    # orphans because its hardcoded SESSIONS_DIR was never patched).
+    _LIVE_RE = re.compile(r'/root/\.openclaw/agents/[A-Za-z0-9_-]+/sessions')
+    leaking = []
+    for py in sorted(procs.glob("*.py")):
+        try:
+            if _LIVE_RE.search(py.read_text(encoding="utf-8")):
+                leaking.append(py.name)
+        except Exception:
+            continue
+    if leaking:
+        _fail("ISOLATION GUARD: copied procs still reference the LIVE sessions path "
+              f"({', '.join(leaking)}). Refusing to run — would read/archive the "
+              "user's real sessions. Re-run setup_lab (its sweep must patch these) "
+              "or check for a proc shape the patcher missed.")
+
     # Sandbox env: point every workspace-var at the lab.
     env = dict(os.environ)
     env["DINOMEM_WORKSPACE"] = str(lab)
