@@ -40,7 +40,7 @@ ISOLATION INVARIANT (safety, non-negotiable):
 USAGE:
   python3 drive_neuron.py --ws <WORKSPACE_DIR> [--json] [--timeout 1200] \\
                           [--review-max-loops 12] [--live-source <DIR>] \\
-                          [--live-source-mtime <FLOAT>] [--sandbox-root <DIR>]
+                          [--live-leak-sig <HEX>] [--sandbox-root <DIR>]
 
   --ws           : the neuron-overlaid workspace (<root>/workspace-<agent> from
                    setup_lab.py --layout real, after the neuron installer ran on it).
@@ -150,18 +150,32 @@ def _count_graph_nodes(ws: Path) -> dict:
         return {"graph_path": str(gpath), "nodes": n, "edges": e}
     return {"graph_path": None, "nodes": 0, "edges": 0}
 
-def _live_source_mtime(source: Path) -> float:
-    latest = 0.0
-    for sub in ("procedures", "tools"):
-        d = source / sub
-        if not d.exists():
+def _live_leak_signature(source: Path) -> str:
+    """Precise isolation tripwire (mirrors setup_lab / drive_base exactly): hash
+    ONLY the live paths a lab LEAK would mutate — every live agent's sessions/ FILE
+    LISTING + any .processed_archives.json tracker content. NOT a whole-tree mtime
+    (this live session writes its own trajectory/session files continuously -> mtime
+    always moves -> false ISOLATION VIOLATION). Must produce the SAME hash as
+    setup_lab._live_leak_signature so the round-trip compare is meaningful."""
+    import hashlib
+    parts: list[str] = []
+    for agents in source.rglob("agents"):
+        if not agents.is_dir():
             continue
-        for p in d.rglob("*"):
+        for sess in agents.rglob("sessions"):
+            if not sess.is_dir():
+                continue
             try:
-                latest = max(latest, p.stat().st_mtime)
+                names = sorted(p.name for p in sess.iterdir() if p.is_file())
+                parts.append(f"{sess}::{'|'.join(names)}")
             except OSError:
-                pass
-    return latest
+                continue
+    for trk in source.rglob(".processed_archives.json"):
+        try:
+            parts.append(f"{trk}::{trk.read_text(encoding='utf-8')}")
+        except OSError:
+            continue
+    return hashlib.sha256("\n".join(sorted(parts)).encode("utf-8")).hexdigest()
 
 # Neuron cron stages in prod order. (script_name, reasoning_flag)
 NEURON_STAGES = [
@@ -174,7 +188,7 @@ NEURON_STAGES = [
 ]
 
 def drive(ws: Path, sandbox_root: Path, timeout: int, review_max_loops: int,
-          live_source: Path | None, live_source_mtime: float | None,
+          live_source: Path | None, live_leak_sig: str | None,
           skip_stages: set[str] | None = None) -> dict:
     # skip_stages = neuron L2/L3/L4 script names to ABLATE (Phase 5b). When the graph
     # stage itself is ablated, the graph-node assertion is relaxed so the ablated run
@@ -266,13 +280,13 @@ def drive(ws: Path, sandbox_root: Path, timeout: int, review_max_loops: int,
     # ---- ISOLATION TRIPWIRE ----
     iso = {"checked": False}
     if live_source is not None:
-        cur = _live_source_mtime(live_source.resolve())
+        cur = _live_leak_signature(live_source.resolve())
         iso = {
             "checked": True,
             "live_source": str(live_source),
-            "expected_mtime": live_source_mtime,
-            "actual_mtime": cur,
-            "untouched": (live_source_mtime is None) or (abs(cur - live_source_mtime) < 1e-6),
+            "expected_sig": live_leak_sig,
+            "actual_sig": cur,
+            "untouched": (live_leak_sig is None) or (cur == live_leak_sig),
         }
 
     ok = base_ok and graph_ok and (not iso["checked"] or iso["untouched"])
@@ -296,7 +310,7 @@ def main():
     ap.add_argument("--timeout", type=int, default=1200, help="per-stage timeout seconds (graph/synthesis can be minutes)")
     ap.add_argument("--review-max-loops", type=int, default=12, help="max memory_review iterations")
     ap.add_argument("--live-source", help="live install dir to assert untouched (isolation tripwire)")
-    ap.add_argument("--live-source-mtime", type=float, help="expected live source mtime from setup_lab.py")
+    ap.add_argument("--live-leak-sig", type=str, help="expected live leak-signature from setup_lab.py")
     ap.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     ap.add_argument("--skip-stage", action="append", default=[], metavar="SCRIPT",
                     help="ablate a neuron stage by script name (Phase 5b); repeatable. "
@@ -307,7 +321,7 @@ def main():
     sandbox_root = Path(args.sandbox_root) if args.sandbox_root else ws.resolve().parent
     live_source = Path(args.live_source) if args.live_source else None
     result = drive(ws, sandbox_root, args.timeout, args.review_max_loops,
-                   live_source, args.live_source_mtime, skip_stages=set(args.skip_stage))
+                   live_source, args.live_leak_sig, skip_stages=set(args.skip_stage))
 
     if args.json:
         print(json.dumps(result, indent=2))
