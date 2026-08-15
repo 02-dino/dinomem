@@ -44,6 +44,36 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+
+# ── zero-dependency .env auto-load (UX: "copy .env.example -> .env -> run") ──
+# The README/.env.example imply a .env just works, but nothing sourced it, so the
+# file was inert unless the caller exported vars by hand. This loads a sibling
+# .env at startup WITHOUT requiring python-dotenv: KEY=VALUE lines, # comments,
+# optional 'export ' prefix, quotes stripped. Real environment ALWAYS wins (a
+# value already exported / passed via CLI is never overridden), so flags and
+# explicit env stay authoritative; .env is only a convenience fallback.
+def _autoload_dotenv() -> None:
+    envp = Path(__file__).resolve().parent / ".env"
+    if not envp.is_file():
+        return
+    try:
+        for raw in envp.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            if line.startswith("export "):
+                line = line[len("export "):].lstrip()
+            key, _, val = line.partition("=")
+            key = key.strip()
+            val = val.strip().strip('"').strip("'")
+            if key and key not in os.environ:  # real env / CLI wins
+                os.environ[key] = val
+    except Exception:
+        pass  # a malformed .env must never crash the runner
+
+
+_autoload_dotenv()
+
 # Bump when the answer/hypothesis/scoring PROTOCOL changes in a way that makes
 # old runs incomparable (e.g. hypothesis file shape, judge prompt). Part of the
 # shared-protocol hash so a stale arm can't be silently compared against a new one.
