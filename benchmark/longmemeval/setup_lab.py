@@ -176,29 +176,49 @@ def _patch_sessions_dir(extract_py: Path, lab_sessions: Path) -> bool:
     return True
 
 
+# Global /tmp locks a copied proc grabs. These are keyed to a FIXED /tmp path
+# (not workspace-scoped), so a lab run COLLIDES with the LIVE agent's scheduled
+# cron (auto_session_reset every 15 min holds dinomem_extract_memory.lock) or a
+# parallel lab -> the lab's extract_memory SKIPS entirely ("another instance is
+# running") -> 0 memory items -> no_memory_materialized. Proven 2026-08-15. Must
+# re-scope every such lock into the lab so lab runs never contend with live/each
+# other. Matches: <NAME>_LOCK_FILE = Path("/tmp/....lock") (or _LOCK / LOCK_FILE).
+_TMP_LOCK_RE = re.compile(
+    r'(\w*LOCK\w*\s*=\s*Path\()\s*["\']/tmp/([^"\']+\.lock)["\']\s*(\))')
+
+
 def _sandbox_all_procedures(procs_dir: Path, lab_sessions: Path) -> dict:
-    """Sweep EVERY copied procedure and rewrite ANY absolute live-sessions path
-    (/root/.openclaw/agents/*/sessions) to the lab's sessions dir. This closes the
-    isolation trap beyond extract_memory: session_reset.py, session_ingest.py,
-    reset_all_analysis_sessions.py, note_creation_audit.py all bake the live path.
-    Returns {patched_files, replacements, remaining_live_refs}. remaining>0 is a
-    HARD isolation failure (caller must refuse to run)."""
+    """Sweep EVERY copied procedure and rewrite (a) ANY absolute live-sessions
+    path (/root/.openclaw/agents/*/sessions) to the lab's sessions dir, and (b)
+    ANY global /tmp/*.lock to a lab-scoped lock. (a) closes the isolation trap
+    beyond extract_memory (session_reset/session_ingest/reset_all_analysis/
+    note_creation_audit all bake the live path); (b) stops the lab's
+    extract_memory from skipping when the LIVE cron holds the shared /tmp lock.
+    Returns {patched_files, replacements, lock_files, remaining_live_refs}.
+    remaining>0 is a HARD isolation failure (caller must refuse to run)."""
     lab = lab_sessions.as_posix()
-    patched, total_repl = [], 0
+    lab_root = lab_sessions.parent.as_posix()   # lab workspace dir
+    patched, total_repl, lock_files = [], 0, []
     for py in sorted(procs_dir.glob("*.py")):
         text = py.read_text(encoding="utf-8")
         new, n = _LIVE_SESSIONS_RE.subn(rf'\g<1>{lab}\g<1>', text)
-        if n:
+        # re-scope global /tmp locks into the lab (unique per-lab -> no live/lab
+        # contention). Keep the original basename for readability.
+        new, m = _TMP_LOCK_RE.subn(
+            rf'\g<1>"{lab_root}/.\g<2>"\g<3>', new)
+        if n or m:
             py.write_text(new, encoding="utf-8")
             patched.append(py.name)
             total_repl += n
+            if m:
+                lock_files.append(py.name)
     # verify: NO copied proc may still reference the live agents/sessions path
     remaining = []
     for py in sorted(procs_dir.glob("*.py")):
         if _LIVE_SESSIONS_RE.search(py.read_text(encoding="utf-8")):
             remaining.append(py.name)
     return {"patched_files": patched, "replacements": total_repl,
-            "remaining_live_refs": remaining}
+            "lock_files": lock_files, "remaining_live_refs": remaining}
 
 
 def _write_lab_config(openclaw_dir: Path, agent_id: str,
