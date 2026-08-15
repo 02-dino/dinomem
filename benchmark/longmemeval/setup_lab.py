@@ -155,6 +155,67 @@ def _patch_sessions_dir(extract_py: Path, lab_sessions: Path) -> bool:
     return True
 
 
+def _write_lab_config(openclaw_dir: Path, agent_id: str,
+                      tei_port: int = 8080,
+                      model: str = "intfloat/multilingual-e5-small") -> dict:
+    """A1 — write <openclaw_dir>/.openclaw/openclaw.json wiring memorySearch to the
+    lab's LOCAL TEI embed server, so OpenClaw's NATIVE memory index builds in-lab
+    WITHOUT any OpenAI key.
+
+    WHY (bug #12): the native indexer (memory-core-host-engine-embeddings) resolves
+    its embedding client via resolveRemoteEmbeddingBearerClient():
+        apiKey  = memorySearch.remote.apiKey  ||  requireApiKey(resolveApiKeyForProvider(provider))
+        baseUrl = memorySearch.remote.baseUrl ||  providerConfig.baseUrl || defaultBaseUrl
+        request = POST {baseUrl}/v1/embeddings   body={model, input}
+    With NO memorySearch block the provider defaults to 'openai' and requireApiKey
+    THROWS 'No API key found for provider "openai"' — even though the lab's TEI is
+    healthy on :{tei_port}. Setting remote.apiKey (a dummy — TEI ignores the bearer)
+    kills the throw; remote.baseUrl points the /v1/embeddings POST at local TEI; a
+    NON-'openai' provider name skips OpenClaw's OpenAI-attribution route
+    (isNativeOpenAIEmbeddingRoute returns false for any non-openai provider/host).
+    This is the SAME config surface the neuron installer's self-check probes
+    ('openclaw.json has memorySearch config'), so the lab mirrors a real install
+    instead of reimplementing the indexer.
+
+    TEI serves an OpenAI-compatible /v1/embeddings; model default matches the live
+    embed model (intfloat/multilingual-e5-small, mean-pooled, 384-dim).
+    """
+    cfg_dir = openclaw_dir / ".openclaw"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    cfg_path = cfg_dir / "openclaw.json"
+    base_url = f"http://localhost:{tei_port}"
+    mem_search = {
+        # non-'openai' provider name => indexer skips OpenAI attribution + the
+        # default OpenAI creds path; it uses remote.{baseUrl,apiKey} verbatim.
+        "provider": "tei-local",
+        "model": model,
+        "remote": {
+            "baseUrl": base_url,   # indexer appends /v1/embeddings
+            # dummy bearer — TEI does not auth; presence is what stops the
+            # requireApiKey('openai') throw.
+            "apiKey": "lab-local-tei-no-auth",
+        },
+    }
+    # Config lives under agents.<agent_id> (secret path is agents.*.memorySearch.*)
+    # AND at top level, so the indexer resolves it regardless of which scope it
+    # reads for this throwaway lab.
+    config = {
+        "memorySearch": mem_search,
+        "agents": {agent_id: {"memorySearch": mem_search}},
+    }
+    # atomic write (temp + rename), then validate it parses as JSON before use.
+    tmp = cfg_path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+    json.loads(tmp.read_text(encoding="utf-8"))  # fail-loud if malformed
+    tmp.replace(cfg_path)
+    return {
+        "config_path": str(cfg_path),
+        "tei_base_url": base_url,
+        "embed_model": model,
+        "provider": "tei-local",
+    }
+
+
 def _tree_mtime(root: Path) -> float:
     """Newest mtime across the source tree — a cheap 'did anything change' probe
     the caller can re-check after a run to assert the live WS was untouched."""
@@ -219,6 +280,12 @@ def build_lab_real(source: Path, lab: Path | None, agent_id: str) -> dict:
             # base-style hardcoded path present -> floor-patch to sandbox sessions
             floor_patched = _patch_sessions_dir(em, sessions)
 
+    # A1 (bug #12): wire the lab's NATIVE memory index to local TEI so
+    # OpenClaw's indexer (the neuron graph leg's dependency) builds in-lab
+    # WITHOUT an OpenAI key. Root == OPENCLAW_DIR, so the config goes at
+    # <root>/.openclaw/openclaw.json where the indexer resolves it.
+    lab_config = _write_lab_config(root, agent_id)
+
     return {
         "layout": "real",
         "lab": str(root),
@@ -229,6 +296,7 @@ def build_lab_real(source: Path, lab: Path | None, agent_id: str) -> dict:
         "sessions_dir": str(sessions),
         "memory_dir": str(ws / "memory"),
         "sessions_dir_patched": floor_patched,
+        "lab_config": lab_config,
         "overlay_hint": (f"bash <neuron-repo>/scripts/install.sh --workspace {ws} "
                          f"--agent-id {agent_id} --agree --no-cron --no-auto-base"),
         "live_source_mtime": _tree_mtime(source),
