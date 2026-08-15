@@ -125,7 +125,13 @@ def command_recall(question: str, topk: int) -> list[dict]:
         _fail("--recall command requires DINOMEM_BENCH_RECALL_CMD env (with {q}/{k})")
     cmd = cmd_tpl.replace("{q}", question).replace("{k}", str(topk))
     try:
-        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=180)
+        # Force bash (not the ambient /bin/sh, which may be dash): the neuron
+        # recall hook can use bash process-substitution <(...) to feed
+        # memory_search_shim output into hybrid_recall's --external-hits (the
+        # memory_external leg). executable=/bin/bash guarantees that works
+        # regardless of what /bin/sh points to on the host.
+        r = subprocess.run(cmd, shell=True, executable="/bin/bash",
+                           capture_output=True, text=True, timeout=180)
     except subprocess.TimeoutExpired:
         return []
     out = (r.stdout or "").strip()

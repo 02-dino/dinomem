@@ -830,6 +830,28 @@ def main():
             if er.returncode != 0:
                 _fail(f"{adapter_mod} emit failed: {er.stderr[-400:]}")
 
+        # ---- ISOLATION FIX (LongMemEval): the lab now holds ONLY this sample's
+        # haystack (--sample-index). answer.py must therefore answer ONLY this
+        # sample's question — NOT the whole dataset. Otherwise every other qid
+        # queries a store that never ingested its haystack and abstains ("I don't
+        # know") => false 0.0. Capture the emitted qid and scope the answer loop
+        # to it via a one-line qids-file. Per-sample isolation = one lab, one
+        # question; run N samples for N questions (each its own isolated lab).
+        emitted_qid = None
+        if args.dataset == "longmemeval":
+            try:
+                emit_info = json.loads(er.stdout[er.stdout.find("{"):])
+                emitted_qid = emit_info.get("question_id")
+            except (ValueError, json.JSONDecodeError):
+                emitted_qid = None
+            if not emitted_qid:
+                _fail("adapter emit did not report question_id (isolation fix "
+                      "needs it to scope answer.py to the emitted sample)")
+            emitted_qids_file = str(RESULTS / f"{args.arm}_emitted_qids.txt")
+            Path(emitted_qids_file).write_text(emitted_qid + "\n", encoding="utf-8")
+            _log(f"isolation: lab holds sample-index {args.sample_index} "
+                 f"(qid={emitted_qid}); answer loop scoped to that qid only.")
+
         # LoCoMo: build the per-question REF file for this conversation so answer.py
         # + score.py operate per-question (the dataset itself is 1 conversation).
         if args.dataset == "locomo":
@@ -936,11 +958,35 @@ def main():
                 # DINOMEM_WORKSPACE so hybrid_recall's leg tools (docs_search,
                 # session_search, graph_search) resolve their lab-local dbs.
                 os.environ["DINOMEM_WORKSPACE"] = ws
-                os.environ["DINOMEM_BENCH_RECALL_CMD"] = (
-                    f'DINOMEM_WORKSPACE={ws} {sys.executable} {_recall_tool} '
-                    f'"{{q}}" --k {{k}} --json'
-                )
-                _log(f"neuron recall hook wired -> hybrid_recall.py (WS={ws})")
+                # FOURTH LEG (memory_external): in prod this is the agent's native
+                # memory_search tool-call, folded via --external-hits. The sandbox
+                # has no agent runtime, so without a feeder the fusion silently
+                # runs as 3 legs (session/graph/docs) and mislabels itself hybrid.
+                # memory_search_shim.py is the faithful in-sandbox feeder: SAME
+                # embed model + e5 prefixing as the other legs, over the lab's
+                # distilled memory/*.md, emitting the exact --external-hits shape.
+                # Wire it via process-substitution so hybrid_recall gets a REAL
+                # memory_external leg (== production's 4-leg fusion).
+                _shim = os.path.join(HERE, "memory_search_shim.py")
+                _lab_mem = os.path.join(ws, "memory")
+                if os.path.isfile(_shim):
+                    os.environ["DINOMEM_BENCH_RECALL_CMD"] = (
+                        f'DINOMEM_WORKSPACE={ws} {sys.executable} {_recall_tool} '
+                        f'"{{q}}" --k {{k}} --json --external-hits '
+                        f'<({sys.executable} {_shim} "{{q}}" '
+                        f'--memory-dir {_lab_mem} --k {{k}} --json)'
+                    )
+                    _log(f"neuron recall hook wired -> hybrid_recall.py + "
+                         f"memory_search_shim (4-leg fusion, WS={ws})")
+                else:
+                    # Shim missing -> honest 3-leg fusion (memory_external dark).
+                    os.environ["DINOMEM_BENCH_RECALL_CMD"] = (
+                        f'DINOMEM_WORKSPACE={ws} {sys.executable} {_recall_tool} '
+                        f'"{{q}}" --k {{k}} --json'
+                    )
+                    _log(f"neuron recall hook wired -> hybrid_recall.py "
+                         f"(3-leg; memory_search_shim.py absent, memory_external "
+                         f"DARK, WS={ws})")
 
         # ---- 3. drive pipeline to convergence (isolation tripwire) ----
         # RAG arm: NO pipeline to drive (naive floor = retrieval over raw sessions).
@@ -977,15 +1023,19 @@ def main():
                   f"{drive_res.get('reason')} :: {dr.stderr[-300:]}")
 
         # ---- 4. answer + score (once, or twice for determinism) ----
+        # ISOLATION FIX: for LongMemEval, scope the answer loop to the ONE emitted
+        # qid (the only question whose haystack is in this lab). n_arg is ignored
+        # when a qids-file is passed (answer.py: qids-file wins over --n).
         n_arg = args.n if mode_name == "sample" else None
+        answer_qids_file = emitted_qids_file if args.dataset == "longmemeval" else None
         m1 = _run_pipeline_once(args.arm, lab_info, dataset_path, args.sample_index,
-                                n_arg, None, args.answer_model, args.judge_model,
+                                n_arg, answer_qids_file, args.answer_model, args.judge_model,
                                 recall, args.overlay_cmd, f"{args.arm}", args.timeout,
                                 dataset_family=args.dataset, ref_path=ref_path)
         determinism = None
         if args.determinism:
             m2 = _run_pipeline_once(args.arm, lab_info, dataset_path, args.sample_index,
-                                    n_arg, None, args.answer_model, args.judge_model,
+                                    n_arg, answer_qids_file, args.answer_model, args.judge_model,
                                     recall, args.overlay_cmd, f"{args.arm}_run2", args.timeout,
                                     dataset_family=args.dataset, ref_path=ref_path)
             o1, o2 = m1.get("overall_accuracy"), m2.get("overall_accuracy")
