@@ -75,19 +75,48 @@ HERE = Path(__file__).parent.resolve()
 RESULTS = HERE / "results"
 LEADERBOARD = "https://github.com/xiaowu0162/LongMemEval"
 
-# Rough per-question token estimates (measured-from-smoke should refine these;
-# used ONLY for the pre-run cost ESTIMATE, never for scoring).
-EST_ANSWER_TOKENS = 1800   # retrieved context + question + answer, per Q
-EST_JUDGE_TOKENS = 400     # judge prompt + 10-token verdict, per Q
+# Per-question token estimates. THREE cost buckets, because the pipeline's real
+# cost is NOT the answer step — it's INGESTING the haystack into memory first.
+# A naive answer+judge-only estimate under-reports by ~50x. Measured-from-smoke
+# should refine these; used ONLY for the pre-run ESTIMATE, never for scoring.
+#
+#   INGEST: the pipeline (base/neuron) reads the whole haystack into memory
+#           (extract -> consolidate -> review) ONCE per question. This is the
+#           dominant term. LongMemEval-S haystack ~= 115k tokens/Q (official
+#           'S' size, ~500 sessions); LoCoMo ~= 25k tokens/Q (10 long convs).
+#   ANSWER: retrieved context + question + generated answer, per Q (small).
+#   JUDGE : judge prompt + short verdict, per Q (smallest).
+#
+# Ingestion runs on arms WITH a real memory pipeline (base, neuron). The rag arm
+# chunks+embeds LOCALLY (TEI, ~free) so its LLM ingest ~= 0. All arms pay ANSWER+
+# JUDGE. So per-arm cost is NOT uniform — the old estimate wrongly assumed it was.
+EST_ANSWER_TOKENS = 1800     # retrieved context + question + answer, per Q
+EST_JUDGE_TOKENS = 400       # judge prompt + short verdict, per Q
+# per-dataset haystack ingest tokens/Q (the dominant cost; GUESS until smoke).
+EST_INGEST_TOKENS = {
+    "longmemeval": 115000,   # official LongMemEval-S ~115k-token haystack/Q
+    "locomo": 25000,         # LoCoMo ~10 long multi-session convs/Q
+}
+# which arms run the LLM memory pipeline (pay INGEST). rag ingests locally (~free).
+ARMS_WITH_INGEST = {"base", "neuron"}
 
 # Full-run question counts per dataset (for --estimate-all: what a START-TO-FINISH
 # run costs). LongMemEval-S = 500 (official). LoCoMo = 10 conversations, ~199 QA
 # each (conv0=199 verified in adapter_locomo.py) => ~1986 questions total.
 # These are GUESSES until a smoke run measures true per-Q tokens (LoCoMo haystacks
-# are long multi-session -> real answer tokens likely HIGHER). Treat as a FLOOR.
+# are long multi-session -> real ingest tokens could be HIGHER). Treat as a FLOOR.
 FULL_Q_COUNTS = {
     "longmemeval": 500,
     "locomo": 1986,
+}
+
+# Model-AGNOSTIC price table (indicative $/1M tokens, blended input+output) so a
+# user maps TOKENS -> $ for THEIR provider. Tokens are the invariant; $ is just
+# tokens x whoever you pick. These are ballpark tiers, NOT a recommendation.
+PRICE_TIERS_PER_MTOK = {
+    "budget (e.g. flash/mini/haiku tier)": 0.30,
+    "mid (e.g. sonnet/gpt-4o tier)": 4.00,
+    "frontier (e.g. opus/gpt-4-class tier)": 20.00,
 }
 ALL_ARMS = ("rag", "base", "neuron")
 
@@ -154,63 +183,99 @@ def cost_estimate(n: int, answer_model: str, judge_model: str) -> dict:
     }
 
 
+# RECOMMENDED model pair for the worked-$ line. The user is FREE to pick any
+# models (--answer-model / --judge-model / env); this is just our suggestion,
+# shown as a concrete worked example so the $ isn't abstract. Tokens remain the
+# invariant headline — the price table below covers whatever you actually choose.
+RECOMMENDED_ANSWER_MODEL = "sonnet-4.6"
+RECOMMENDED_ANSWER_PRICE_PER_MTOK = 4.00    # mid tier
+RECOMMENDED_JUDGE_MODEL = "gpt-4o"
+RECOMMENDED_JUDGE_PRICE_PER_MTOK = 7.50     # gpt-4o blended
+
+
 def estimate_all(answer_model: str, judge_model: str) -> dict:
     """Full START-TO-FINISH estimate: every dataset x every arm, in one call.
-    So a user who wants to 'run all' knows the total token/$ budget UP FRONT,
-    before committing any spend. Pure arithmetic; no lab, no model calls."""
-    per_q = EST_ANSWER_TOKENS + EST_JUDGE_TOKENS
-    n_arms = len(ALL_ARMS)
-    rows, grand_tok = [], 0
+    So a user who wants to 'run all' knows the real token/$ budget UP FRONT.
+    Pure arithmetic; no lab, no model calls.
+
+    3 BUCKETS (the fix): INGEST dominates and only base/neuron pay it; the old
+    estimate counted only answer+judge and under-reported ~50x.
+      per-arm tokens = questions * (answer + judge) + [ingest if arm in base/neuron]
+    """
+    rows = []
+    tot_ingest = tot_answer = tot_judge = 0
     for ds, nq in FULL_Q_COUNTS.items():
-        per_arm = nq * per_q
-        all_arms = per_arm * n_arms
-        grand_tok += all_arms
+        ingest_per_q = EST_INGEST_TOKENS.get(ds, 0)
+        # ingest paid by base+neuron; answer+judge paid by ALL arms
+        n_ingest_arms = len(ARMS_WITH_INGEST & set(ALL_ARMS))
+        ds_ingest = nq * ingest_per_q * n_ingest_arms
+        ds_answer = nq * EST_ANSWER_TOKENS * len(ALL_ARMS)
+        ds_judge = nq * EST_JUDGE_TOKENS * len(ALL_ARMS)
+        ds_total = ds_ingest + ds_answer + ds_judge
+        tot_ingest += ds_ingest; tot_answer += ds_answer; tot_judge += ds_judge
         rows.append({
             "dataset": ds, "questions": nq,
-            "per_arm_tokens": per_arm,
-            "all_arms_tokens": all_arms,
+            "ingest_tokens_per_q": ingest_per_q,
+            "ingest_tokens": ds_ingest,   # base+neuron only
+            "answer_tokens": ds_answer,
+            "judge_tokens": ds_judge,
+            "all_arms_tokens": ds_total,
         })
-    # $ footnote only (metered providers; meaningless on flat-fee subs)
-    ans_tok = sum(r["questions"] for r in rows) * EST_ANSWER_TOKENS * n_arms
-    jud_tok = sum(r["questions"] for r in rows) * EST_JUDGE_TOKENS * n_arms
-    usd = ans_tok / 1000.0 * _price(answer_model) + jud_tok / 1000.0 * _price(judge_model)
+    grand_tok = tot_ingest + tot_answer + tot_judge
+    # worked $ using the RECOMMENDED pair (sonnet-4.6 answerer + gpt-4o judge).
+    # ingest priced at the answerer's tier (it's the pipeline's generative LLM).
+    # User-selectable — this is a suggestion, not a lock.
+    a = RECOMMENDED_ANSWER_PRICE_PER_MTOK / 1e6
+    j = RECOMMENDED_JUDGE_PRICE_PER_MTOK / 1e6
+    recommended_usd = (tot_ingest + tot_answer) * a + tot_judge * j
+    # model-agnostic table: whole-run $ at each price tier (blended, all buckets)
+    tier_usd = {name: round(grand_tok * (p / 1e6), 2)
+                for name, p in PRICE_TIERS_PER_MTOK.items()}
     return {
         "arms": list(ALL_ARMS),
-        "per_question_tokens": per_q,
+        "arms_paying_ingest": sorted(ARMS_WITH_INGEST & set(ALL_ARMS)),
         "datasets": rows,
         "total_questions": sum(r["questions"] for r in rows),
+        "ingest_tokens": tot_ingest,
+        "answer_tokens": tot_answer,
+        "judge_tokens": tot_judge,
         "grand_total_tokens": grand_tok,
-        "answer_model": answer_model or "gateway-default",
-        "judge_model": judge_model or "gateway-default",
-        "est_total_usd_low": round(usd * 0.6, 2),
-        "est_total_usd_high": round(usd * 1.8, 2),
-        "note": "FULL start-to-finish across ALL datasets x ALL arms. TOKENS are "
-                "the real cost on subscription plans; $ is a metered-only footnote. "
-                "Per-Q token counts are GUESSES until a smoke run measures them "
-                "(LoCoMo haystacks are long -> real tokens likely higher). FLOOR estimate.",
+        "recommended_pair": f"{RECOMMENDED_ANSWER_MODEL} answerer + {RECOMMENDED_JUDGE_MODEL} judge",
+        "recommended_usd": round(recommended_usd, 2),
+        "usd_by_tier": tier_usd,
+        "note": "FULL start-to-finish, ALL datasets x ALL arms. INGEST (pipeline "
+                "reading each haystack into memory) DOMINATES and is paid only by "
+                "base+neuron; rag ingests locally (~free). TOKENS are the invariant; "
+                "$ depends on the models YOU pick (table + one RECOMMENDED worked "
+                "example shown — you are free to choose any). Per-Q token counts are "
+                "a FLOOR GUESS — run a small --sample first to measure.",
     }
 
 
 def print_estimate_all(est: dict):
-    print("\n=== FULL RUN ESTIMATE — ALL datasets x ALL arms (before any spend) ===",
-          file=sys.stderr)
-    print(f"  arms:           {', '.join(est['arms'])}  ({len(est['arms'])} arms)",
-          file=sys.stderr)
-    print(f"  per-Q tokens:   {est['per_question_tokens']:,}  (answer+judge; a GUESS)",
-          file=sys.stderr)
-    print(f"  {'dataset':14}{'Q':>6}{'per-arm tok':>16}{'x all arms tok':>18}",
-          file=sys.stderr)
+    e = lambda s: print(s, file=sys.stderr)
+    e("\n=== FULL RUN ESTIMATE — ALL datasets x ALL arms (before any spend) ===")
+    e(f"  arms: {', '.join(est['arms'])}  |  ingest paid by: "
+      f"{', '.join(est['arms_paying_ingest'])}  (rag ingests locally ~free)")
+    # --- per-dataset token table (TOKENS = the invariant headline) ---
+    e(f"  {'dataset':13}{'Q':>6}{'ingest tok':>15}{'answer tok':>13}{'judge tok':>12}{'TOTAL tok':>15}")
     for r in est["datasets"]:
-        print(f"  {r['dataset']:14}{r['questions']:>6}{r['per_arm_tokens']:>16,}"
-              f"{r['all_arms_tokens']:>18,}", file=sys.stderr)
-    print(f"  {'-'*52}", file=sys.stderr)
-    print(f"  {'GRAND TOTAL':14}{est['total_questions']:>6}{'':>16}"
-          f"{est['grand_total_tokens']:>18,}  (~{est['grand_total_tokens']/1e6:.2f}M)",
-          file=sys.stderr)
-    print(f"  ($ footnote:    ${est['est_total_usd_low']}\u2013${est['est_total_usd_high']} "
-          f"metered-only, ignore on subs)", file=sys.stderr)
-    print(f"  NOTE: per-Q tokens are a FLOOR guess; run a small --sample first to "
-          f"measure them.", file=sys.stderr)
+        e(f"  {r['dataset']:13}{r['questions']:>6}{r['ingest_tokens']:>15,}"
+          f"{r['answer_tokens']:>13,}{r['judge_tokens']:>12,}{r['all_arms_tokens']:>15,}")
+    e(f"  {'-'*74}")
+    e(f"  {'GRAND TOTAL':13}{est['total_questions']:>6}{est['ingest_tokens']:>15,}"
+      f"{est['answer_tokens']:>13,}{est['judge_tokens']:>12,}"
+      f"{est['grand_total_tokens']:>15,}")
+    e(f"  >>> {est['grand_total_tokens']:,} TOTAL TOKENS (~{est['grand_total_tokens']/1e6:.1f}M) "
+      f"— ingest dominates ({est['ingest_tokens']/est['grand_total_tokens']*100:.0f}%)")
+    # --- $ is model-dependent: a price table, YOU pick the model ---
+    e("\n  $ COST (you choose the models — token count above is fixed; $ = tokens x price):")
+    for name, usd in est["usd_by_tier"].items():
+        e(f"    {name:42} ~${usd:,.0f}")
+    e(f"  RECOMMENDED example ({est['recommended_pair']}): ~${est['recommended_usd']:,.0f}")
+    e("  (recommendation only — free to pick any via --answer-model/--judge-model)")
+    e("  NOTE: per-Q token counts are a FLOOR GUESS; run a small --sample first to "
+      "measure real per-Q tokens before committing the full budget.")
 
 
 def print_cost(est: dict):

@@ -55,10 +55,28 @@ no `--source`, no setup, no spend:
 python3 run.py --estimate-all
 ```
 
-At the current per-Q guess (2,200 tok) that's **~16.4M tokens** total (~2,486 Q × 3 arms;
-LoCoMo is ~80% of it). Tokens are the real currency on subscription plans; the printed
-$ figure is a metered-only footnote. Per-Q counts are a **floor guess** — run a small
-`--sample` first to measure real per-Q tokens before committing the full budget.
+**The real cost is INGESTION, not answering.** The pipeline reads each question's
+whole haystack (~115k tok for LongMemEval-S, ~25k for LoCoMo) into memory once per
+question — that dominates (~93% of tokens). Only `base` + `neuron` pay it; the `rag`
+arm ingests locally via TEI (~free). A naive answer+judge-only estimate under-reports
+by ~50×.
+
+Full start-to-finish (2,486 Q × 3 arms) ≈ **~230M tokens**. Tokens are the invariant;
+**$ depends on the models YOU pick** — the command prints a price-tier table so you map
+tokens→$ for your provider:
+
+| Tier (you choose) | Whole run |
+|-|-|
+| budget (flash/mini/haiku) | ~$70 |
+| mid (sonnet/gpt-4o) | ~$920 |
+| frontier (opus/gpt-4-class) | ~$4,600 |
+
+**Recommended pair** (a suggestion, not a lock — free to override with
+`--answer-model`/`--judge-model`): **sonnet-4.6 answerer + gpt-4o judge ≈ ~$930**.
+
+Per-Q token counts are a **FLOOR GUESS** — run a small `--sample` first to measure real
+per-Q tokens before committing the full budget. LongMemEval-S alone (skip LoCoMo) is
+~118M tok (~half).
 
 ## Run
 
