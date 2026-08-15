@@ -42,18 +42,30 @@ Nothing is hardcoded. You pick; we recommend and warn.
 
 ### Cost — shown before every run
 
-`run.py` **prints a cost estimate before it spends anything**, and `--full` requires an explicit confirm (`--yes`). Estimate:
+`run.py` **prints a cost estimate before it spends anything.** A `--full` run is
+**gated**: without `--yes` it prints the estimate (including any cost warning) and
+**stops** — so you never launch a paid run blind. `--yes` = "I saw the estimate,
+proceed." Estimate (all three buckets — INGEST is the dominant one):
 
 ```
-est_cost ≈ N_questions × (answer_tokens + judge_tokens)/question × price(selected models)
+est_cost ≈ N × [ ingest_tokens/Q × price(cheap_model)      # base/neuron only, ~93%
+              + answer_tokens/Q × price(answer_model)
+              + judge_tokens/Q  × price(judge_model) ]
 ```
 
 | Mode | Scale | Ballpark* |
 |-|-|-|
-| `--sample` (default, ~50 Q) | fast smoke check | ~$1–3 |
-| `--full` (all LongMemEval-S) | the citation-grade number | ~$10–25 |
+| `--sample` (default, N=20) | fast smoke check | ~$0.7–2 |
+| `--full` (all LongMemEval-S, 500 Q) | the citation-grade number | ~$18–54 |
 
-\* Depends entirely on your selected answer+judge models — the printed estimate uses *your* choices, not these defaults. These are for a mid-tier answer + GPT-4o judge.
+\* With **ingest on a budget cheap model** (see below). If your cheap tier is UNSET,
+ingest rides your pricey default model and the full run costs **~10–50× more** —
+`run.py` prints a loud **COST WARNING** and the `--full` gate tells you to fix it first.
+The printed estimate always uses *your* resolved models, not these numbers.
+
+**Which arm runs?** `--arm` defaults to **what you installed**: neuron if a neuron
+overlay is detected (`DINOMEM_BENCH_OVERLAY_CMD` set, or a neuron repo/pipeline stage
+found near `--source`), else base. One arm per run; explicit `--arm` always wins.
 
 **Want to price a run-EVERYTHING first?** One command prints the full start-to-finish
 budget across **all datasets × all arms** (LongMemEval-S + LoCoMo × rag/base/neuron),
@@ -64,20 +76,35 @@ python3 run.py --estimate-all
 ```
 
 **The real cost is INGESTION, not answering.** The pipeline reads each question's
-whole haystack (~115k tok for LongMemEval-S, ~25k for LoCoMo) into memory once per
-question — that dominates (~93% of tokens). Only `base` + `neuron` pay it; the `rag`
-arm ingests locally via TEI (~free). A naive answer+judge-only estimate under-reports
-by ~50×.
+whole haystack into memory once per question — that dominates (~94% of tokens). Only
+`base` + `neuron` pay it; the `rag` arm ingests locally via TEI (~free). A naive
+answer+judge-only estimate under-reports by ~50×.
 
-Full start-to-finish (2,486 Q × 3 arms) ≈ **~230M tokens**. Tokens are the invariant;
-**$ depends on the models YOU pick** — the command prints a price-tier table so you map
-tokens→$ for your provider:
+**Two things the estimate now gets right (both shipped after windowing landed):**
+
+1. **Windowing overhead is included.** An oversized haystack is read across ~N
+   windowed LLM calls (each re-paying the extraction prompt scaffold), so ingest is
+   **not** just `haystack_size × questions`. The estimate applies a `×1.2` windowing
+   multiplier — the *realistic* figure, not a floor. (LongMemEval-S ingest is ~138k
+   tok/Q, not the raw ~115k.)
+2. **Ingest is priced at your CHEAP model, not the answerer.** Ingest runs on
+   dinomem's non-reasoning tier (`DINOMEM_CHEAP_MODEL` → `compaction.model` anchor →
+   fallback). The estimate resolves that model the same way the pipeline does and
+   prices the 94% bucket at *it* — so a cheap ingest model makes the run cheap.
+   **If nothing resolves (UNSET), ingest rides your pricey default → loud warning.**
+
+Full start-to-finish (2,486 Q × 3 arms) ≈ **~274M tokens** (windowed). Tokens are the
+invariant; **$ depends on the models YOU pick** — the command prints a price-tier table:
 
 | Tier (you choose) | Whole run |
 |-|-|
-| budget (flash/mini/haiku) | ~$70 |
-| mid (sonnet/gpt-4o) | ~$920 |
-| frontier (opus/gpt-4-class) | ~$4,600 |
+| budget (flash/mini/haiku) | ~$82 |
+| mid (sonnet/gpt-4o) | ~$1,094 |
+| frontier (opus/gpt-4-class) | ~$5,471 |
+
+→ With ingest on a **budget cheap model** and answer/judge at mid tier, the
+recommended real-world figure is **~$180** for the whole thing — vs **~$1,105** if
+you leave the cheap tier UNSET (ingest on the pricey default). Set your cheap model.
 
 **Recommended setup** (a suggestion, not a lock — free to override with
 `--answer-model`/`--judge-model`):
