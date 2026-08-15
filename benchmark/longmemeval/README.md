@@ -71,8 +71,14 @@ tokens→$ for your provider:
 | mid (sonnet/gpt-4o) | ~$920 |
 | frontier (opus/gpt-4-class) | ~$4,600 |
 
-**Recommended pair** (a suggestion, not a lock — free to override with
-`--answer-model`/`--judge-model`): **sonnet-4.6 answerer + gpt-4o judge ≈ ~$930**.
+**Recommended setup** (a suggestion, not a lock — free to override with
+`--answer-model`/`--judge-model`):
+- Answerer + judge both at a **frontier/mid tier** (gpt-4o, sonnet-4.6, or equivalent).
+- **Cross-vendor** — answerer and judge from **different vendors** (Anthropic vs OpenAI
+  vs …). Never same-vendor both sides: a same-family judge can favor its own family's
+  style (self-scoring bias). `run.py` **warns** if it detects a same-vendor pair.
+- So e.g. **sonnet-4.6 answerer + gpt-4o judge** (≈ ~$930) *or* **gpt-4o answerer +
+  sonnet-4.6 judge** — just not same vendor on both.
 
 Per-Q token counts are a **FLOOR GUESS** — run a small `--sample` first to measure real
 per-Q tokens before committing the full budget. LongMemEval-S alone (skip LoCoMo) is

@@ -187,10 +187,51 @@ def cost_estimate(n: int, answer_model: str, judge_model: str) -> dict:
 # models (--answer-model / --judge-model / env); this is just our suggestion,
 # shown as a concrete worked example so the $ isn't abstract. Tokens remain the
 # invariant headline — the price table below covers whatever you actually choose.
+#
+# RECOMMENDATION = tier + CROSS-VENDOR, not fixed models:
+#   - both answerer AND judge at a frontier/mid tier (gpt-4o, sonnet-4.6, or equiv)
+#   - answerer and judge from DIFFERENT vendors (anthropic vs openai vs ...).
+#     Never same-vendor both sides (e.g. anthropic answerer + anthropic judge) —
+#     a same-family judge can score its own family's style favorably (self-bias).
+#   So sonnet-4.6 answerer + gpt-4o judge OR gpt-4o answerer + sonnet-4.6 judge —
+#   just not same vendor on both.
 RECOMMENDED_ANSWER_MODEL = "sonnet-4.6"
 RECOMMENDED_ANSWER_PRICE_PER_MTOK = 4.00    # mid tier
 RECOMMENDED_JUDGE_MODEL = "gpt-4o"
 RECOMMENDED_JUDGE_PRICE_PER_MTOK = 7.50     # gpt-4o blended
+
+# Vendor inference for the cross-vendor guard (best-effort substring match).
+_VENDOR_HINTS = {
+    "anthropic": ("claude", "sonnet", "opus", "haiku", "anthropic"),
+    "openai": ("gpt", "o1", "o3", "o4", "openai", "chatgpt"),
+    "google": ("gemini", "palm", "google"),
+    "xai": ("grok", "xai"),
+    "meta": ("llama", "meta"),
+    "mistral": ("mistral", "mixtral"),
+    "deepseek": ("deepseek",),
+}
+
+
+def _infer_vendor(model: str) -> str | None:
+    """Best-effort vendor from a model id/alias. None if unknown."""
+    if not model:
+        return None
+    m = model.lower()
+    for vendor, hints in _VENDOR_HINTS.items():
+        if any(h in m for h in hints):
+            return vendor
+    return None
+
+
+def cross_vendor_warning(answer_model: str, judge_model: str) -> str | None:
+    """WARN (never block — user's free choice) if answerer + judge look same-vendor,
+    which risks same-family scoring bias. Returns a warning string or None."""
+    av, jv = _infer_vendor(answer_model), _infer_vendor(judge_model)
+    if av and jv and av == jv:
+        return (f"answerer and judge are BOTH '{av}' vendor — a same-family judge can "
+                f"favor its own family's style (self-bias). RECOMMENDED: cross-vendor "
+                f"(e.g. answerer {av} + judge from a different vendor). Proceeding anyway.")
+    return None
 
 
 def estimate_all(answer_model: str, judge_model: str) -> dict:
@@ -273,7 +314,9 @@ def print_estimate_all(est: dict):
     for name, usd in est["usd_by_tier"].items():
         e(f"    {name:42} ~${usd:,.0f}")
     e(f"  RECOMMENDED example ({est['recommended_pair']}): ~${est['recommended_usd']:,.0f}")
-    e("  (recommendation only — free to pick any via --answer-model/--judge-model)")
+    e("  RECOMMENDATION: answerer + judge at frontier/mid tier, from DIFFERENT vendors")
+    e("  (anthropic vs openai vs …) — never same-vendor both sides (self-scoring bias).")
+    e("  You're free to pick any via --answer-model/--judge-model; this is a suggestion.")
     e("  NOTE: per-Q token counts are a FLOOR GUESS; run a small --sample first to "
       "measure real per-Q tokens before committing the full budget.")
 
@@ -460,6 +503,11 @@ def main():
               "(a cost estimate is printed first).")
     if not args.source:
         _fail("--source (or DINOMEM_WORKSPACE) required: the installed dinomem workspace")
+
+    # cross-vendor guard: WARN (not block) if answerer+judge look same-vendor.
+    _xv = cross_vendor_warning(args.answer_model, args.judge_model)
+    if _xv:
+        _log("WARNING: " + _xv)
 
     # rag + neuron both use the generic external-recall command hook; base uses
     # its lexical-over-distilled-memory path.
