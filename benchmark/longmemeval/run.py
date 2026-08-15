@@ -505,9 +505,46 @@ def _stamp_md(arm, mode, n, metrics, dataset_info, answer_model, judge_model,
     return "\n".join(lines)
 
 
+def _detect_default_arm(args) -> tuple[str, str]:
+    """Pick the arm to run when the user didn't specify one: evaluate what they
+    actually installed. Neuron is an UPGRADE LAYER, so if it's detectable, that's
+    what they want measured; otherwise base. Side-effect-free (env + filesystem
+    probe only, never executes the overlay). Returns (arm, reason)."""
+    # 1. An explicit overlay command (env or .env) => neuron is set up for the bench.
+    overlay = os.environ.get("DINOMEM_BENCH_OVERLAY_CMD", "").strip()
+    if overlay:
+        return "neuron", "DINOMEM_BENCH_OVERLAY_CMD is set"
+    # 2. A neuron repo / installer locatable near the source workspace or CWD.
+    src = (getattr(args, "source", "") or os.environ.get("DINOMEM_WORKSPACE", "")).strip()
+    probes = []
+    for root in (src, os.getcwd()):
+        if not root:
+            continue
+        p = Path(root)
+        # sibling/nested neuron repo layouts + an installed neuron marker
+        probes += [
+            p / "github" / "dinomem-neuron" / "scripts" / "install.sh",
+            p.parent / "dinomem-neuron" / "scripts" / "install.sh",
+            p / "procedures" / "memory_graph.py",   # neuron-only pipeline stage, installed
+            p / "procedures" / "memory_synthesis.py",
+        ]
+    for probe in probes:
+        try:
+            if probe.exists():
+                return "neuron", f"neuron detected ({probe})"
+        except Exception:
+            continue
+    return "base", "no neuron overlay detected"
+
 def main():
     ap = argparse.ArgumentParser(description="dinomem LongMemEval runner (one arm, end-to-end).")
-    ap.add_argument("--arm", choices=["rag", "base", "neuron"], default="base")
+    # --arm default is DYNAMIC: if the neuron upgrade layer is detectable on this
+    # host, default to evaluating what the user actually installed (neuron); else
+    # base. Explicit --arm always wins. (default=None -> resolved after parse.)
+    ap.add_argument("--arm", choices=["rag", "base", "neuron"], default=None,
+                    help="which arm to evaluate. Default: neuron if a neuron overlay "
+                    "is detected (DINOMEM_BENCH_OVERLAY_CMD set, or a neuron repo/"
+                    "install.sh found), else base. One arm per run; explicit wins.")
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--sample", action="store_true", help="first N questions (default)")
     mode.add_argument("--full", action="store_true", help="whole LongMemEval-S (needs --yes)")
@@ -548,6 +585,15 @@ def main():
                     help="print the FULL start-to-finish estimate (ALL datasets x "
                          "ALL arms) and EXIT. No --source needed, no spend.")
     args = ap.parse_args()
+
+    # Resolve the dynamic --arm default: run what the user HAS. Neuron is an
+    # upgrade layer, so its presence => they want it measured. Detection is cheap
+    # and side-effect-free (env + filesystem probe only); never runs anything.
+    if args.arm is None:
+        detected, why = _detect_default_arm(args)
+        args.arm = detected
+        _log(f"--arm not given -> defaulting to '{detected}' ({why}). "
+             f"Override with --arm base|neuron|rag.")
 
     # --estimate-all: pure arithmetic across every dataset+arm. Runs BEFORE the
     # --source requirement so anyone can price a full run with zero setup.
