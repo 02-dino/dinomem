@@ -657,23 +657,26 @@ def main():
         # <ws> --sandbox-root <lab> (forces base chain + neuron L2/L3/L4, asserts
         # base items>0 AND graph nodes>0).
         if args.arm == "rag":
-            live_now = os.path.getmtime(args.source) if os.path.exists(args.source) else None
-            live_then = lab_info.get("live_source_mtime")
-            if live_then is not None and live_now is not None and str(live_now) != str(live_then):
-                _fail(f"ISOLATION BREACH: live source mtime changed "
-                      f"({live_then} -> {live_now}) during rag setup")
+            # rag arm does no pipeline drive, so re-derive the precise leak
+            # signature (session-archive listings + dedup trackers) and compare.
+            from setup_lab import _live_leak_signature as _leak_sig
+            live_now = _leak_sig(Path(args.source)) if os.path.exists(args.source) else None
+            live_then = lab_info.get("live_leak_sig")
+            if live_then is not None and live_now is not None and live_now != live_then:
+                _fail("ISOLATION BREACH: live session-archive listing or dedup "
+                      "tracker changed during rag setup (a proc leaked into live)")
             _log("rag arm: no pipeline drive (retrieval over raw haystack); isolation OK")
             drive_res = {"ok": True, "arm": "rag", "note": "no-pipeline (naive RAG floor)"}
         elif args.arm == "neuron":
             drive_cmd = [sys.executable, HERE / "drive_neuron.py", "--ws", ws,
                          "--sandbox-root", lab,
                          "--live-source", args.source,
-                         "--live-source-mtime", lab_info["live_source_mtime"], "--json"]
+                         "--live-leak-sig", lab_info["live_leak_sig"], "--json"]
             drive_label = "drive_neuron"
         else:
             drive_cmd = [sys.executable, HERE / "drive_base.py", "--lab", lab,
                          "--live-source", args.source,
-                         "--live-source-mtime", lab_info["live_source_mtime"], "--json"]
+                         "--live-leak-sig", lab_info["live_leak_sig"], "--json"]
             drive_label = "drive_base"
         dr = _sh(drive_cmd, args.timeout)
         drive_res = json.loads(dr.stdout[dr.stdout.find("{"):]) if dr.stdout.strip() else {}

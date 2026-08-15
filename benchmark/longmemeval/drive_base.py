@@ -32,7 +32,7 @@ ISOLATION INVARIANT (safety, non-negotiable):
 USAGE:
   python3 drive_base.py --lab <LAB_DIR> [--json] [--timeout 600] \\
                         [--review-max-loops 12] [--live-source <DIR>] \\
-                        [--live-source-mtime <FLOAT>]
+                        [--live-leak-sig <HEX>]
 
   Exit 0 only if: every critical stage ran, memory items > 0, and the live
   workspace mtime is unchanged. Any empty/failed stage -> nonzero exit, fail-loud.
@@ -113,25 +113,39 @@ def _count_memory_items(lab: Path) -> dict:
     }
 
 
-def _live_source_mtime(source: Path) -> float:
-    """Deepest mtime of the live source procedures/ + tools/ — the isolation
-    tripwire. If the pipeline wrote back into the live install, this changes.
+def _live_leak_signature(source: Path) -> str:
+    """Precise isolation tripwire: hash ONLY the live paths a lab LEAK would
+    mutate — every live agent's sessions/ FILE LISTING (a leak renames X.jsonl ->
+    X.archived.orphan.<ts>.jsonl) and any .processed_archives.json tracker content
+    (a leak rewrites it). NOT a whole-tree mtime: this LIVE session writes its own
+    trajectory/session/memory files continuously while a run executes, so mtime
+    ALWAYS moves and false-positives 'ISOLATION VIOLATION' with zero real leak
+    (proven 2026-08-15 — tripwire fired on this active telegram session's own
+    writes). Must match setup_lab._live_leak_signature EXACTLY (same hash).
     """
-    latest = 0.0
-    for sub in ("procedures", "tools"):
-        d = source / sub
-        if not d.exists():
+    import hashlib
+    parts: list[str] = []
+    for agents in source.rglob("agents"):
+        if not agents.is_dir():
             continue
-        for p in d.rglob("*"):
+        for sess in agents.rglob("sessions"):
+            if not sess.is_dir():
+                continue
             try:
-                latest = max(latest, p.stat().st_mtime)
+                names = sorted(p.name for p in sess.iterdir() if p.is_file())
+                parts.append(f"{sess}::{'|'.join(names)}")
             except OSError:
-                pass
-    return latest
+                continue
+    for trk in source.rglob(".processed_archives.json"):
+        try:
+            parts.append(f"{trk}::{trk.read_text(encoding='utf-8')}")
+        except OSError:
+            continue
+    return hashlib.sha256("\n".join(sorted(parts)).encode("utf-8")).hexdigest()
 
 
 def drive(lab: Path, timeout: int, review_max_loops: int,
-          live_source: Path | None, live_source_mtime: float | None) -> dict:
+          live_source: Path | None, live_leak_sig: str | None) -> dict:
     lab = lab.resolve()
     if not lab.exists():
         _fail(f"lab dir does not exist: {lab}")
@@ -234,14 +248,14 @@ def drive(lab: Path, timeout: int, review_max_loops: int,
     # ---- ISOLATION TRIPWIRE: live source must be untouched ----
     iso = {"checked": False}
     if live_source is not None:
-        cur = _live_source_mtime(live_source.resolve())
-        expected = live_source_mtime
+        cur = _live_leak_signature(live_source.resolve())
+        expected = live_leak_sig
         iso = {
             "checked": True,
             "live_source": str(live_source),
-            "expected_mtime": expected,
-            "actual_mtime": cur,
-            "untouched": (expected is None) or (abs(cur - expected) < 1e-6),
+            "expected_sig": expected,
+            "actual_sig": cur,
+            "untouched": (expected is None) or (cur == expected),
         }
 
     ok = materialized and (not iso["checked"] or iso["untouched"])
@@ -249,7 +263,8 @@ def drive(lab: Path, timeout: int, review_max_loops: int,
     if not materialized:
         reason = "no_memory_materialized (items==0 after pipeline — a stage no-oped)"
     elif iso["checked"] and not iso["untouched"]:
-        reason = "ISOLATION VIOLATION: live source mtime changed during run"
+        reason = ("ISOLATION VIOLATION: live session-archive listing or dedup "
+                  "tracker changed during run (a proc leaked into live)")
 
     return {"ok": ok, "reason": reason, "stages": stages, "memory": mem,
             "isolation": iso}
@@ -261,13 +276,13 @@ def main():
     ap.add_argument("--timeout", type=int, default=600, help="per-stage timeout seconds")
     ap.add_argument("--review-max-loops", type=int, default=12, help="max memory_review iterations")
     ap.add_argument("--live-source", help="live install dir to assert untouched (isolation tripwire)")
-    ap.add_argument("--live-source-mtime", type=float, help="expected live source mtime from setup_lab.py")
+    ap.add_argument("--live-leak-sig", type=str, help="expected live leak-signature from setup_lab.py")
     ap.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     args = ap.parse_args()
 
     live_source = Path(args.live_source) if args.live_source else None
     result = drive(Path(args.lab), args.timeout, args.review_max_loops,
-                   live_source, args.live_source_mtime)
+                   live_source, args.live_leak_sig)
 
     if args.json:
         print(json.dumps(result, indent=2))

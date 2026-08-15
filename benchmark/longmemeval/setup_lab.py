@@ -129,7 +129,7 @@ def build_lab(source: Path, lab: Path | None) -> dict:
               f"after patch: {sweep['remaining_live_refs']} — refusing to build a lab "
               "that would read/archive the user's LIVE sessions.")
 
-    live_source_mtime = _tree_mtime(source)
+    live_leak_sig = _live_leak_signature(source)
 
     return {
         "lab": str(lab),
@@ -138,7 +138,7 @@ def build_lab(source: Path, lab: Path | None) -> dict:
         "memory_dir": str(lab / "memory"),
         "sessions_dir_patched": patched,
         "procs_sandboxed": sweep,
-        "live_source_mtime": live_source_mtime,
+        "live_leak_sig": live_leak_sig,
         "marker": LAB_MARKER,
     }
 
@@ -282,16 +282,37 @@ def _write_lab_config(openclaw_dir: Path, agent_id: str,
     }
 
 
-def _tree_mtime(root: Path) -> float:
-    """Newest mtime across the source tree — a cheap 'did anything change' probe
-    the caller can re-check after a run to assert the live WS was untouched."""
-    latest = 0.0
-    for p in root.rglob("*"):
+def _live_leak_signature(root: Path) -> str:
+    """Precise leak-signature of the LIVE workspace: a hash over ONLY the paths a
+    lab leak would actually mutate — the live agent's session-archive FILE NAMES
+    (a leak renames X.jsonl -> X.archived.orphan.<ts>.jsonl) and the dedup tracker
+    memory/.processed_archives.json (a leak rewrites it). We deliberately do NOT
+    use a whole-tree mtime: this LIVE session is continuously writing its own
+    trajectory/session/memory files while a run executes, so tree-mtime ALWAYS
+    changes and false-positives 'ISOLATION VIOLATION' even when the lab never
+    touched live. Names+tracker only change if a proc actually leaked. Proven
+    2026-08-15 (tripwire fired on this active telegram session's own writes)."""
+    import hashlib
+    parts: list[str] = []
+    # every live agent's sessions/ FILE LISTING (sorted names, not mtimes)
+    for agents in root.rglob("agents"):
+        if not agents.is_dir():
+            continue
+        for sess in agents.rglob("sessions"):
+            if not sess.is_dir():
+                continue
+            try:
+                names = sorted(p.name for p in sess.iterdir() if p.is_file())
+                parts.append(f"{sess}::{'|'.join(names)}")
+            except OSError:
+                continue
+    # dedup trackers (content matters — a leak rewrites them)
+    for trk in root.rglob(".processed_archives.json"):
         try:
-            latest = max(latest, p.stat().st_mtime)
+            parts.append(f"{trk}::{trk.read_text(encoding='utf-8')}")
         except OSError:
             continue
-    return latest
+    return hashlib.sha256("\n".join(sorted(parts)).encode("utf-8")).hexdigest()
 
 
 def build_lab_real(source: Path, lab: Path | None, agent_id: str) -> dict:
@@ -377,7 +398,7 @@ def build_lab_real(source: Path, lab: Path | None, agent_id: str) -> dict:
         "lab_config": lab_config,
         "overlay_hint": (f"bash <neuron-repo>/scripts/install.sh --workspace {ws} "
                          f"--agent-id {agent_id} --agree --no-cron --no-auto-base"),
-        "live_source_mtime": _tree_mtime(source),
+        "live_leak_sig": _live_leak_signature(source),
         "marker": LAB_MARKER,
     }
 
