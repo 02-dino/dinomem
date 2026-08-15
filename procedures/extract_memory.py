@@ -146,7 +146,7 @@ def _resolve_node_dir():
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
-SESSIONS_DIR = Path("/root/.openclaw/agents/analyst/sessions")
+SESSIONS_DIR = Path("DINOMEM_AGENT_SESSIONS_PLACEHOLDER")  # rewritten at install (mirrors extract_user)
 MEMORY_DIR = Path(__file__).parent.parent / "memory"
 PROCESSED_LOG = MEMORY_DIR / ".processed_archives.json"
 COMPACTION_LOG = MEMORY_DIR / ".compaction_counts.json"
