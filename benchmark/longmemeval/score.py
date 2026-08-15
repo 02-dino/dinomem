@@ -273,11 +273,23 @@ def compute_aux_metrics(rlog: dict, gold: dict, lab: Path | None) -> dict:
             granularity = "session"
             got = set(str(x) for x in (r.get("retrieved_session_ids") or []))
             want = set(str(x) for x in (g.get("answer_session_ids") if g else []) or [])
-        if want and got:
+        # HONEST attribution: a question counts once GOLD names answer-bearing
+        # sessions (want non-empty) — the engine HAD a target to hit. Whether it
+        # retrieved them or not, that is a measured outcome:
+        #   - hit some  -> recall = |got&want|/|want|  (partial/full success)
+        #   - retrieved sessions but MISSED gold, or retrieved none -> recall 0.0
+        # Only questions with NO gold sessions (want empty, e.g. LoCoMo adversarial
+        # or a base-arm distilled-memory item) are unmeasurable and excluded.
+        # The old `want and got` gate wrongly folded a genuine MISS (got disjoint
+        # or empty) into 'unmeasurable' -> null, hiding real retrieval failures.
+        if want:
             attributable += 1
             hit = got & want
             recalls.append(len(hit) / len(want))
-            precisions.append(len(hit) / len(got))
+            # precision only defined when something was retrieved; a no-retrieval
+            # miss contributes 0 recall but no precision denominator.
+            if got:
+                precisions.append(len(hit) / len(got))
 
         # ---- metric B: answer-evidence recall (hybrid, session-id-free) ----
         gold_answer = (g.get("answer") if g else "") or ""
