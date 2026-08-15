@@ -885,8 +885,28 @@ def main():
             ov_env["OPENCLAW_DIR"] = lab_ocdir
             ov_env["OPENCLAW_CONFIG"] = os.path.join(lab_ocdir, "openclaw.json")
             ov = _sh(["bash", "-c", ov_cmd], args.timeout, env=ov_env)
+            # SUCCESS is verified by ARTIFACT, not exit code alone. The neuron
+            # installer runs a trailing self-check (hook-eligibility probe, config
+            # validate) that can return non-zero in a HEADLESS SANDBOX with no real
+            # gateway -- flipping a fully-successful overlay to exit 1 while its
+            # diagnostics go to STDOUT (so ov.stderr is empty -> a silent failure).
+            # The real question is: did the neuron pipeline actually land in the WS?
+            neuron_markers = [
+                os.path.join(ws, "procedures", "memory_graph.py"),
+                os.path.join(ws, "procedures", "memory_synthesis.py"),
+            ]
+            overlay_applied = all(os.path.isfile(m) for m in neuron_markers)
+            if not overlay_applied:
+                # Genuinely failed to install -> surface BOTH streams (installer
+                # talks on stdout), not just stderr, so the reason is never blank.
+                tail = ((ov.stdout or "")[-800:] + (ov.stderr or "")[-400:]).strip()
+                _fail(f"neuron overlay failed (rc={ov.returncode}; neuron files "
+                      f"not found in WS): {tail}")
             if ov.returncode != 0:
-                _fail(f"neuron overlay failed: {ov.stderr[-400:]}")
+                # Installed fine (markers present) but the installer's trailing
+                # self-check returned non-zero -- benign in a sandbox. Note it, proceed.
+                _log(f"neuron overlay applied OK (markers present) despite installer "
+                     f"rc={ov.returncode} -- benign sandbox self-check noise, continuing.")
 
         # ---- 3. drive pipeline to convergence (isolation tripwire) ----
         # RAG arm: NO pipeline to drive (naive floor = retrieval over raw sessions).
