@@ -914,11 +914,44 @@ def main():
         # ---- 2b. neuron overlay (arm B only): run the neuron installer onto the WS ----
         if args.arm == "neuron":
             if not args.overlay_cmd:
-                _fail("--arm neuron requires --overlay-cmd (or DINOMEM_BENCH_OVERLAY_CMD): "
-                      "the command that installs the neuron overlay onto the WS. "
-                      "Neuron is base+overlay, never standalone. Typical:\n"
-                      "  bash <neuron-repo>/scripts/install.sh --workspace {ws} "
-                      "--agent-id " + args.agent_id + " --agree --no-cron --no-auto-base")
+                # UX: don't hard-fail a first-time neuron run just because the flag
+                # is unset. The neuron overlay is base+overlay-never-standalone, and
+                # its installer lives at a predictable path next to the source WS.
+                # Auto-derive the standard overlay-cmd when we can locate that
+                # installer; only fail (with the copy-paste command) if we truly
+                # can't find it. Same probe roots as _detect_default_arm.
+                _auto_installer = None
+                _src = (getattr(args, "source", "") or
+                        os.environ.get("DINOMEM_WORKSPACE", "")).strip()
+                for _root in (_src, os.getcwd()):
+                    if not _root:
+                        continue
+                    _rp = Path(_root)
+                    for _cand in (_rp / "github" / "dinomem-neuron" / "scripts" / "install.sh",
+                                  _rp.parent / "dinomem-neuron" / "scripts" / "install.sh"):
+                        try:
+                            if _cand.exists():
+                                _auto_installer = _cand
+                                break
+                        except Exception:
+                            continue
+                    if _auto_installer:
+                        break
+                if _auto_installer:
+                    args.overlay_cmd = (
+                        f"bash {_auto_installer} --workspace {{ws}} "
+                        f"--agent-id {args.agent_id} --agree --no-cron --no-auto-base"
+                    )
+                    print(f"[run] --overlay-cmd auto-derived from detected neuron "
+                          f"installer: {_auto_installer}", flush=True)
+                else:
+                    _fail("--arm neuron requires --overlay-cmd (or DINOMEM_BENCH_OVERLAY_CMD): "
+                          "the command that installs the neuron overlay onto the WS. "
+                          "Neuron is base+overlay, never standalone. Couldn't auto-locate "
+                          "a dinomem-neuron/scripts/install.sh near the source workspace. "
+                          "Typical:\n"
+                          "  bash <neuron-repo>/scripts/install.sh --workspace {ws} "
+                          "--agent-id " + args.agent_id + " --agree --no-cron --no-auto-base")
             # {ws} = the workspace-<agent> dir (correct --workspace for the installer);
             # {lab} = the sandbox root. Support both tokens.
             ov_cmd = args.overlay_cmd.replace("{ws}", ws).replace("{lab}", lab)

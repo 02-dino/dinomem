@@ -159,7 +159,22 @@ STATUS_FILE = Path(__file__).parent.parent / "logs" / ".extract_memory_status.js
 # save .processed_archives.json with no coordination, silently dropping dedup
 # entries on a last-write-wins clash. This lock makes extract_memory.py safe
 # regardless of how/how many times it's invoked.
-EXTRACT_LOCK_FILE = Path("/tmp/dinomem_extract_memory.lock")
+# WORKSPACE-SCOPED lock (not a single global /tmp path). The guard's real job is
+# to stop two extract runs OVER THE SAME workspace from racing .processed_archives
+# .json. A single global /tmp/dinomem_extract_memory.lock over-scopes that: every
+# workspace on the host (an isolated benchmark lab, a second agent, a manual
+# catch-up in a different WS) contends the SAME lock, so one WS's extract silently
+# SKIPS because an UNRELATED WS holds it -> 0 items -> false no_base_memory. That
+# both breaks lab isolation and is a real multi-agent-on-one-host bug. Derive the
+# lock name from the workspace path so same-WS runs still serialize but different
+# workspaces never collide.
+try:
+    import hashlib as _hashlib_lock
+    _ws_root = str((Path(__file__).resolve().parent.parent))
+    _ws_sig = _hashlib_lock.sha1(_ws_root.encode("utf-8", "replace")).hexdigest()[:12]
+    EXTRACT_LOCK_FILE = Path(f"/tmp/dinomem_extract_memory.{_ws_sig}.lock")
+except Exception:
+    EXTRACT_LOCK_FILE = Path("/tmp/dinomem_extract_memory.lock")
 MEMORY_MAX_CHARS = 6000
 
 # Ensure dirs exist
@@ -2013,7 +2028,13 @@ def main():
 if __name__ == "__main__":
     _lock_fh = _acquire_extract_lock()
     if _lock_fh is None:
-        sys.exit(0)
+        # Lock held by a concurrent extract (cron tick, manual catch-up, another
+        # harness run). This is NOT success and NOT a failure — it's a SKIP. Exit
+        # with a distinct code so the orchestrator can report "skipped (lock held)"
+        # instead of logging a misleading "✅ completed successfully" (rc=0) when
+        # nothing was actually extracted. Callers that don't special-case 3 will
+        # still treat it as non-success (safe default).
+        sys.exit(3)
     try:
         main()
     except Exception as _e:

@@ -40,8 +40,16 @@ def log(message):
         f.write(log_message)
 
 
+# Distinct exit code a stage may use to say "I intentionally SKIPPED (a concurrent
+# instance holds my lock)" — neither success nor failure. extract_memory.py exits
+# 3 on a lock-skip so we don't log a misleading "✅ completed" when nothing ran.
+SKIP_EXIT_CODE = 3
+
+
 def run_script(script_name):
-    """Run a subprocess script, return True on success."""
+    """Run a subprocess script. Returns True on success, False on failure, and the
+    string 'skipped' when the stage exited with SKIP_EXIT_CODE (lock held by a
+    concurrent instance — not a real failure, but NOT a real success either)."""
     workspace = Path(__file__).parent.parent
     script_path = workspace / "procedures" / script_name
     log(f"🔄 Running {script_name}...")
@@ -54,6 +62,10 @@ def run_script(script_name):
         if result.returncode == 0:
             log(f"✅ {script_name} completed successfully")
             return True
+        elif result.returncode == SKIP_EXIT_CODE:
+            log(f"⏭️  {script_name} SKIPPED (a concurrent instance holds its lock) — "
+                f"not a failure, but nothing ran this tick; it self-heals next tick")
+            return "skipped"
         else:
             log(f"❌ {script_name} failed (exit code {result.returncode})")
             return False
@@ -114,6 +126,9 @@ def _memory_extraction_status_line(memory_ok):
     extract_memory.py writes after every run. Falls back to the old blanket
     FAILED wording if the status file is missing/unreadable (e.g. an older
     extract_memory.py from before this fix, or the subprocess died mid-write)."""
+    if memory_ok == "skipped":
+        return ("⏭️  SKIPPED (a concurrent extract held the lock) — nothing ran this "
+                "tick; self-heals next tick. NOT a failure, but NOT a completed run.")
     if memory_ok:
         return "✅ OK"
     try:

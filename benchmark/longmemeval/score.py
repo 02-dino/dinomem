@@ -271,7 +271,12 @@ def compute_aux_metrics(rlog: dict, gold: dict, lab: Path | None) -> dict:
             "avg_retrieved_count": _avg(retrieved_counts),
             "note": ("recall/precision over questions with BOTH gold answer_session_ids "
                      "and engine session attribution; null = engine surfaces no "
-                     "session-level attribution (e.g. base distilled-memory recall)"),
+                     "session-level attribution (e.g. base distilled-memory recall). "
+                     "null here is EXPECTED and NOT a retrieval failure or a broken "
+                     "run: the ANSWER-accuracy axis (overall_accuracy) is independent "
+                     "and still valid. recall_at_k is a SECOND, retrieval-quality axis "
+                     "that only lights up when retrieved chunks carry session-id "
+                     "attribution; when it's null, judge overall_accuracy alone."),
         },
         "cost": {
             "avg_context_chars": _avg(ctx_chars),
