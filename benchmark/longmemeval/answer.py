@@ -377,15 +377,38 @@ def main():
             retrieved_sids = []
             retrieved_dia_ids = []
             for c in ctx:
-                sid = c.get("session_id") or c.get("sid")
-                if sid:
-                    retrieved_sids.append(str(sid))
+                # A chunk can span MULTIPLE sessions (sliding window crosses a
+                # session boundary), so prefer the list form 'session_ids' the
+                # session_search leg now emits; fall back to the scalar for other
+                # legs / older shapes. De-dup while preserving order.
+                sids = c.get("session_ids")
+                if isinstance(sids, list) and sids:
+                    for s in sids:
+                        if s and str(s) not in retrieved_sids:
+                            retrieved_sids.append(str(s))
+                else:
+                    sid = c.get("session_id") or c.get("sid")
+                    if sid and str(sid) not in retrieved_sids:
+                        retrieved_sids.append(str(sid))
                 # dia_id: LoCoMo turn-level evidence attribution (absent otherwise)
                 did = c.get("dia_id")
                 if did:
                     retrieved_dia_ids.append(str(did))
             retrieved_sources = [c.get("source", "?") for c in ctx]
             ctx_chars = sum(len(c.get("text", "")) for c in ctx)
+            # ANSWER-EVIDENCE axis (metric B): a compact, bounded preview of the
+            # concatenated retrieved context so score.py can check whether the
+            # gold answer's evidence was actually SURFACED by ANY leg (hybrid),
+            # independent of session-id attribution. Bounded so the telemetry
+            # line stays small; the check is token-overlap, not exact-substring,
+            # so a preview is sufficient. Env-tunable cap; 0 disables.
+            try:
+                _prev_cap = int(os.environ.get("DINOMEM_BENCH_CTX_PREVIEW_CHARS", "20000"))
+            except (TypeError, ValueError):
+                _prev_cap = 20000
+            context_preview = ""
+            if _prev_cap > 0:
+                context_preview = "\n".join(c.get("text", "") for c in ctx)[:_prev_cap]
             t_ans0 = time.perf_counter()
             hypothesis, meta = compose_answer(
                 question, ctx, args.model, args.max_tokens, args.timeout
@@ -408,6 +431,7 @@ def main():
                 "retrieved_dia_ids": retrieved_dia_ids,
                 "retrieved_sources": retrieved_sources,
                 "context_chars": ctx_chars,
+                "context_preview": context_preview,
                 "recall_ms": recall_ms,
                 "answer_ms": answer_ms,
                 "prompt_tokens": meta.get("prompt_tokens"),

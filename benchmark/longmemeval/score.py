@@ -179,6 +179,32 @@ def _load_gold(gold_dir: Path) -> dict:
     return out
 
 
+def _answer_evidence_overlap(gold_answer: str, ctx_preview: str) -> float:
+    """Metric B core: fraction of the gold answer's CONTENT tokens that appear in
+    the retrieved context. Session-id-INDEPENDENT, so it credits ANY hybrid leg
+    (distilled memory, graph, session) that surfaced the answer's evidence.
+
+    Deliberately simple + deterministic (no LLM): lowercase word-token overlap
+    with short/stopword tokens dropped. This is a RETRIEVAL-presence proxy ('was
+    the evidence in front of the model?'), NOT an answer-correctness judge (that's
+    the LLM judge's job on overall_accuracy). Returns 0.0..1.0; 1.0 = every
+    content token of the gold answer is present in the retrieved context.
+    """
+    import re as _re
+    _STOP = {"the", "a", "an", "and", "or", "of", "to", "in", "on", "at", "for",
+             "is", "are", "was", "were", "be", "it", "that", "this", "with",
+             "as", "by", "from", "his", "her", "their", "you", "your", "i"}
+    def _toks(s):
+        return [w for w in _re.findall(r"[a-z0-9]+", (s or "").lower())
+                if len(w) > 2 and w not in _STOP]
+    want = _toks(gold_answer)
+    if not want:
+        return 0.0
+    have = set(_toks(ctx_preview))
+    hit = sum(1 for w in want if w in have)
+    return round(hit / len(want), 4)
+
+
 def _dir_size_bytes(path: Path) -> int:
     total = 0
     if not path or not path.exists():
@@ -205,6 +231,12 @@ def compute_aux_metrics(rlog: dict, gold: dict, lab: Path | None) -> dict:
     """
     recalls, precisions = [], []
     attributable = 0
+    # metric B (answer-evidence recall): hybrid-aware, session-id-INDEPENDENT.
+    # Did ANY leg surface the gold answer's evidence into the retrieved context?
+    # Token-overlap of gold answer vs the context_preview, so distilled-memory /
+    # graph legs (which carry no session-id) still count. attributable_ans counts
+    # Qs where BOTH a gold answer text AND a ctx preview exist.
+    ans_evidence_hits, attributable_ans = [], 0
     retrieved_counts, ctx_chars = [], []
     prompt_toks, completion_toks, total_toks = [], [], []
     recall_ms, answer_ms = [], []
@@ -247,6 +279,14 @@ def compute_aux_metrics(rlog: dict, gold: dict, lab: Path | None) -> dict:
             recalls.append(len(hit) / len(want))
             precisions.append(len(hit) / len(got))
 
+        # ---- metric B: answer-evidence recall (hybrid, session-id-free) ----
+        gold_answer = (g.get("answer") if g else "") or ""
+        ctx_preview = (r.get("context_preview") or "")
+        if gold_answer.strip() and ctx_preview.strip():
+            attributable_ans += 1
+            ans_evidence_hits.append(
+                _answer_evidence_overlap(gold_answer, ctx_preview))
+
     def _avg(v):
         return round(sum(v) / len(v), 4) if v else None
     def _sum(v):
@@ -269,6 +309,18 @@ def compute_aux_metrics(rlog: dict, gold: dict, lab: Path | None) -> dict:
             "recall_at_k": _avg(recalls),
             "precision_at_k": _avg(precisions),
             "avg_retrieved_count": _avg(retrieved_counts),
+            # ---- metric B: hybrid answer-evidence recall (session-id-free) ----
+            "answer_evidence_attributable_questions": attributable_ans,
+            "answer_evidence_recall": _avg(ans_evidence_hits),
+            "answer_evidence_note": (
+                "metric B: fraction of the gold answer's content tokens present in "
+                "the retrieved context (any hybrid leg). session-id-INDEPENDENT, so "
+                "it credits distilled-memory/graph legs that recall_at_k cannot. "
+                "a RETRIEVAL-presence proxy, not an answer-correctness judge "
+                "(overall_accuracy is the judge). high answer_evidence_recall + a "
+                "WRONG overall_accuracy => evidence was retrieved but the answer "
+                "model failed to synthesize; LOW answer_evidence_recall => the "
+                "retrieval legs never surfaced the evidence."),
             "note": ("recall/precision over questions with BOTH gold answer_session_ids "
                      "and engine session attribution; null = engine surfaces no "
                      "session-level attribution (e.g. base distilled-memory recall). "
