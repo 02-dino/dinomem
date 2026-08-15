@@ -47,6 +47,19 @@ est_cost ≈ N_questions × (answer_tokens + judge_tokens)/question × price(sel
 
 \* Depends entirely on your selected answer+judge models — the printed estimate uses *your* choices, not these defaults. These are for a mid-tier answer + GPT-4o judge.
 
+**Want to price a run-EVERYTHING first?** One command prints the full start-to-finish
+budget across **all datasets × all arms** (LongMemEval-S + LoCoMo × rag/base/neuron),
+no `--source`, no setup, no spend:
+
+```bash
+python3 run.py --estimate-all
+```
+
+At the current per-Q guess (2,200 tok) that's **~16.4M tokens** total (~2,486 Q × 3 arms;
+LoCoMo is ~80% of it). Tokens are the real currency on subscription plans; the printed
+$ figure is a metered-only footnote. Per-Q counts are a **floor guess** — run a small
+`--sample` first to measure real per-Q tokens before committing the full budget.
+
 ## Run
 
 ```bash

@@ -80,6 +80,17 @@ LEADERBOARD = "https://github.com/xiaowu0162/LongMemEval"
 EST_ANSWER_TOKENS = 1800   # retrieved context + question + answer, per Q
 EST_JUDGE_TOKENS = 400     # judge prompt + 10-token verdict, per Q
 
+# Full-run question counts per dataset (for --estimate-all: what a START-TO-FINISH
+# run costs). LongMemEval-S = 500 (official). LoCoMo = 10 conversations, ~199 QA
+# each (conv0=199 verified in adapter_locomo.py) => ~1986 questions total.
+# These are GUESSES until a smoke run measures true per-Q tokens (LoCoMo haystacks
+# are long multi-session -> real answer tokens likely HIGHER). Treat as a FLOOR.
+FULL_Q_COUNTS = {
+    "longmemeval": 500,
+    "locomo": 1986,
+}
+ALL_ARMS = ("rag", "base", "neuron")
+
 # Indicative $/1K-token (input+output blended) for the cost-estimate ONLY. These
 # are ballparks for common tiers; the real bill depends on the user's provider.
 PRICE_HINT = {
@@ -141,6 +152,65 @@ def cost_estimate(n: int, answer_model: str, judge_model: str) -> dict:
                 "indicative metered prices; ignore on flat-fee subs. Prints "
                 "before any spend.",
     }
+
+
+def estimate_all(answer_model: str, judge_model: str) -> dict:
+    """Full START-TO-FINISH estimate: every dataset x every arm, in one call.
+    So a user who wants to 'run all' knows the total token/$ budget UP FRONT,
+    before committing any spend. Pure arithmetic; no lab, no model calls."""
+    per_q = EST_ANSWER_TOKENS + EST_JUDGE_TOKENS
+    n_arms = len(ALL_ARMS)
+    rows, grand_tok = [], 0
+    for ds, nq in FULL_Q_COUNTS.items():
+        per_arm = nq * per_q
+        all_arms = per_arm * n_arms
+        grand_tok += all_arms
+        rows.append({
+            "dataset": ds, "questions": nq,
+            "per_arm_tokens": per_arm,
+            "all_arms_tokens": all_arms,
+        })
+    # $ footnote only (metered providers; meaningless on flat-fee subs)
+    ans_tok = sum(r["questions"] for r in rows) * EST_ANSWER_TOKENS * n_arms
+    jud_tok = sum(r["questions"] for r in rows) * EST_JUDGE_TOKENS * n_arms
+    usd = ans_tok / 1000.0 * _price(answer_model) + jud_tok / 1000.0 * _price(judge_model)
+    return {
+        "arms": list(ALL_ARMS),
+        "per_question_tokens": per_q,
+        "datasets": rows,
+        "total_questions": sum(r["questions"] for r in rows),
+        "grand_total_tokens": grand_tok,
+        "answer_model": answer_model or "gateway-default",
+        "judge_model": judge_model or "gateway-default",
+        "est_total_usd_low": round(usd * 0.6, 2),
+        "est_total_usd_high": round(usd * 1.8, 2),
+        "note": "FULL start-to-finish across ALL datasets x ALL arms. TOKENS are "
+                "the real cost on subscription plans; $ is a metered-only footnote. "
+                "Per-Q token counts are GUESSES until a smoke run measures them "
+                "(LoCoMo haystacks are long -> real tokens likely higher). FLOOR estimate.",
+    }
+
+
+def print_estimate_all(est: dict):
+    print("\n=== FULL RUN ESTIMATE — ALL datasets x ALL arms (before any spend) ===",
+          file=sys.stderr)
+    print(f"  arms:           {', '.join(est['arms'])}  ({len(est['arms'])} arms)",
+          file=sys.stderr)
+    print(f"  per-Q tokens:   {est['per_question_tokens']:,}  (answer+judge; a GUESS)",
+          file=sys.stderr)
+    print(f"  {'dataset':14}{'Q':>6}{'per-arm tok':>16}{'x all arms tok':>18}",
+          file=sys.stderr)
+    for r in est["datasets"]:
+        print(f"  {r['dataset']:14}{r['questions']:>6}{r['per_arm_tokens']:>16,}"
+              f"{r['all_arms_tokens']:>18,}", file=sys.stderr)
+    print(f"  {'-'*52}", file=sys.stderr)
+    print(f"  {'GRAND TOTAL':14}{est['total_questions']:>6}{'':>16}"
+          f"{est['grand_total_tokens']:>18,}  (~{est['grand_total_tokens']/1e6:.2f}M)",
+          file=sys.stderr)
+    print(f"  ($ footnote:    ${est['est_total_usd_low']}\u2013${est['est_total_usd_high']} "
+          f"metered-only, ignore on subs)", file=sys.stderr)
+    print(f"  NOTE: per-Q tokens are a FLOOR guess; run a small --sample first to "
+          f"measure them.", file=sys.stderr)
 
 
 def print_cost(est: dict):
@@ -304,7 +374,20 @@ def main():
     ap.add_argument("--timeout", type=int, default=900)
     ap.add_argument("--estimate-only", action="store_true",
                     help="print the cost estimate and EXIT (no lab, no spend).")
+    ap.add_argument("--estimate-all", action="store_true",
+                    help="print the FULL start-to-finish estimate (ALL datasets x "
+                         "ALL arms) and EXIT. No --source needed, no spend.")
     args = ap.parse_args()
+
+    # --estimate-all: pure arithmetic across every dataset+arm. Runs BEFORE the
+    # --source requirement so anyone can price a full run with zero setup.
+    if args.estimate_all:
+        est = estimate_all(args.answer_model, args.judge_model)
+        print_estimate_all(est)
+        RESULTS.mkdir(parents=True, exist_ok=True)
+        (RESULTS / "full_run_estimate.json").write_text(json.dumps(est, indent=2))
+        print(json.dumps({"estimate_all": True, "estimate": est}, indent=2))
+        sys.exit(0)
 
     mode_name = "full" if args.full else "sample"
     if args.full and not args.yes:
