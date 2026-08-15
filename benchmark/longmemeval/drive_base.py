@@ -149,12 +149,24 @@ def drive(lab: Path, timeout: int, review_max_loops: int,
     # /root/.openclaw/agents/*/sessions path, REFUSE to run. This is the guard
     # that would have stopped the 2026-08-15 leak (session_reset archived LIVE
     # orphans because its hardcoded SESSIONS_DIR was never patched).
-    _LIVE_RE = re.compile(r'/root/\.openclaw/agents/[A-Za-z0-9_-]+/sessions')
+    # Match the FIXER's semantics: only a live path inside a STRING LITERAL is an
+    # executable leak. A bare mention in a COMMENT can't archive anything, so
+    # ignore comments (else the guard false-positives on doc comments like
+    # session_ingest.py's `# installer (/root/.openclaw/agents/.../sessions ...)`).
+    _LIVE_RE = re.compile(
+        r'(["\'])/root/\.openclaw/agents/[A-Za-z0-9_-]+/sessions')
     leaking = []
     for py in sorted(procs.glob("*.py")):
         try:
-            if _LIVE_RE.search(py.read_text(encoding="utf-8")):
-                leaking.append(py.name)
+            for ln in py.read_text(encoding="utf-8").splitlines():
+                s = ln.lstrip()
+                if s.startswith("#"):      # skip full-line comments
+                    continue
+                # strip trailing inline comment (best-effort; leak lives in a
+                # string literal which _LIVE_RE already requires quotes around)
+                if _LIVE_RE.search(ln):
+                    leaking.append(py.name)
+                    break
         except Exception:
             continue
     if leaking:
