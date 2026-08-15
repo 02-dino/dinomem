@@ -81,12 +81,18 @@ def _is_gpt4o_class(model: str) -> bool:
 
 
 def judge_via_gateway(prompt: str, model: str, timeout: int) -> tuple[bool, str]:
-    """Route the official judge prompt through the OpenClaw gateway at temp=0.
+    """Route the official judge prompt through the OpenClaw gateway.
     Returns (label_bool, raw_response). Fail-loud on transport error (caller counts).
+
+    NOTE: `openclaw infer model run` exposes NO decode knobs (--temperature /
+    --max-tokens are NOT accepted — passing them makes the CLI reject the whole
+    call, which is bug #7: all judge calls errored). The judge prompt is a strict
+    yes/no classification, so gateway defaults are fine; the label parse only
+    looks for 'yes'. Determinism note stays in the module docstring as intent,
+    but the CLI gives us no per-call temperature control here.
     """
-    cmd = [_resolve_openclaw(), "capability", "model", "run",
-           "--prompt", prompt, "--gateway", "--json", "--temperature", "0",
-           "--max-tokens", "10"]
+    cmd = [_resolve_openclaw(), "infer", "model", "run",
+           "--prompt", prompt, "--gateway", "--json"]
     if model:
         cmd += ["--model", model]
     try:
