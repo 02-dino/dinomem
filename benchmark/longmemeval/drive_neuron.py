@@ -55,6 +55,10 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path as _Path
+
+# This driver's own dir — used to resolve sibling harness scripts (lab_embed_index.py).
+HERE = _Path(__file__).resolve().parent
 import time
 from pathlib import Path
 
@@ -210,6 +214,22 @@ def drive(ws: Path, sandbox_root: Path, timeout: int, review_max_loops: int,
     env["DINOMEM_WORKSPACE"] = str(ws)
     env["OPENCLAW_WORKSPACE"] = str(ws)
     env["PYTHONUNBUFFERED"] = "1"
+    # ISOLATION (critical): memory_graph.py / memory_synthesis.py read chunk
+    # embeddings from a sqlite index. Two ways the path is resolved and BOTH must
+    # point lab-local or the run reads the REAL production DB (isolation breach +
+    # leaked live data invalidates the score):
+    #   1) DINOMEM_MEMORY_DB env (honored by DB_PATH's env default), AND
+    #   2) the install-time SED-BAKED literal in the lab's memory_graph.py
+    #      (DB_PATH = Path("<OPENCLAW_DIR>/memory/<agent>.sqlite")), which the
+    #      neuron installer writes as OPENCLAW_MEMORY_DIR/$AGENT_ID.sqlite where
+    #      OPENCLAW_DIR = dirname(WS) = the sandbox root. The sed literal WINS over
+    #      the env default, so we must target THAT exact path.
+    # Compute the sed-baked path deterministically and pin the env to match it, so
+    # the embed-index stage writes exactly where memory_graph reads. Both agree,
+    # both lab-local, no neuron-code change needed.
+    _sbroot = _Path(sandbox_root).resolve() if sandbox_root else ws.resolve().parent
+    lab_mem_db = _sbroot / "memory" / f"{ws.name.replace('workspace-', '') or 'analyst'}.sqlite"
+    env["DINOMEM_MEMORY_DB"] = str(lab_mem_db)
     # LongMemEval packs a whole multi-session haystack into ONE archive, so the
     # extraction LLM must emit a much larger JSON than a normal incremental
     # session. extract_memory's default LLM_MAX_TOKENS=3000 truncates that JSON
@@ -256,6 +276,28 @@ def drive(ws: Path, sandbox_root: Path, timeout: int, review_max_loops: int,
                 _log(f"review converged after {i+1} iteration(s)")
                 break
             prev_sig = cur_sig
+
+    # ---- LAB EMBED-INDEX (harness stage, NOT a prod cron): populate the
+    # DINOMEM_MEMORY_DB the L2/L3 stages read. In prod the running gateway's
+    # native memorySearch indexer writes vectors into a sqlite-vec vec0 virtual
+    # table (unreadable by plain python sqlite3, and it does not exist in a
+    # headless lab). This stage embeds the lab's freshly-extracted memory/*.md
+    # via TEI into a PLAIN sqlite (chunks.embedding = json array) that
+    # _schema_adapter/memory_graph read directly. Fail-LOUD: without it the L2
+    # graph is empty and the neuron arm cannot score honestly. Skipped only when
+    # memory_graph is ablated (no consumer for the index).
+    if "memory_graph.py" not in skip_stages:
+        embed_script = HERE / "lab_embed_index.py"
+        _log(f"stage 'lab_embed_index': running lab_embed_index.py -> {env.get('DINOMEM_MEMORY_DB')}")
+        emb = _run_stage("lab_embed_index", embed_script, ws, env, timeout)
+        stages.append(emb)
+        if not emb.get("ok"):
+            return {"ok": False, "reason":
+                    ("lab_embed_index failed (no embeddings -> L2 graph would be "
+                     f"empty): rc={emb.get('rc')} "
+                     f"{(emb.get('stdout_tail') or '')[-300:]}{(emb.get('stderr_tail') or '')[-300:]}"),
+                    "stages": stages, "memory": _count_memory_items(ws),
+                    "graph": _count_graph_nodes(ws)}
 
     # ---- NEURON L2/L3/L4 stages, forced in prod cron order (minus ablated) ----
     for script_name, reasoning in NEURON_STAGES:
