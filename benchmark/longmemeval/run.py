@@ -918,6 +918,30 @@ def main():
                 _log(f"neuron overlay applied OK (markers present) despite installer "
                      f"rc={ov.returncode} -- benign sandbox self-check noise, continuing.")
 
+            # AUTO-WIRE the neuron recall command the answer loop shells (mirror of
+            # the rag arm above). answer.py defaults --recall command for neuron but
+            # has NO recall hook unless DINOMEM_BENCH_RECALL_CMD is set -> it
+            # _fail()s ("--recall command requires DINOMEM_BENCH_RECALL_CMD"). The
+            # neuron overlay installs tools/hybrid_recall.py into the WS; point the
+            # answer loop at it (it emits the answer_candidates JSON block answer.py
+            # parses). {q}/{k} are substituted per-question by command_recall. Runs
+            # cwd=WS via env so hybrid_recall's leg tools resolve their dbs.
+            # Respect a user-provided override (don't clobber an explicit env).
+            if not os.environ.get("DINOMEM_BENCH_RECALL_CMD", "").strip():
+                _recall_tool = os.path.join(ws, "tools", "hybrid_recall.py")
+                if not os.path.isfile(_recall_tool):
+                    _fail("neuron overlay applied but tools/hybrid_recall.py "
+                          f"missing in WS ({_recall_tool}) -- cannot wire the answer "
+                          "recall hook. Neuron overlay is incomplete.")
+                # DINOMEM_WORKSPACE so hybrid_recall's leg tools (docs_search,
+                # session_search, graph_search) resolve their lab-local dbs.
+                os.environ["DINOMEM_WORKSPACE"] = ws
+                os.environ["DINOMEM_BENCH_RECALL_CMD"] = (
+                    f'DINOMEM_WORKSPACE={ws} {sys.executable} {_recall_tool} '
+                    f'"{{q}}" --k {{k}} --json'
+                )
+                _log(f"neuron recall hook wired -> hybrid_recall.py (WS={ws})")
+
         # ---- 3. drive pipeline to convergence (isolation tripwire) ----
         # RAG arm: NO pipeline to drive (naive floor = retrieval over raw sessions).
         # We still assert the live source is untouched (isolation) before proceeding.
