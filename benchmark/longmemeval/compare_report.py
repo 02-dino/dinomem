@@ -350,7 +350,10 @@ def main():
     ap = argparse.ArgumentParser(description="dinomem 3-arm LongMemEval comparison report.")
     ap.add_argument("--arms", default="rag,base,neuron",
                     help="comma-separated arms to compare (subset ok); "
-                    "each needs results/<arm>_result.json")
+                    "each needs results/<arm>_<dataset>_result.json (or legacy <arm>_result.json)")
+    ap.add_argument("--dataset", default="longmemeval", choices=["longmemeval", "locomo"],
+                    help="which dataset's per-arm results to compare (result files are "
+                    "tagged {arm}_{dataset}; falls back to legacy {arm} for old artifacts).")
     ap.add_argument("--out", default=str(RESULTS / "comparison.md"))
     ap.add_argument("--allow-nondeterministic", action="store_true",
                     help="override the determinism refuse-gate (NOT recommended)")
@@ -363,7 +366,11 @@ def main():
 
     results = {}
     for a in arms:
-        results[a] = _load(RESULTS / f"{a}_result.json")
+        # prefer the dataset-tagged file; fall back to the legacy arm-only name so
+        # pre-tagging result artifacts still compare.
+        tagged = RESULTS / f"{a}_{args.dataset}_result.json"
+        legacy = RESULTS / f"{a}_result.json"
+        results[a] = _load(tagged if tagged.exists() else legacy)
 
     problems = fairness_gate(results, args.allow_nondeterministic)
     if problems:

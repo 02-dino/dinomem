@@ -779,6 +779,12 @@ def main():
     # its lexical-over-distilled-memory path.
     recall = args.recall or ("base" if args.arm == "base" else "command")
     RESULTS.mkdir(parents=True, exist_ok=True)
+    # RESULT FILE TAG: key output filenames on {arm}_{dataset}, not arm alone.
+    # WHY: a neuron-longmemeval run and a neuron-locomo run both used to write
+    # results/neuron_result.json -> the second silently clobbered the first. Tagging
+    # by dataset keeps each (arm,dataset) result distinct. compare_report.py reads
+    # {arm}_{dataset} first and falls back to legacy {arm} for old artifacts.
+    tag = f"{args.arm}_{args.dataset}"
     t0 = time.time()
 
     # ---- 0. cost estimate BEFORE any spend ----
@@ -788,7 +794,7 @@ def main():
                         arm=args.arm, dataset=getattr(args, "dataset", "longmemeval"),
                         cheap_model=getattr(args, "cheap_model", ""))
     print_cost(est)
-    (RESULTS / f"{args.arm}_cost_estimate.json").write_text(json.dumps(est, indent=2))
+    (RESULTS / f"{tag}_cost_estimate.json").write_text(json.dumps(est, indent=2))
     if args.estimate_only:
         _log("--estimate-only: no lab built, no model calls made. Exiting.")
         print(json.dumps({"estimate_only": True, "arm": args.arm, "mode": mode_name,
@@ -877,7 +883,7 @@ def main():
             if not emitted_qid:
                 _fail("adapter emit did not report question_id (isolation fix "
                       "needs it to scope answer.py to the emitted sample)")
-            emitted_qids_file = str(RESULTS / f"{args.arm}_emitted_qids.txt")
+            emitted_qids_file = str(RESULTS / f"{tag}_emitted_qids.txt")
             Path(emitted_qids_file).write_text(emitted_qid + "\n", encoding="utf-8")
             _log(f"isolation: lab holds sample-index {args.sample_index} "
                  f"(qid={emitted_qid}); answer loop scoped to that qid only.")
@@ -885,7 +891,7 @@ def main():
         # LoCoMo: build the per-question REF file for this conversation so answer.py
         # + score.py operate per-question (the dataset itself is 1 conversation).
         if args.dataset == "locomo":
-            ref_path = str(RESULTS / f"{args.arm}_locomo_ref.json")
+            ref_path = str(RESULTS / f"{tag}_locomo_ref.json")
             q_cmd = [sys.executable, HERE / "adapter_locomo.py", "questions",
                      "--dataset", dataset_path, "--index", args.sample_index,
                      "--out", ref_path]
@@ -1093,13 +1099,13 @@ def main():
         answer_qids_file = emitted_qids_file if args.dataset == "longmemeval" else None
         m1 = _run_pipeline_once(args.arm, lab_info, dataset_path, args.sample_index,
                                 n_arg, answer_qids_file, args.answer_model, args.judge_model,
-                                recall, args.overlay_cmd, f"{args.arm}", args.timeout,
+                                recall, args.overlay_cmd, f"{tag}", args.timeout,
                                 dataset_family=args.dataset, ref_path=ref_path)
         determinism = None
         if args.determinism:
             m2 = _run_pipeline_once(args.arm, lab_info, dataset_path, args.sample_index,
                                     n_arg, answer_qids_file, args.answer_model, args.judge_model,
-                                    recall, args.overlay_cmd, f"{args.arm}_run2", args.timeout,
+                                    recall, args.overlay_cmd, f"{tag}_run2", args.timeout,
                                     dataset_family=args.dataset, ref_path=ref_path)
             o1, o2 = m1.get("overall_accuracy"), m2.get("overall_accuracy")
             drift = abs((o1 or 0) - (o2 or 0))
@@ -1117,7 +1123,7 @@ def main():
         seconds = round(time.time() - t0, 1)
         md = _stamp_md(args.arm, mode_name, n_final, m1, dataset_info,
                        args.answer_model, args.judge_model, determinism, seconds)
-        out_md = RESULTS / f"{args.arm}_latest.md"
+        out_md = RESULTS / f"{tag}_latest.md"
         out_md.write_text(md, encoding="utf-8")
         # also drop a machine-readable arm result the comparison generator reads
         arm_result = {
@@ -1132,8 +1138,8 @@ def main():
                 mode_name, n_final),
             "generated": datetime.now(timezone.utc).isoformat(),
         }
-        (RESULTS / f"{args.arm}_result.json").write_text(json.dumps(arm_result, indent=2))
-        _log(f"wrote {out_md} and {args.arm}_result.json")
+        (RESULTS / f"{tag}_result.json").write_text(json.dumps(arm_result, indent=2))
+        _log(f"wrote {out_md} and {tag}_result.json")
         print(md)
 
     finally:
