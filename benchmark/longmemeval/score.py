@@ -502,8 +502,27 @@ def main():
     rlog_path = Path(args.retrieval_log) if args.retrieval_log else \
         Path(str(hyp_path) + ".retrieval.jsonl")
     lab_dir = Path(args.lab).resolve() if args.lab else None
-    gold_dir = Path(args.gold_dir) if args.gold_dir else (
-        lab_dir / "sessions" if lab_dir else None)
+    # Gold sidecars (<qid>.gold.json) live wherever adapter.py emitted the archive.
+    # In the REAL layout that's <lab>/agents/<agent>/sessions, NOT <lab>/sessions
+    # (flat layout). If --gold-dir isn't given, probe both so recall_at_k + the
+    # answer-evidence axis don't silently go dark on a real-layout lab.
+    def _find_gold_dir(lab: Path | None) -> Path | None:
+        if not lab:
+            return None
+        cands = [lab / "sessions"]
+        agents = lab / "agents"
+        if agents.is_dir():
+            # <lab>/agents/<agent>/sessions for any agent dir present
+            cands += sorted(agents.glob("*/sessions"))
+        for c in cands:
+            try:
+                if c.is_dir() and any(c.glob("*.gold.json")):
+                    return c
+            except Exception:
+                continue
+        # fall back to the flat convention even if empty (preserves old behaviour)
+        return lab / "sessions"
+    gold_dir = Path(args.gold_dir) if args.gold_dir else _find_gold_dir(lab_dir)
     rlog = _load_retrieval_log(rlog_path)
     gold = _load_gold(gold_dir) if gold_dir else {}
     aux = compute_aux_metrics(rlog, gold, lab_dir)
