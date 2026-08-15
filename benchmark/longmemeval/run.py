@@ -670,6 +670,122 @@ def _detect_default_arm(args) -> tuple[str, str]:
             continue
     return "base", "no neuron overlay detected"
 
+def _multi_q_run(args, tag: str, est: dict) -> None:
+    """Run the single-Q LongMemEval pipeline N times (sample-index 0..N-1), each in
+    its own isolated lab, and AGGREGATE into one {tag}_result.json.
+
+    WHY this exists: LongMemEval isolation puts exactly ONE question's haystack in a
+    lab and scopes the answer loop to that qid, so a single main() pass = 1 question.
+    Reusing the whole proven pipeline as a child subprocess (rather than rewrapping
+    main()'s 250 lines) keeps every isolation tripwire intact; we only fan out and
+    fold results. Children run with --n 1 so they DON'T re-enter this dispatch.
+
+    GOTCHA: overall_accuracy is micro-averaged over graded questions (sum hits /
+    sum graded), not a mean-of-means, so a child that failed to grade doesn't skew
+    the average. recall_at_k / answer_evidence_recall are averaged only over their
+    own attributable subsets, matching score.py's per-question semantics.
+    """
+    n = args.n
+    _log(f"multi-Q: LongMemEval --n {n} => {n} isolated single-Q runs "
+         f"(sample-index 0..{n-1}), aggregating into {tag}_result.json")
+    child_results, failures = [], []
+    for i in range(n):
+        cmd = [sys.executable, HERE / "run.py",
+               "--arm", args.arm, "--dataset", "longmemeval",
+               "--dataset-line", args.dataset_line,
+               "--sample", "--n", "1", "--sample-index", str(i),
+               "--source", args.source, "--agent-id", args.agent_id,
+               "--overlay-cmd", args.overlay_cmd or "",
+               "--timeout", str(args.timeout)]
+        if args.answer_model:
+            cmd += ["--answer-model", args.answer_model]
+        if args.judge_model:
+            cmd += ["--judge-model", args.judge_model]
+        if args.recall:
+            cmd += ["--recall", args.recall]
+        _log(f"multi-Q [{i+1}/{n}] sample-index={i}")
+        r = _sh(cmd, args.timeout, capture=False)
+        if r.returncode != 0:
+            failures.append({"sample_index": i, "rc": r.returncode})
+            _log(f"multi-Q [{i+1}/{n}] FAILED rc={r.returncode} (continuing; recorded)")
+            continue
+        # CLOBBER GUARD: every child writes the SAME {tag}_result.json (it reuses this
+        # very run.py with the same {arm}_{dataset} tag). Read it and snapshot to an
+        # indexed copy IMMEDIATELY, before the next child overwrites it.
+        shared = RESULTS / f"{tag}_result.json"
+        try:
+            child_obj = json.loads(shared.read_text())
+        except (OSError, ValueError) as e:
+            failures.append({"sample_index": i, "error": str(e)})
+            _log(f"multi-Q [{i+1}/{n}] result unreadable: {e}")
+            continue
+        (RESULTS / f"{tag}_q{i}_result.json").write_text(json.dumps(child_obj, indent=2))
+        child_results.append((i, child_obj))
+
+    if not child_results:
+        _fail(f"multi-Q: all {n} runs failed ({len(failures)} failures); no result to aggregate")
+
+    # ---- aggregate ----
+    def _micro(numer_key, denom_key):
+        num = sum((c[1].get("metrics", {}) or {}).get(numer_key, 0) or 0 for c in child_results)
+        den = sum((c[1].get("metrics", {}) or {}).get(denom_key, 0) or 0 for c in child_results)
+        return (round(num / den, 4) if den else None), den
+
+    graded = [c for c in child_results
+              if (c[1].get("metrics", {}) or {}).get("n_graded")]
+    n_graded = sum((c[1]["metrics"].get("n_graded") or 0) for c in graded)
+    # accuracy: micro-average = sum(acc_i * n_graded_i) / sum(n_graded_i). With
+    # single-Q children n_graded_i is 1, so this is just the hit-rate over graded Qs.
+    hits = sum((c[1]["metrics"].get("overall_accuracy") or 0)
+               * (c[1]["metrics"].get("n_graded") or 0) for c in graded)
+    overall = round(hits / n_graded, 4) if n_graded else None
+
+    def _avg_over_attrib(metric_key, attrib_key):
+        pairs = [((c[1]["metrics"].get("retrieval", {}) or {}).get(metric_key),
+                  (c[1]["metrics"].get("retrieval", {}) or {}).get(attrib_key) or 0)
+                 for c in child_results]
+        num = sum((v or 0) * a for v, a in pairs if v is not None)
+        den = sum(a for v, a in pairs if v is not None)
+        return (round(num / den, 4) if den else None), den
+
+    recall_k, recall_attrib = _avg_over_attrib("recall_at_k", "attributable_questions")
+    ans_ev, ans_ev_attrib = _avg_over_attrib("answer_evidence_recall",
+                                             "answer_evidence_attributable_questions")
+    # per-Q ledger: sample_index + that child's accuracy. (The child result carries
+    # no bare qid field; the qid is the emitted one for that index, recoverable from
+    # {tag}_q{i} artifacts if needed. sample_index is the stable per-Q key here.)
+    per_q = [{"sample_index": i,
+              "accuracy": (c.get("metrics", {}) or {}).get("overall_accuracy"),
+              "n_graded": (c.get("metrics", {}) or {}).get("n_graded")}
+             for i, c in child_results]
+
+    agg = {
+        "arm": args.arm, "mode": "sample", "n": n_graded,
+        "n_requested": n, "n_failed": len(failures),
+        "aggregation": "micro-average over per-question isolated runs",
+        "metrics": {
+            "overall_accuracy": overall,
+            "n_graded": n_graded,
+            "retrieval": {
+                "recall_at_k": recall_k,
+                "attributable_questions": recall_attrib,
+                "answer_evidence_recall": ans_ev,
+                "answer_evidence_attributable_questions": ans_ev_attrib,
+            },
+        },
+        "per_question": per_q,
+        "failures": failures,
+        "answer_model": args.answer_model or "gateway-default",
+        "judge_model": args.judge_model or "gateway-default",
+        "generated": datetime.now(timezone.utc).isoformat(),
+    }
+    out = RESULTS / f"{tag}_result.json"
+    out.write_text(json.dumps(agg, indent=2))
+    _log(f"multi-Q done: {n_graded}/{n} graded, accuracy={overall}, "
+         f"recall_at_k={recall_k} (attrib={recall_attrib}). wrote {out}")
+    print(json.dumps(agg, indent=2))
+
+
 def main():
     ap = argparse.ArgumentParser(description="dinomem LongMemEval runner (one arm, end-to-end).")
     # --arm default is DYNAMIC: if the neuron upgrade layer is detectable on this
@@ -800,6 +916,18 @@ def main():
         print(json.dumps({"estimate_only": True, "arm": args.arm, "mode": mode_name,
                           "n": est_n, "estimate": est}, indent=2))
         sys.exit(0)
+
+    # ---- MULTI-Q DISPATCH (LongMemEval) ----------------------------------
+    # WHY: LongMemEval isolation = ONE lab holds ONE question's haystack, and the
+    # answer loop is scoped to that single emitted qid (see the ISOLATION FIX
+    # below). So a single main() pass answers exactly 1 question; --n was silently
+    # a no-op. To honour --n N we run the proven single-Q pipeline N times, each
+    # in its own isolated lab (--sample-index i), and AGGREGATE. LoCoMo is exempt:
+    # one conversation already carries many questions (multi-Q is native there).
+    if (args.dataset == "longmemeval" and mode_name == "sample"
+            and args.n and args.n > 1 and not args.determinism):
+        _multi_q_run(args, tag, est)
+        return
 
     # ---- 1. lab bootstrap ----
     # Base arm: FLAT layout (self-contained, SESSIONS_DIR patched).

@@ -47,6 +47,13 @@ import time
 from pathlib import Path
 
 
+# Max extract_memory re-drives while the async backlog drains (see DRAIN POLL in
+# drive()). extract_memory processes BATCH_SIZE(=3) archives per pass and resumes
+# from the dedup log, so a big haystack that timed the front door out needs a few
+# passes to fully materialize. 20 passes * BATCH_SIZE = 60 archives headroom.
+DRAIN_MAX_LOOPS = 20
+
+
 def _fail(msg: str, code: int = 1):
     print(f"[drive_base] FAIL: {msg}", file=sys.stderr)
     sys.exit(code)
@@ -211,10 +218,57 @@ def drive(lab: Path, timeout: int, review_max_loops: int,
                                  lab, env, timeout))
 
     # Critical-stage gate: the front door (or its extract fallback) must have run ok.
+    # NOTE: the front door shells extract_memory via subprocess.run(timeout=300).
+    # On a big haystack (LongMemEval haystacks run 600K+), extraction EXCEEDS 300s,
+    # the front door times out and returns False (s["ok"]=False) EVEN THOUGH
+    # extraction is healthy and self-healing (it dedups via .processed_archives.json
+    # and drains BATCH_SIZE more archives per invocation). So a timed-out front door
+    # is NOT a hard failure here — we treat it as "backlog draining" and finish the
+    # drain ourselves in the poll below, rather than declaring front_door_failed.
     critical = [s for s in stages if s["ran"]]
-    if not critical or not any(s["ok"] for s in critical):
+    front_door_timed_out = any(s["ran"] and s.get("timed_out") for s in critical)
+    if not critical or (not any(s["ok"] for s in critical) and not front_door_timed_out):
         return {"ok": False, "reason": "front_door_failed", "stages": stages,
                 "memory": _count_memory_items(lab)}
+
+    # ---- DRAIN POLL: wait for async extraction backlog to finish ----
+    # WHY: the front door may return before extract_memory has materialized ALL items
+    # (subprocess timeout on a big haystack; extraction keeps self-healing). Counting
+    # items once, immediately, races that drain and false-fails convergence (the
+    # 2026-08-15 "items==0 but lab later held 202 items" bug). Re-drive extract_memory
+    # directly (it resumes from the dedup log, draining BATCH_SIZE archives per pass)
+    # until items materialize AND the status file reports the backlog drained, or a
+    # deadline. extract_memory is idempotent (dedup log), so re-driving is safe.
+    status_file = lab / "logs" / ".extract_memory_status.json"
+    extract_script = procs / "extract_memory.py"
+    drain_iters = []
+    if _count_memory_items(lab)["item_files"] == 0 and extract_script.exists():
+        _log("drain-poll: front door returned with 0 items materialized "
+             f"(timed_out={front_door_timed_out}); re-driving extract_memory until "
+             "backlog drains.")
+        drain_deadline = time.time() + max(timeout, 600)
+        for di in range(DRAIN_MAX_LOOPS):
+            s = _run_stage(f"extract_drain[{di}]", extract_script, lab, env, timeout)
+            drain_iters.append(s)
+            items = _count_memory_items(lab)["item_files"]
+            remaining = None
+            try:
+                remaining = int(json.loads(status_file.read_text(
+                    encoding="utf-8")).get("remaining_backlog", 0) or 0)
+            except (OSError, ValueError):
+                remaining = None
+            _log(f"drain-poll[{di}]: items={items} remaining_backlog={remaining}")
+            # Done when items exist AND the backlog is drained (or unknown -> trust items).
+            if items > 0 and (remaining == 0 or remaining is None):
+                _log(f"drain-poll converged after {di+1} pass(es): {items} items.")
+                break
+            if not s["ok"] and not s.get("timed_out"):
+                _log(f"drain-poll[{di}]: extract_memory hard-failed rc={s['rc']}; stop.")
+                break
+            if time.time() > drain_deadline:
+                _log("drain-poll: deadline hit; stop draining.")
+                break
+    stages.extend(drain_iters)
 
     # ---- STAGE 4: cleanup (dedup/merge) ----
     stages.append(_run_stage("memory_cleanup", procs / "memory_cleanup.py",
