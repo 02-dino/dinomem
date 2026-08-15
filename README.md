@@ -105,7 +105,10 @@ OpenClaw session (.jsonl)
         │
         ▼
 [extract_memory.py]
-  LLM reads archived sessions → extracts facts, decisions, preferences, patterns, lessons
+  LLM reads archived sessions → extracts facts, decisions, preferences, patterns, lessons,
+    and durable user_facts (see below)
+  Large archives are WINDOWED — split into ≤80k-char passes so a long session (or a
+    packed haystack) never truncates or loses its deep content (see below)
   Writes to memory/YYYY-MM-DD_<type>_<slug>.md (one file per item)
   (MEMORY.md itself is not written here — it is the navigation index, rebuilt/trimmed
    from these per-item files by memory_cleanup.py)
@@ -122,6 +125,47 @@ The raw memories live in memory/*.md — MEMORY.md is rebuilt from them anytime.
 [memory_search tool]
   Agent queries past memories semantically on every relevant request
 ```
+
+### Windowing: long sessions don't lose their tail
+
+A naïve extractor sends a whole archive to the LLM in one call. That silently
+breaks on long content: the model's JSON response gets cut mid-string by the
+request timeout, the parse fails, and the archive is recorded as *empty* — every
+fact in it lost, with no error (exit 0). The failure scales with session length,
+so your **longest, most information-dense** sessions are the ones that vanish.
+
+dinomem **windows** instead. When an archive exceeds a safe single-call size
+(~80k chars), `extract_memory.py` splits it chunk-by-chunk into ordered windows,
+extracts each in its own LLM call (each finishes well within the timeout), and
+merges the results (union of items, de-duplicated, first non-empty context). If
+any window's call fails, the whole archive is left unprocessed and retried next
+run — never stored half-extracted. Short sessions keep the original single-call
+path, so nothing gets slower for the common case.
+
+The practical effect: a fact stated deep in a very long conversation is captured
+just like one stated in the first message.
+
+### `user_facts`: durable facts about *you*
+
+Alongside insights/decisions/preferences, extraction has a dedicated **`user_fact`**
+lane for durable, first-person facts about the user's own life and identity —
+education, job/employer, location, family/relationships, health/allergies,
+possessions, personal history. These are captured on **first mention** (no waiting
+for repetition), because a person's biography is high-value recall you rarely
+repeat. `user_fact` is deliberately distinct from a `preference` (a behavioral
+trait like *wants terse replies*) and from a `factual` (a universal truth like a
+GDPR rule) — so *"I graduated in Business Administration"* lands as a stable fact
+about you, not as noise.
+
+**Where a user-fact is written depends on whether the session is keyed:**
+
+| Session shape | Per-person key? | User-fact home |
+|---|---|---|
+| A DM with one identified person (owner or any peer) | yes (`platform:id`) | that person's `memory/peers/<platform>_<id>.md` rep (via `extract_user.py`) |
+| A group chat, or a keyless / synthetic transcript | no | `memory/*.md` `user_fact` items (via `extract_memory.py`) |
+
+The two lanes are non-overlapping by session type, so a first-person fact always
+has exactly one home and is never disowned by both.
 
 **New session triggers** (any one condition):
 

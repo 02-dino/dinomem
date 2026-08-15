@@ -22,6 +22,14 @@ teardown lab workspace
 
 This repo ships the **base** arm. (The neuron upgrade layer measures itself with a separately-named harness in the neuron repo — richer legs, same protocol.)
 
+> **Why LongMemEval's packed sessions extract at all.** Each sample is a very long
+> multi-session history written into a single archive. Extraction **windows** any
+> oversized archive into ≤80k-char passes (see [dinomem → Windowing](https://github.com/02-dino/dinomem#windowing-long-sessions-dont-lose-their-tail)),
+> so a fact buried deep in the haystack reaches the LLM instead of being lost to a
+> timeout-truncated response. Durable first-person facts land in the dedicated
+> [`user_fact`](https://github.com/02-dino/dinomem#user_facts-durable-facts-about-you)
+> lane. Both are load-bearing for this benchmark, not just nice-to-haves.
+
 ## Everything you'd want to tune is user-selectable
 
 Nothing is hardcoded. You pick; we recommend and warn.
