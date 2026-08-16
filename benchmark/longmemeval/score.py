@@ -43,6 +43,7 @@ import os
 import subprocess
 import sys
 import shutil
+import time
 from pathlib import Path
 
 # Import the OFFICIAL judge prompt UNCHANGED (load-bearing for comparability).
@@ -95,20 +96,33 @@ def judge_via_gateway(prompt: str, model: str, timeout: int) -> tuple[bool, str]
            "--prompt", prompt, "--gateway", "--json"]
     if model:
         cmd += ["--model", model]
-    try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-        if r.returncode == 0:
-            raw = r.stdout
-            start = raw.find("{")
-            obj = json.loads(raw[start:] if start != -1 else raw)
-            if obj.get("ok") and obj.get("outputs"):
-                text = (obj["outputs"][0].get("text") or "").strip()
-                return ("yes" in text.lower()), text
-        return False, f"__ERROR__ {(r.stderr or '')[:160]}"
-    except subprocess.TimeoutExpired:
-        return False, "__ERROR__ timeout"
-    except Exception as e:  # noqa: BLE001
-        return False, f"__ERROR__ {str(e)[:160]}"
+    # Retry/backoff: a transient rate-limit (429) or gateway hiccup should not
+    # zero a paid benchmark. Retry a few times before giving up.
+    attempts = 3
+    for attempt in range(attempts):
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            if r.returncode == 0:
+                raw = r.stdout
+                start = raw.find("{")
+                obj = json.loads(raw[start:] if start != -1 else raw)
+                if obj.get("ok") and obj.get("outputs"):
+                    text = (obj["outputs"][0].get("text") or "").strip()
+                    return ("yes" in text.lower()), text
+                err = obj.get("error") or obj.get("message") or "gateway returned ok=false"
+                _log(f"judge attempt {attempt+1}/{attempts} ok=false: {err[:120]}")
+            else:
+                err = (r.stderr or "")[:160]
+                _log(f"judge attempt {attempt+1}/{attempts} rc={r.returncode}: {err}")
+        except subprocess.TimeoutExpired:
+            _log(f"judge attempt {attempt+1}/{attempts} timed out")
+        except Exception as e:  # noqa: BLE001
+            _log(f"judge attempt {attempt+1}/{attempts} exception: {str(e)[:160]}")
+        if attempt < attempts - 1:
+            wait = 2 ** attempt  # 1s, 2s, 4s
+            _log(f"judge retry in {wait}s")
+            time.sleep(wait)
+    return False, f"__ERROR__ {(r.stderr or '')[:160]}"
 
 
 def load_hypotheses(path: Path) -> list[dict]:
