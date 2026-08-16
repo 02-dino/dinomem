@@ -402,13 +402,78 @@ def build_lab_real(source: Path, lab: Path | None, agent_id: str) -> dict:
         "marker": LAB_MARKER,
     }
 
+def _cleanup_lab_plugins(lab_root: Path) -> dict:
+    """Remove any plugin entries, allow-list IDs, or load paths that the neuron
+    installer registered for this throwaway lab. The installer mutates the live
+    openclaw.json to make the lab's plugins loadable; teardown must scrub those
+    references so the config does not keep pointing at deleted lab directories.
+
+    We read the user config file directly (read-only) to identify user-level
+    lab references, then apply the change through the validated `openclaw config
+    patch` command (never a raw file write).
+    """
+    import subprocess
+    user_cfg_path = Path("~/.openclaw/openclaw.json").expanduser()
+    removed = {"entries": [], "allow": [], "load_paths": []}
+    if not user_cfg_path.exists():
+        return removed
+
+    try:
+        user_cfg = json.loads(user_cfg_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return removed
+
+    lab_str = lab_root.as_posix()
+    plugins = user_cfg.get("plugins", {})
+
+    entries = plugins.get("entries", {})
+    lab_ids = [pid for pid, pdata in entries.items() if lab_str in json.dumps(pdata)]
+    removed["entries"] = lab_ids
+
+    load_paths = plugins.get("load", {}).get("paths", [])
+    cleaned_paths = [p for p in load_paths if lab_str not in p]
+    removed["load_paths"] = [p for p in load_paths if lab_str in p]
+
+    allow = plugins.get("allow", [])
+    cleaned_allow = [pid for pid in allow if pid not in lab_ids]
+    removed["allow"] = [pid for pid in allow if pid in lab_ids]
+
+    if not (removed["entries"] or removed["allow"] or removed["load_paths"]):
+        return removed
+
+    patch = {
+        "plugins": {
+            "entries": {pid: None for pid in lab_ids},
+            "load": {"paths": cleaned_paths},
+            "allow": cleaned_allow,
+        }
+    }
+    tmp_patch = Path(tempfile.mktemp(prefix="dinomem_lab_plugin_cleanup_", suffix=".json"))
+    tmp_patch.write_text(json.dumps(patch, indent=2), encoding="utf-8")
+    try:
+        r = subprocess.run(
+            ["openclaw", "config", "patch", "--file", str(tmp_patch)],
+            capture_output=True, text=True, timeout=120, check=False,
+        )
+        if r.returncode != 0:
+            print(f"WARNING: openclaw config patch failed during plugin cleanup: {r.stderr[-500:]}",
+                  file=sys.stderr)
+    finally:
+        try:
+            tmp_patch.unlink()
+        except OSError:
+            pass
+    return removed
+
+
 def teardown(lab: str) -> None:
     p = Path(lab).resolve()
     if not (p / LAB_MARKER).exists():
         _fail(f"refusing to teardown {p}: no {LAB_MARKER} sentinel "
               "(not a dinomem lab — will not rm -rf an arbitrary dir)")
+    cleanup = _cleanup_lab_plugins(p)
     shutil.rmtree(p)
-    print(json.dumps({"torn_down": str(p)}))
+    print(json.dumps({"torn_down": str(p), "plugin_cleanup": cleanup}))
 
 
 def main() -> None:
