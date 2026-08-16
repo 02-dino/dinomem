@@ -9,8 +9,11 @@ shipped skill IDs to the agent's agents.list[].skills allowlist.
 If the target agent has no explicit skills allowlist, it inherits defaults; in
 that case we fall back to mutating agents.defaults.skills.
 
-Multi-agent safe: only the agent matching --agent-id is touched. Other agents'
+Multi-agent safe: only the best matching agent is touched. Other agents'
 allowlists are left unchanged.
+
+Writes via openclaw config patch --replace-path so it never touches read-only
+meta fields like lastTouchedVersion.
 """
 import argparse
 import json
@@ -35,6 +38,25 @@ def load_json_robust(path: Path) -> dict:
         return json.loads(text)
     except json.JSONDecodeError:
         return json.loads(_strip_json5_comments(text))
+
+
+def find_target_agent(agents_list, agent_id, ws):
+    """Exact id match > workspace path match > substring id match."""
+    target = next((a for a in agents_list if a.get("id") == agent_id), None)
+    if target is not None:
+        return target
+    ws_str = str(ws)
+    target = next((a for a in agents_list if a.get("workspace") and ws_str == Path(a["workspace"]).resolve()), None)
+    if target is not None:
+        return target
+    needle = agent_id.lower()
+    candidates = [
+        a for a in agents_list
+        if needle in a.get("id", "").lower() or a.get("id", "").lower() in needle
+    ]
+    if candidates:
+        return min(candidates, key=lambda a: len(a.get("id", "")))
+    return None
 
 
 def main():
@@ -62,45 +84,51 @@ def main():
         return
 
     cfg = load_json_robust(cfg_path)
-
-    # Update agent-specific allowlist, or fallback to defaults.
     agents_list = cfg.get("agents", {}).get("list", [])
-    target = next((a for a in agents_list if a.get("id") == args.agent_id), None)
+    target = find_target_agent(agents_list, args.agent_id, ws)
 
     if target is not None:
+        target_id = target.get("id")
         current = list(target.get("skills", []))
         new = sorted(set(current) | set(shipped))
-        if new != current:
-            target["skills"] = new
-            print(f"agent '{args.agent_id}' allowlist: {len(current)} -> {len(new)} skills")
-        else:
-            print(f"agent '{args.agent_id}' allowlist already up-to-date")
+        if new == current:
+            print(f"agent '{target_id}' allowlist already up-to-date ({len(current)} skills)")
+            return
+        target["skills"] = new
+        print(f"agent '{target_id}' allowlist: {len(current)} -> {len(new)} skills")
+
+        patch = {"agents": {"list": agents_list}}
+        replace_path = "agents.list"
     else:
-        defaults = cfg.setdefault("agents", {}).setdefault("defaults", {})
+        defaults = cfg.get("agents", {}).get("defaults", {})
         current = list(defaults.get("skills", []))
         new = sorted(set(current) | set(shipped))
-        if new != current:
-            defaults["skills"] = new
-            print(f"agents.defaults allowlist: {len(current)} -> {len(new)} skills (agent '{args.agent_id}' not found)")
-        else:
-            print(f"agents.defaults allowlist already up-to-date")
+        if new == current:
+            print(f"agents.defaults allowlist already up-to-date ({len(current)} skills)")
+            return
+        defaults["skills"] = new
+        print(f"agents.defaults allowlist: {len(current)} -> {len(new)} skills (agent '{args.agent_id}' not found)")
+
+        patch = {"agents": {"defaults": {"skills": new}}}
+        replace_path = "agents.defaults.skills"
 
     if args.dry_run:
         print(json.dumps({
             "shipped": shipped,
-            "target_agent": args.agent_id,
+            "requested_agent": args.agent_id,
+            "matched_agent": target.get("id") if target else None,
             "would_update": "agent" if target is not None else "defaults",
+            "replace_path": replace_path,
         }, indent=2))
         return
 
-    patch = cfg
     fd, patch_file = tempfile.mkstemp(suffix=".json", prefix="dinomem_wire_skills_")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(patch, f, indent=2)
 
         r = subprocess.run(
-            ["openclaw", "config", "patch", "--file", patch_file],
+            ["openclaw", "config", "patch", "--file", patch_file, "--replace-path", replace_path],
             capture_output=True, text=True, timeout=120, check=False,
         )
         print(r.stdout)
