@@ -1310,7 +1310,7 @@ def main():
             if dr.returncode != 0:
                 _fail(f"{drive_label} failed: {dr.stderr[-400:]}")
             try:
-                drive_res = json.loads(dr.stdout.splitlines()[-1])
+                drive_res = json.loads(dr.stdout[dr.stdout.find("{"):]) if dr.stdout.strip() else {}
             except Exception as e:
                 _fail(f"cannot parse {drive_label} output: {e}")
             _log(f"{drive_label} ok={drive_res.get('ok')} reason={drive_res.get('reason')}")
