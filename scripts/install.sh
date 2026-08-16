@@ -642,6 +642,19 @@ else
   skip "no skills/ in package"
 fi
 
+# ── 2e) Wire copied skills into agent allowlist ─────────────────────────────
+# Skills in <workspace>/skills are auto-discovered, but agents with an explicit
+# skills allowlist will EXCLUDE them unless listed. Add the IDs we just shipped.
+if command -v python3 >/dev/null 2>&1; then
+  python3 "$SKILL_DIR/scripts/wire_skills.py" \
+    --workspace "$WS" \
+    --agent-id "$AGENT_ID" \
+    --skills-dir "$SKILL_DIR/skills" \
+    || warn "skill allowlist wiring failed; skills may be excluded"
+else
+  warn "python3 not found; skill allowlist wiring skipped"
+fi
+
 # ── 3) TEI Docker setup ────────────────────────────────────────────────────────
 if [ "$DO_DOCKER" = 1 ]; then
   hr "TEI Embedding Server (Docker)"
