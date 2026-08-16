@@ -259,6 +259,25 @@ def drive(ws: Path, sandbox_root: Path, timeout: int, review_max_loops: int,
         return {"ok": False, "reason": "front_door_failed", "stages": stages,
                 "memory": _count_memory_items(ws), "graph": _count_graph_nodes(ws)}
 
+    # ---- WAIT for base memory materialization ----
+    # LongMemEval packs a whole multi-session haystack into ONE archive.
+    # extract_memory windows it into many LLM calls; the orchestrator exits 0
+    # as soon as it *starts* the loop, but per-item files land asynchronously.
+    # Without waiting here we falsely report no_base_memory.
+    wait_budget = timeout * 3  # allow up to 3× per-stage timeout for extraction
+    poll_interval = 5
+    waited = 0
+    while waited < wait_budget:
+        mem = _count_memory_items(ws)
+        if mem["item_files"] > 0:
+            _log(f"base memory materialized after {waited}s: {mem['item_files']} item(s)")
+            break
+        _log(f"waiting for base memory materialization... {waited}s")
+        time.sleep(poll_interval)
+        waited += poll_interval
+    else:
+        _log(f"base memory did not materialize within {wait_budget}s")
+
     # ---- BASE cleanup + review LOOP (same as base arm) ----
     stages.append(_run_stage("memory_cleanup", procs / "memory_cleanup.py",
                              ws, env, timeout))
