@@ -1077,7 +1077,7 @@ def main():
         emit_cmd = [sys.executable, HERE / adapter_mod, "emit",
                     "--dataset", dataset_path, "--index", args.sample_index,
                     "--lab", lab, "--json"]
-        if args.dataset == "longmemeval" and lab_info.get("sessions_dir"):
+        if lab_info.get("sessions_dir"):
             emit_cmd += ["--sessions-dir", lab_info["sessions_dir"]]
         er = _sh(emit_cmd, args.timeout)
         if er.returncode != 0:

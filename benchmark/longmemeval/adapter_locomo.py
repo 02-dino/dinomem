@@ -199,10 +199,13 @@ def inspect_schema(sample: dict) -> dict:
 
 
 # ── conversation -> session archive + per-QA gold sidecars ───────────────────
-def emit_archive(sample: dict, lab_dir: Path, index: int) -> dict:
+def emit_archive(sample: dict, lab_dir: Path, index: int,
+                 sessions_dir: Path | None = None) -> dict:
     conv = sample.get("conversation") or {}
     sample_id = str(sample.get("sample_id", f"conv{index}"))
-    sess_dir = lab_dir / "sessions"
+    # real layout (neuron arm) keeps sessions under agents/<agent>/sessions; fall
+    # back to the flat <lab>/sessions convention for backward compatibility.
+    sess_dir = Path(sessions_dir) if sessions_dir else (lab_dir / "sessions")
     sess_dir.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y-%m-%dT%H-%M-%S", time.gmtime())
     out = sess_dir / f"{sample_id}.archived.{stamp}.jsonl"
@@ -340,6 +343,9 @@ def main() -> None:
     pe.add_argument("--dataset", required=True)
     pe.add_argument("--index", type=int, required=True)
     pe.add_argument("--lab", required=True)
+    pe.add_argument("--sessions-dir", type=Path, default=None,
+                    help="target sessions dir (real layout: agents/<agent>/sessions). "
+                         "defaults to <lab>/sessions")
     pe.add_argument("--json", action="store_true")
 
     pq = sub.add_parser("questions", help="emit answer.py-shaped question array for one conversation")
@@ -361,7 +367,8 @@ def main() -> None:
 
     if args.cmd == "emit":
         data = load_dataset(Path(args.dataset))
-        info = emit_archive(data[args.index], Path(args.lab), args.index)
+        info = emit_archive(data[args.index], Path(args.lab), args.index,
+                            sessions_dir=args.sessions_dir)
         sv = _smoke_validate(Path(info["path"]))
         info["smoke"] = sv
         if args.json:
