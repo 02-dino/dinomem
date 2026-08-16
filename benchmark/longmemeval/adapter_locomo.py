@@ -329,6 +329,8 @@ def main() -> None:
     pf = sub.add_parser("fetch", help="download locomo10.json (ephemeral) + sha256")
     pf.add_argument("--out", required=True)
     pf.add_argument("--revision", default=LOCOMO_REVISION)
+    pf.add_argument("--json", action="store_true",
+                    help="output JSON metadata (default behavior; kept for symmetry with adapter.py)")
 
     ps = sub.add_parser("schema", help="inspect one conversation's schema")
     ps.add_argument("--dataset", required=True)
