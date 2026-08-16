@@ -1296,17 +1296,33 @@ def main():
             _log("rag arm: no pipeline drive (retrieval over raw haystack); isolation OK")
             drive_res = {"ok": True, "arm": "rag", "note": "no-pipeline (naive RAG floor)"}
         elif args.arm == "neuron":
+            # Neuron front door extracts a LongMemEval haystack across many LLM
+            # windows; it can take 20-40 min to materialize per-item memory files
+            # in a fresh lab. Give the driver a separate, longer budget than
+            # per-question answer/score steps so the wait-for-memory poll works.
+            neuron_drive_timeout = max(args.timeout, 3600)
             drive_cmd = [sys.executable, HERE / "drive_neuron.py", "--ws", ws,
                          "--sandbox-root", lab,
                          "--live-source", args.source,
                          "--live-leak-sig", lab_info["live_leak_sig"], "--json"]
             drive_label = "drive_neuron"
+            dr = _sh(drive_cmd, neuron_drive_timeout)
+            if dr.returncode != 0:
+                _fail(f"{drive_label} failed: {dr.stderr[-400:]}")
+            try:
+                drive_res = json.loads(dr.stdout.splitlines()[-1])
+            except Exception as e:
+                _fail(f"cannot parse {drive_label} output: {e}")
+            _log(f"{drive_label} ok={drive_res.get('ok')} reason={drive_res.get('reason')}")
+            if not drive_res.get("ok"):
+                _fail(f"{drive_label} did not converge: {drive_res.get('reason')}")
+            continue_to_next = True
         else:
             drive_cmd = [sys.executable, HERE / "drive_base.py", "--lab", lab,
                          "--live-source", args.source,
                          "--live-leak-sig", lab_info["live_leak_sig"], "--json"]
             drive_label = "drive_base"
-        dr = _sh(drive_cmd, args.timeout)
+            dr = _sh(drive_cmd, args.timeout)
         drive_res = json.loads(dr.stdout[dr.stdout.find("{"):]) if dr.stdout.strip() else {}
         if dr.returncode != 0 or not drive_res.get("ok"):
             _fail(f"{drive_label} did not converge / isolation issue: "
