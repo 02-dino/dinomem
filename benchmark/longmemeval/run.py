@@ -207,20 +207,42 @@ def _log(msg: str):
 # self-serialize — whoever starts second sees low RAM and waits instead of both
 # thrashing. Mirrors scripts/lib/gate_lib.sh sensor contract: fail-OPEN (a broken
 # sensor must never stall a real run), safe defaults, never crash.
-# Knobs (env): DINOMEM_BENCH_MIN_FREE_MB (floor, default 900),
+# Knobs (env): DINOMEM_BENCH_MIN_FREE_MB (hard override; default is hardware-scaled),
 #              DINOMEM_BENCH_HW_WAIT_S (max wait before proceeding anyway, default 240),
 #              DINOMEM_BENCH_HW_OFF=1 (disable the gate entirely).
-def _free_ram_mb() -> int | None:
-    """Available MB from /proc/meminfo. None on a platform without it (fail-open
-    caller treats None as 'can't tell -> proceed'). Never raises."""
+def _meminfo_mb(key: str) -> int | None:
+    """Read a MemAvailable/MemTotal-style key from /proc/meminfo as MB. None on
+    unknown platform / parse failure. Never raises."""
     try:
         with open("/proc/meminfo", encoding="utf-8") as f:
             for line in f:
-                if line.startswith("MemAvailable:"):
+                if line.startswith(f"{key}:"):
                     return int(line.split()[1]) // 1024  # kB -> MB
     except (OSError, ValueError, IndexError):
         return None
     return None
+
+
+def _free_ram_mb() -> int | None:
+    return _meminfo_mb("MemAvailable")
+
+
+def _total_ram_mb() -> int | None:
+    return _meminfo_mb("MemTotal")
+
+
+def _default_hw_floor_mb() -> int:
+    """Hardware-scaled default free-RAM floor.
+
+    Goal: keep enough headroom for one benchmark lab without baking in THIS box.
+    Heuristic: max(900MB, 12% of total RAM), capped at 4096MB so a very large box
+    doesn't demand silly idle headroom before starting one lab. Operators can still
+    hard-override via DINOMEM_BENCH_MIN_FREE_MB.
+    """
+    total = _total_ram_mb()
+    if total is None:
+        return 900
+    return max(900, min(4096, int(total * 0.12)))
 
 
 def _hw_wait_for_headroom(what: str) -> None:
@@ -230,10 +252,10 @@ def _hw_wait_for_headroom(what: str) -> None:
     if os.environ.get("DINOMEM_BENCH_HW_OFF") == "1":
         return
     try:
-        floor = int(os.environ.get("DINOMEM_BENCH_MIN_FREE_MB", "900"))
+        floor = int(os.environ.get("DINOMEM_BENCH_MIN_FREE_MB", str(_default_hw_floor_mb())))
         max_wait = int(os.environ.get("DINOMEM_BENCH_HW_WAIT_S", "240"))
     except ValueError:
-        floor, max_wait = 900, 240
+        floor, max_wait = _default_hw_floor_mb(), 240
     deadline = time.time() + max_wait
     waited = False
     while True:
