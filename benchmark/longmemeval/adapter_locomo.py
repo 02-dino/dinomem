@@ -125,7 +125,7 @@ def fetch(out: Path, revision: str = LOCOMO_REVISION) -> dict:
     return {
         "repo": LOCOMO_REPO,
         "revision": revision,
-        "file": LOCOMO_FILE,
+        "path": str(out),
         "sha256": digest,
         "size": size,
         "hash_verified": verified,
