@@ -783,6 +783,8 @@ def _multi_q_run(args, tag: str, est: dict) -> None:
             cmd += ["--judge-model", args.judge_model]
         if args.recall:
             cmd += ["--recall", args.recall]
+        child_tag = f"{tag}_q{i}"
+        cmd += ["--out-prefix", child_tag]
         _log(f"multi-Q [{i+1}/{n}] sample-index={i}")
         _hw_wait_for_headroom(f"multi-Q child {i+1}/{n} (sample-index {i})")
         r = _sh(cmd, args.timeout, capture=False)
@@ -790,17 +792,17 @@ def _multi_q_run(args, tag: str, est: dict) -> None:
             failures.append({"sample_index": i, "rc": r.returncode})
             _log(f"multi-Q [{i+1}/{n}] FAILED rc={r.returncode} (continuing; recorded)")
             continue
-        # CLOBBER GUARD: every child writes the SAME {tag}_result.json (it reuses this
-        # very run.py with the same {arm}_{dataset} tag). Read it and snapshot to an
-        # indexed copy IMMEDIATELY, before the next child overwrites it.
-        shared = RESULTS / f"{tag}_result.json"
+        # CLOBBER GUARD: each child writes its own result file (passed via
+        # --out-prefix) so it never overwrites another child's artifacts. We read
+        # that indexed child result directly for aggregation.
+        child_tag = f"{tag}_q{i}"
+        child_result_path = RESULTS / f"{child_tag}_result.json"
         try:
-            child_obj = json.loads(shared.read_text())
+            child_obj = json.loads(child_result_path.read_text())
         except (OSError, ValueError) as e:
             failures.append({"sample_index": i, "error": str(e)})
             _log(f"multi-Q [{i+1}/{n}] result unreadable: {e}")
             continue
-        (RESULTS / f"{tag}_q{i}_result.json").write_text(json.dumps(child_obj, indent=2))
         child_results.append((i, child_obj))
 
     if not child_results:
@@ -914,6 +916,10 @@ def main():
                     help="installed dinomem workspace (source of procedures/tools)")
     ap.add_argument("--agent-id", default=os.environ.get("DINOMEM_BENCH_AGENT_ID", "analyst"),
                     help="agent id for the lab workspace layout + neuron overlay (default: analyst)")
+    ap.add_argument("--out-prefix", default="",
+                    help="prefix for result/hypotheses/metrics filenames. Default is "
+                         "{arm}_{dataset}; the multi-Q loop passes {arm}_{dataset}_q{i} "
+                         "so children don't overwrite each other's artifacts.")
     ap.add_argument("--timeout", type=int, default=900)
     ap.add_argument("--estimate-only", action="store_true",
                     help="print the cost estimate and EXIT (no lab, no spend).")
@@ -982,6 +988,9 @@ def main():
     # by dataset keeps each (arm,dataset) result distinct. compare_report.py reads
     # {arm}_{dataset} first and falls back to legacy {arm} for old artifacts.
     tag = f"{args.arm}_{args.dataset}"
+    # Per-run output prefix: lets multi-Q children write distinct artifacts
+    # (hypotheses, metrics, eval-results) without clobbering the aggregate file.
+    out_prefix = args.out_prefix or tag
     t0 = time.time()
 
     # ---- 0. cost estimate BEFORE any spend ----
@@ -991,7 +1000,7 @@ def main():
                         arm=args.arm, dataset=getattr(args, "dataset", "longmemeval"),
                         cheap_model=getattr(args, "cheap_model", ""))
     print_cost(est)
-    (RESULTS / f"{tag}_cost_estimate.json").write_text(json.dumps(est, indent=2))
+    (RESULTS / f"{out_prefix}_cost_estimate.json").write_text(json.dumps(est, indent=2))
     if args.estimate_only:
         _log("--estimate-only: no lab built, no model calls made. Exiting.")
         print(json.dumps({"estimate_only": True, "arm": args.arm, "mode": mode_name,
@@ -1095,7 +1104,7 @@ def main():
             if not emitted_qid:
                 _fail("adapter emit did not report question_id (isolation fix "
                       "needs it to scope answer.py to the emitted sample)")
-            emitted_qids_file = str(RESULTS / f"{tag}_emitted_qids.txt")
+            emitted_qids_file = str(RESULTS / f"{out_prefix}_emitted_qids.txt")
             Path(emitted_qids_file).write_text(emitted_qid + "\n", encoding="utf-8")
             _log(f"isolation: lab holds sample-index {args.sample_index} "
                  f"(qid={emitted_qid}); answer loop scoped to that qid only.")
@@ -1103,7 +1112,7 @@ def main():
         # LoCoMo: build the per-question REF file for this conversation so answer.py
         # + score.py operate per-question (the dataset itself is 1 conversation).
         if args.dataset == "locomo":
-            ref_path = str(RESULTS / f"{tag}_locomo_ref.json")
+            ref_path = str(RESULTS / f"{out_prefix}_locomo_ref.json")
             q_cmd = [sys.executable, HERE / "adapter_locomo.py", "questions",
                      "--dataset", dataset_path, "--index", args.sample_index,
                      "--out", ref_path]
@@ -1311,13 +1320,13 @@ def main():
         answer_qids_file = emitted_qids_file if args.dataset == "longmemeval" else None
         m1 = _run_pipeline_once(args.arm, lab_info, dataset_path, args.sample_index,
                                 n_arg, answer_qids_file, args.answer_model, args.judge_model,
-                                recall, args.overlay_cmd, f"{tag}", args.timeout,
+                                recall, args.overlay_cmd, out_prefix, args.timeout,
                                 dataset_family=args.dataset, ref_path=ref_path)
         determinism = None
         if args.determinism:
             m2 = _run_pipeline_once(args.arm, lab_info, dataset_path, args.sample_index,
                                     n_arg, answer_qids_file, args.answer_model, args.judge_model,
-                                    recall, args.overlay_cmd, f"{tag}_run2", args.timeout,
+                                    recall, args.overlay_cmd, f"{out_prefix}_run2", args.timeout,
                                     dataset_family=args.dataset, ref_path=ref_path)
             o1, o2 = m1.get("overall_accuracy"), m2.get("overall_accuracy")
             drift = abs((o1 or 0) - (o2 or 0))
@@ -1335,7 +1344,7 @@ def main():
         seconds = round(time.time() - t0, 1)
         md = _stamp_md(args.arm, mode_name, n_final, m1, dataset_info,
                        args.answer_model, args.judge_model, determinism, seconds)
-        out_md = RESULTS / f"{tag}_latest.md"
+        out_md = RESULTS / f"{out_prefix}_latest.md"
         out_md.write_text(md, encoding="utf-8")
         # also drop a machine-readable arm result the comparison generator reads
         arm_result = {
@@ -1350,8 +1359,8 @@ def main():
                 mode_name, n_final),
             "generated": datetime.now(timezone.utc).isoformat(),
         }
-        (RESULTS / f"{tag}_result.json").write_text(json.dumps(arm_result, indent=2))
-        _log(f"wrote {out_md} and {tag}_result.json")
+        (RESULTS / f"{out_prefix}_result.json").write_text(json.dumps(arm_result, indent=2))
+        _log(f"wrote {out_md} and {out_prefix}_result.json")
         print(md)
 
     finally:
