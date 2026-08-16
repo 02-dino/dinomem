@@ -197,6 +197,64 @@ def _log(msg: str):
     print(f"[run] {msg}", file=sys.stderr)
 
 
+# ── HARDWARE AWARENESS ───────────────────────────────────────────────────────
+# WHY: one benchmark lab is heavy (dataset read + embedding model ~120MB +
+# haystack + item materialization ~= 0.8-1GB peak). This box has 2 cores / 7.5GB.
+# Launching labs blindly — or two run.py invocations at once (base+neuron, or the
+# 4-combo matrix) — OOM-kills on a tight box. There is no external scheduler, so
+# the harness gates ITSELF: before it starts a lab (and before each multi-Q child
+# spawn) it waits for RAM headroom. This ALSO makes concurrent invocations
+# self-serialize — whoever starts second sees low RAM and waits instead of both
+# thrashing. Mirrors scripts/lib/gate_lib.sh sensor contract: fail-OPEN (a broken
+# sensor must never stall a real run), safe defaults, never crash.
+# Knobs (env): DINOMEM_BENCH_MIN_FREE_MB (floor, default 900),
+#              DINOMEM_BENCH_HW_WAIT_S (max wait before proceeding anyway, default 240),
+#              DINOMEM_BENCH_HW_OFF=1 (disable the gate entirely).
+def _free_ram_mb() -> int | None:
+    """Available MB from /proc/meminfo. None on a platform without it (fail-open
+    caller treats None as 'can't tell -> proceed'). Never raises."""
+    try:
+        with open("/proc/meminfo", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) // 1024  # kB -> MB
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
+def _hw_wait_for_headroom(what: str) -> None:
+    """Block until free RAM >= floor, or a deadline, before launching a heavy lab.
+    Fail-open: gate disabled, or RAM unreadable -> return immediately (never stall
+    a real run on a broken sensor or an unknown platform)."""
+    if os.environ.get("DINOMEM_BENCH_HW_OFF") == "1":
+        return
+    try:
+        floor = int(os.environ.get("DINOMEM_BENCH_MIN_FREE_MB", "900"))
+        max_wait = int(os.environ.get("DINOMEM_BENCH_HW_WAIT_S", "240"))
+    except ValueError:
+        floor, max_wait = 900, 240
+    deadline = time.time() + max_wait
+    waited = False
+    while True:
+        free = _free_ram_mb()
+        if free is None:              # can't measure -> fail-open, proceed
+            return
+        if free >= floor:
+            if waited:
+                _log(f"hw-gate: {free}MB free >= {floor}MB floor — proceeding with {what}.")
+            return
+        if time.time() >= deadline:   # starvation floor: never wait forever
+            _log(f"hw-gate: {free}MB free still < {floor}MB after {max_wait}s wait — "
+                 f"proceeding with {what} ANYWAY (deadline; avoids deadlock).")
+            return
+        waited = True
+        _log(f"hw-gate: {free}MB free < {floor}MB floor — waiting for headroom before "
+             f"{what} (backpressure; deadline in {int(deadline - time.time())}s).")
+        time.sleep(10)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
 def _sh(cmd: list[str], timeout: int, capture=True,
         env: dict | None = None) -> subprocess.CompletedProcess:
     _log("$ " + " ".join(str(c) for c in cmd))
@@ -704,6 +762,7 @@ def _multi_q_run(args, tag: str, est: dict) -> None:
         if args.recall:
             cmd += ["--recall", args.recall]
         _log(f"multi-Q [{i+1}/{n}] sample-index={i}")
+        _hw_wait_for_headroom(f"multi-Q child {i+1}/{n} (sample-index {i})")
         r = _sh(cmd, args.timeout, capture=False)
         if r.returncode != 0:
             failures.append({"sample_index": i, "rc": r.returncode})
@@ -930,6 +989,9 @@ def main():
         return
 
     # ---- 1. lab bootstrap ----
+    # HW gate: wait for RAM headroom before building a heavy lab (also self-serializes
+    # concurrent run.py invocations on a tight box). Fail-open; see _hw_wait_for_headroom.
+    _hw_wait_for_headroom(f"{args.arm} x {args.dataset} lab bootstrap")
     # Base arm: FLAT layout (self-contained, SESSIONS_DIR patched).
     # Neuron arm: REAL openclaw-tree layout so the neuron installer's derived
     #   SESSIONS_DIR lands inside the sandbox (see setup_lab.py --layout real).
