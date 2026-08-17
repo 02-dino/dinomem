@@ -1880,7 +1880,7 @@ fi
 # Skip with --no-smart-cache. Self-cleaning on disk; does not touch OpenClaw memory DB.
 if [ "$DO_SMART_CACHE" = 1 ]; then
   hr "smart-cache-pro plugin (compression-only)"
-  SC_DIR="$OPENCLAW_DIR/smart-cache-pro"
+  SC_DIR="$OPENCLAW_DIR/extensions/smart-cache-pro"
   if ! command -v git >/dev/null 2>&1; then
     warn "git not found — skipping smart-cache-pro (install git or re-run with --no-smart-cache)"
   elif [ "$DRY_RUN" = 1 ]; then
@@ -1900,7 +1900,8 @@ if [ "$DO_SMART_CACHE" = 1 ]; then
         warn "could not refresh $SC_DIR — using existing checkout"
       fi
     elif [ -e "$SC_DIR" ]; then
-      warn "$SC_DIR exists but is not a git repo — using as-is"
+      warn "$SC_DIR exists but is not a git repo — backing up and re-cloning"
+      mv "$SC_DIR" "$SC_DIR.bak.$(date +%s)"
     else
       if git clone --depth 1 -b "$SMART_CACHE_BRANCH" "$SMART_CACHE_REPO" "$SC_DIR" >/dev/null 2>&1; then
         ok "cloned smart-cache-pro ($SMART_CACHE_BRANCH) -> $SC_DIR"
@@ -1912,8 +1913,9 @@ if [ "$DO_SMART_CACHE" = 1 ]; then
     # Wire into openclaw.json (add-if-absent load.paths + enabled entry). Idempotent.
     if [ -n "$SC_DIR" ] && [ -f "$OPENCLAW_JSON" ]; then
       python3 - "$OPENCLAW_JSON" "$SC_DIR" <<'PYEOF'
-import json, sys
+import json, os, sys
 path, sc_dir = sys.argv[1], sys.argv[2]
+canonical = os.path.realpath(sc_dir)
 with open(path) as f:
     cfg = json.load(f)
 plugins = cfg.setdefault("plugins", {})
@@ -1922,6 +1924,12 @@ paths = load.get("paths")
 if not isinstance(paths, list):
     paths = []
 changed = []
+# Keep only the canonical smart-cache-pro path. Remove stale copies that may
+# have been left by earlier installs under /tmp or $OPENCLAW_DIR root so
+# repeated installs/updates don't accumulate duplicate plugin IDs.
+stale = [p for p in paths if os.path.basename(p) == "smart-cache-pro" and os.path.realpath(p) != canonical]
+for p in stale:
+    paths.remove(p); changed.append(f"removed stale smart-cache-pro path: {p}")
 if sc_dir not in paths:
     paths.append(sc_dir); changed.append("plugins.load.paths += smart-cache-pro")
 load["paths"] = sorted(set(paths))            # de-dupe defensively
