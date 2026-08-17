@@ -167,7 +167,7 @@ fi
 # Symmetric with install: unwire the bundled compression plugin from openclaw.json.
 # Clone dir + its tee/ledger cache are left unless --purge (below).
 hr "smart-cache-pro plugin"
-SC_DIR="$OPENCLAW_DIR/smart-cache-pro"
+SC_DIR="$OPENCLAW_DIR/extensions/smart-cache-pro"
 if [ -f "$CONFIG" ]; then
   python3 - "$CONFIG" "$SC_DIR" <<'PYEOF'
 import json, sys
@@ -181,9 +181,12 @@ plugins = cfg.get("plugins", {})
 changed = []
 load = plugins.get("load", {})
 paths = load.get("paths")
-if isinstance(paths, list) and sc_dir in paths:
-    load["paths"] = [p for p in paths if p != sc_dir]
-    changed.append("plugins.load.paths")
+# Remove all smart-cache-pro load paths (old $OPENCLAW_DIR root copy, /tmp
+# residue, and the canonical extensions copy) so uninstall is thorough.
+sc_paths = [p for p in paths if isinstance(p, str) and p.rstrip("/").endswith("/smart-cache-pro")]
+if sc_paths:
+    load["paths"] = [p for p in paths if p not in sc_paths]
+    changed.append(f"plugins.load.paths (removed {len(sc_paths)} path(s))")
 entries = plugins.get("entries", {})
 if isinstance(entries, dict) and "smart-cache-pro" in entries:
     del entries["smart-cache-pro"]; changed.append("plugins.entries['smart-cache-pro']")
@@ -201,14 +204,23 @@ PYEOF
 else
   skip "openclaw.json not found — smart-cache-pro not unwired"
 fi
+# Also clean up the old pre-extensions source location if it still exists.
+OLD_SC_DIR="$OPENCLAW_DIR/smart-cache-pro"
 if [ "$PURGE" = 1 ]; then
-  if [ -d "$SC_DIR" ]; then
-    rm -rf "$SC_DIR" && ok "removed smart-cache-pro clone: $SC_DIR"
-  else
+  for d in "$SC_DIR" "$OLD_SC_DIR"; do
+    if [ -d "$d" ]; then
+      rm -rf "$d" && ok "removed smart-cache-pro clone: $d"
+    fi
+  done
+  if [ ! -d "$SC_DIR" ] && [ ! -d "$OLD_SC_DIR" ]; then
     skip "smart-cache-pro clone dir not found"
   fi
-elif [ -d "$SC_DIR" ]; then
-  warn "smart-cache-pro clone left at $SC_DIR (use --purge to remove)"
+else
+  for d in "$SC_DIR" "$OLD_SC_DIR"; do
+    if [ -d "$d" ]; then
+      warn "smart-cache-pro clone left at $d (use --purge to remove)"
+    fi
+  done
 fi
 
 # ── TEI Docker ────────────────────────────────────────────────────────────────
