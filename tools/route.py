@@ -104,6 +104,16 @@ selected leaf tool. Keeping it write-free avoids duplicating any leaf-tool logic
   above (never 'just keep it in mind', never a note you don't verify on disk), and
   VERIFY it landed. Do not trust THIS session to carry it forward — trust the surface.
 
+  THE REFLEX (fires on YOUR OWN DRAFT, before you route): the trigger is not only an
+  explicit "change yourself" request. If you are ABOUT TO REPLY with a commitment to
+  remember / note / always-do / never-again / from-now-on X — and the ONLY thing making
+  it stick is THIS session's context — that draft IS the routing trigger. A one-turn
+  behavioral change dressed up as a fix is the red flag. STOP the send, treat it as a
+  self-modification request, classify here, and land X on a durable surface so it stays
+  true in a fresh session. Behavioral change must be SYSTEMATIC, not context-dependent.
+  (Skip only if X is genuinely one-off, or already covered by an existing surface you
+  verified — don't assume coverage.)
+
   COROLLARY (auto-managed files): even among loaded surfaces, MEMORY.md and USER.md's
   MANAGED BLOCK do NOT count as durable homes — they are regenerated/overwritten by the
   extraction crons (see ⛔ AUTO-MANAGED ROOT FILES). Note the scope differs: MEMORY.md is
