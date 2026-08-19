@@ -14,6 +14,8 @@ Logs to: logs/session_reset.log
 
 import json
 import re
+import sys
+import subprocess
 from pathlib import Path
 from datetime import datetime, timedelta
 
