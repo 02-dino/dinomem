@@ -25,6 +25,16 @@ MIN_MESSAGE_LENGTH = 15
 MAX_SESSION_AGE_DAYS = 7
 MAX_SESSION_AGE_DAYS_CRON = 1
 COMPACTION_THRESHOLD = 2  # number of compaction generations (parentSession chain depth)
+# HARD-FORCE threshold: when session_reset runs in --force mode (invoked immediately
+# by the compaction hook on session:compact:after, NOT by the 15-min cron), a session
+# at THIS compaction depth is reset RIGHT NOW — bypassing the 10-min active-grace that
+# the tick-driven path honors. Rationale: a session compacting in a tight storm never
+# goes 10 idle minutes, so the soft cron path can let it pile up unbounded between
+# ticks. >=5 is the hard ceiling. Memory is NOT lost: reset archives the JSONL in place
+# FIRST (flush source), and extract_memory.py (run right after by the orchestrator)
+# reads that .archived.reset.* file into memory/YYYY-MM-DD.md BEFORE anything is pruned.
+FORCE_COMPACTION_THRESHOLD = 5
+FORCE_MODE = False  # set True by --force (compaction hook path); lowers grace to 0 at depth>=FORCE_COMPACTION_THRESHOLD
 SESSIONS_DIR = Path("DINOMEM_AGENT_SESSIONS_PLACEHOLDER")
 SESSIONS_FILE = SESSIONS_DIR / "sessions.json"
 LOG_FILE = Path(__file__).parent.parent / "logs" / "session_reset.log"
@@ -444,9 +454,22 @@ def filter_sessions_to_reset(sessions):
         if compaction_count >= COMPACTION_THRESHOLD:
             compaction_trigger = True
         should_reset = age_trigger or compaction_trigger
-        if should_reset and minutes_since_update is not None and minutes_since_update < GRACE_PERIOD_MINUTES:
+        # HARD-FORCE override: in --force mode (compaction hook), a session at the
+        # hard ceiling bypasses the active-conversation grace. A session compacting
+        # in a storm never idles 10 min, so honoring grace here would defeat the
+        # whole point of the immediate force. The flush-first guarantee still holds:
+        # reset_session archives the JSONL before deleting the mapping, and extract
+        # runs on that archive next. Below the ceiling, force respects grace normally.
+        force_override = (
+            FORCE_MODE
+            and compaction_count >= FORCE_COMPACTION_THRESHOLD
+        )
+        if should_reset and not force_override and minutes_since_update is not None and minutes_since_update < GRACE_PERIOD_MINUTES:
             log(f"  ⏳ Skipping {session_key} - active conversation (updated {minutes_since_update:.1f} min ago)")
             should_reset = False
+        elif force_override:
+            log(f"  🔥 HARD-FORCE reset {session_key} - compaction depth {compaction_count} >= {FORCE_COMPACTION_THRESHOLD} (grace bypassed; JSONL archived first, memory flushed by extract)")
+            should_reset = True
         if should_reset:
             sessions_to_reset[session_key] = session_data
         else:
@@ -502,6 +525,49 @@ def archive_predecessor_chain(session_file, timestamp):
             current = parent
     return archived_count
 
+def _force_flush_archive(archive_filename):
+    """FORCE-MODE ONLY: synchronously extract ONE just-archived file to memory/YYYY-MM-DD.md
+    BEFORE the caller deletes the session mapping, so a hard /new never orphans the
+    uncompacted tail. Returns True only if extract_memory.py confirms it processed the
+    archive (checked via .processed_archives.json). Fail-open: any error -> False, and
+    the caller then KEEPS the mapping (no /new) so nothing is lost; the tick extract
+    self-heals from the archive later. Idempotent: extract dedups via processed-log.
+    """
+    if not archive_filename:
+        return False
+    try:
+        extract_script = Path(__file__).parent / "extract_memory.py"
+        if not extract_script.exists():
+            log("   ⚠️  extract_memory.py not found — cannot force-flush")
+            return False
+        # Run extract synchronously (bounded). It scans ALL unprocessed archives; our
+        # target is the freshest one just written. Dedup log makes re-runs cheap.
+        result = subprocess.run(
+            [sys.executable, str(extract_script)],
+            cwd=str(Path(__file__).parent.parent),
+            capture_output=True, text=True, timeout=180,
+        )
+        # Confirm OUR archive is now in the processed log (authoritative, not exit code:
+        # extract can exit 0 with nothing-to-do, or be self-healing after a partial).
+        processed_log = Path(__file__).parent.parent / "memory" / ".processed_archives.json"
+        if processed_log.exists():
+            try:
+                with open(processed_log, "r", encoding="utf-8") as f:
+                    processed = json.load(f)
+                keys = processed.keys() if isinstance(processed, dict) else (processed or [])
+                if any(archive_filename in str(k) for k in keys):
+                    return True
+            except Exception:
+                pass
+        # Fallback: trust a clean exit if the processed-log check was inconclusive.
+        return result.returncode == 0
+    except subprocess.TimeoutExpired:
+        log("   ⚠️  force-flush extract timed out (180s) — keeping mapping, archive persists for next tick")
+        return False
+    except Exception as e:
+        log(f"   ⚠️  force-flush extract error: {e} — keeping mapping, archive persists for next tick")
+        return False
+
 def reset_session(session_key, session_data):
     """Reset session by archiving JSONL and deleting session mapping."""
     log(f"🔄 Starting session reset for: {session_key}")
@@ -533,6 +599,23 @@ def reset_session(session_key, session_data):
             archive_info = {'file': session_file.name, 'stats': stats, 'type': 'reset_deleted'}
     else:
         log(f"⚠️  Session JSONL not found: {session_file.name}")
+    # FORCE-MODE flush-before-/new guarantee: the tick-driven path lets extract run
+    # as a LATER orchestrator step (self-healing: the archive persists, extract picks
+    # it up next tick). That's fine when nothing is racing. But a HARD force /new on a
+    # live session must guarantee the just-archived transcript — including the
+    # UNCOMPACTED TAIL (messages after the last compaction, never summarized) — is
+    # flushed to memory/YYYY-MM-DD.md BEFORE the mapping is deleted, so no window
+    # exists where the session is gone but its tail was never extracted. So in force
+    # mode we extract synchronously HERE, on this session's archive, then delete.
+    # Fail-open: if the synchronous flush fails, we DO NOT delete the mapping (leave
+    # the session intact so its transcript is retried), and the later orchestrator
+    # extract still self-heals from the archive. Never lose the tail to a delete.
+    if FORCE_MODE and archive_info and archive_info.get('type') == 'reset':
+        flushed = _force_flush_archive(archive_info.get('file'))
+        if not flushed:
+            log("   ⚠️  FORCE flush did not confirm — KEEPING session mapping (no /new) so the tail is not lost; archive persists for next-tick extract.")
+            return archive_info
+        log("   ✅ FORCE flush confirmed — tail extracted to daily note; safe to /new.")
     # Delete session mapping
     if not SESSIONS_FILE.exists():
         log("⚠️  sessions.json not found")
@@ -631,4 +714,12 @@ def main():
 
 
 if __name__ == "__main__":
+    # --force: HARD compaction reset path (invoked immediately by the compaction hook
+    # on session:compact:after, NOT the 15-min cron). Lowers to FORCE_COMPACTION_THRESHOLD
+    # (>=5) and bypasses the active-conversation grace for sessions at that depth, and
+    # extracts each forced session's archive to memory/YYYY-MM-DD.md BEFORE deleting its
+    # mapping (airtight flush-before-/new). Without --force, behavior is unchanged.
+    if "--force" in sys.argv[1:]:
+        FORCE_MODE = True
+        log("🔥 FORCE MODE enabled (compaction hard-reset: threshold>=%d, grace bypassed, flush-before-/new)" % FORCE_COMPACTION_THRESHOLD)
     main()

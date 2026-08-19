@@ -40,12 +40,27 @@ const handler = async (event: {
   context?: MaybeRecord;
 }): Promise<void> => {
   try {
-    if (event.type !== "command") return;
-    if (event.action !== "new" && event.action !== "reset") return;
+    // Two trigger classes:
+    //  (a) manual /new or /reset  -> zero-delay memory pipeline (original behavior).
+    //  (b) session:compact:after  -> HARD-FORCE compaction reset. The 15-min cron
+    //      resets at compaction depth>=2, but a session compacting in a tight storm
+    //      can pile up unbounded BETWEEN ticks (and never idles the 10-min grace).
+    //      On every compaction we fire the pipeline in --force mode; session_reset.py
+    //      then hard-resets ONLY sessions at depth>=FORCE_COMPACTION_THRESHOLD (5),
+    //      bypassing grace, and extracts each forced session's archive to
+    //      memory/YYYY-MM-DD.md BEFORE deleting its mapping (airtight flush-before-/new).
+    //      Below the ceiling this is a no-op reset pass, so firing on every compaction
+    //      is safe + self-throttling (the lock + processed-log dedup the pipeline).
+    const isManualReset = event.type === "command" && (event.action === "new" || event.action === "reset");
+    const isCompaction =
+      event.type === "session:compact:after" ||
+      (event.type === "session" && event.action === "compact:after") ||
+      event.type === "after_compaction";
+    if (!isManualReset && !isCompaction) return;
 
     const workspaceDir = resolveWorkspaceDir(event.context);
     if (!workspaceDir || !isAbsolute(workspaceDir)) {
-      console.warn("[dinomem-reset-extract] could not resolve workspace dir; skipping action=" + event.action);
+      console.warn("[dinomem-reset-extract] could not resolve workspace dir; skipping type=" + event.type + " action=" + event.action);
       return;
     }
 
@@ -63,7 +78,10 @@ const handler = async (event: {
       logFd = "ignore";
     }
 
-    const child = spawn("python3", [script], {
+    // Compaction path forces the hard-reset threshold; manual /new /reset keeps the
+    // normal pipeline (no --force -> tick thresholds + grace unchanged).
+    const scriptArgs = isCompaction ? [script, "--force"] : [script];
+    const child = spawn("python3", scriptArgs, {
       cwd: workspaceDir,
       detached: true,
       stdio: ["ignore", logFd, logFd],

@@ -2,7 +2,7 @@
 name: dinomem-reset-extract
 description: "On manual /new or /reset, run the dinomem memory pipeline immediately (adopt reset-archive + extract + optional ingest) instead of waiting for the next cron tick — closes the post-reset memory-blindness window to ~0."
 metadata:
-  { "openclaw": { "emoji": "🧠", "events": ["command:new", "command:reset"], "requires": { "bins": ["python3"] } } }
+  { "openclaw": { "emoji": "🧠", "events": ["command:new", "command:reset", "session:compact:after"], "requires": { "bins": ["python3"] } } }
 ---
 
 # dinomem-reset-extract
