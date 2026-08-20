@@ -41,6 +41,28 @@ GIT_DIR="${AUTOSNAP_GIT_DIR:-$REPO/.dinomem-snap.git}"
 # uses `g` instead of bare `git`, so the user's own repo is never touched.
 g() { git --git-dir="$GIT_DIR" --work-tree="$REPO" "$@"; }
 
+# Housekeeping (gc/repack/lfs prune/retention) is background maintenance — it must
+# NEVER compete with the live gateway. `gnice` runs the SAME git op at idle CPU
+# (nice 19) + idle IO (ionice class 3) priority, so a heavy repack yields the
+# machine instead of driving load to 12-20. nice/ionice are optional: if absent
+# (busybox/mac), fall through to plain `g` so behavior is preserved.
+_NICE=""; command -v nice   >/dev/null 2>&1 && _NICE="nice -n 19"
+_IONICE=""; command -v ionice >/dev/null 2>&1 && _IONICE="ionice -c3"
+gnice() { $_NICE $_IONICE git --git-dir="$GIT_DIR" --work-tree="$REPO" "$@"; }
+
+# Aggressive gc (full delta recompute) is expensive and near-useless to repeat:
+# once the pack is optimal, re-running it every ≥90% tick burns CPU for nothing.
+# Gate it to at most once per AGGR_GC_COOLDOWN_H hours via a stamp file.
+AGGR_GC_COOLDOWN_H="${AUTOSNAP_AGGR_GC_COOLDOWN_H:-24}"
+_AGGR_STAMP="$GIT_DIR/.last-aggressive-gc"
+aggr_gc_due() {
+  [ -f "$_AGGR_STAMP" ] || return 0
+  local last now
+  last=$(cat "$_AGGR_STAMP" 2>/dev/null || echo 0)
+  now=$(date +%s)
+  [ $(( now - last )) -ge $(( AGGR_GC_COOLDOWN_H * 3600 )) ]
+}
+
 BRANCH="${AUTOSNAP_BRANCH:-$(g symbolic-ref --short -q HEAD || echo main)}"
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG="$REPO/logs/git-autosnapshot.log"
@@ -132,23 +154,33 @@ fi
 DISK_PCT=$(df --output=pcent "$REPO" 2>/dev/null | tail -1 | tr -dc '0-9')
 [ -z "$DISK_PCT" ] && DISK_PCT=0
 
+# All housekeeping git ops below run via `gnice` (idle CPU+IO) so they never
+# drive gateway-competing load. Aggressive gc is additionally cooldown-gated.
 if [ "$DISK_PCT" -ge 90 ]; then
-  echo "$(date '+%F %T') EMERGENCY disk=${DISK_PCT}% -> aggressive gc + full lfs prune + 7d retention" >> "$LOG"
-  g reflog expire --expire=now --all 2>/dev/null || true
-  g gc --quiet --prune=now --aggressive 2>/dev/null || true
-  command -v git-lfs >/dev/null 2>&1 && g lfs prune --force --quiet 2>/dev/null || true
+  gnice reflog expire --expire=now --all 2>/dev/null || true
+  if aggr_gc_due; then
+    echo "$(date '+%F %T') EMERGENCY disk=${DISK_PCT}% -> aggressive gc + full lfs prune + 7d retention" >> "$LOG"
+    gnice gc --quiet --prune=now --aggressive 2>/dev/null || true
+    date +%s > "$_AGGR_STAMP" 2>/dev/null || true
+  else
+    # Aggressive repack ran within the cooldown window; do the cheap prune only
+    # so we still reclaim space each tick without re-paying the full repack.
+    echo "$(date '+%F %T') EMERGENCY disk=${DISK_PCT}% -> light gc prune=now (aggressive on cooldown) + full lfs prune + 7d retention" >> "$LOG"
+    gnice gc --quiet --prune=now 2>/dev/null || true
+  fi
+  command -v git-lfs >/dev/null 2>&1 && gnice lfs prune --force --quiet 2>/dev/null || true
   AUTOSNAP_RETAIN_DAYS=7 AUTOSNAP_REPO="$REPO" AUTOSNAP_GIT_DIR="$GIT_DIR" AUTOSNAP_BRANCH="$BRANCH" \
-    bash "$SELF_DIR/git-retention.sh" 2>/dev/null || true
+    $_NICE $_IONICE bash "$SELF_DIR/git-retention.sh" 2>/dev/null || true
 elif [ "$DISK_PCT" -ge 80 ]; then
   echo "$(date '+%F %T') WARN disk=${DISK_PCT}% -> gc prune=now + lfs prune + ${RETAIN_DAYS}d retention" >> "$LOG"
-  g gc --quiet --prune=now 2>/dev/null || true
-  command -v git-lfs >/dev/null 2>&1 && g lfs prune --quiet 2>/dev/null || true
+  gnice gc --quiet --prune=now 2>/dev/null || true
+  command -v git-lfs >/dev/null 2>&1 && gnice lfs prune --quiet 2>/dev/null || true
   AUTOSNAP_RETAIN_DAYS="$RETAIN_DAYS" AUTOSNAP_REPO="$REPO" AUTOSNAP_GIT_DIR="$GIT_DIR" AUTOSNAP_BRANCH="$BRANCH" \
-    bash "$SELF_DIR/git-retention.sh" 2>/dev/null || true
+    $_NICE $_IONICE bash "$SELF_DIR/git-retention.sh" 2>/dev/null || true
 else
   # HEALTHY (<80%): light housekeeping ~hourly (the :00-:14 tick only).
   if [ "$(( $(date +%-M) / 15 ))" -eq 0 ]; then
-    g gc --quiet --auto 2>/dev/null || true
-    command -v git-lfs >/dev/null 2>&1 && g lfs prune --quiet 2>/dev/null || true
+    gnice gc --quiet --auto 2>/dev/null || true
+    command -v git-lfs >/dev/null 2>&1 && gnice lfs prune --quiet 2>/dev/null || true
   fi
 fi
