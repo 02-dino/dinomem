@@ -2072,6 +2072,13 @@ DINOMEM_BODY=$(cat <<'DINOMEM_AGENTS_BODY'
     skill_config: when user wants the agent to learn a repeatable method/procedure needed sometimes (not every turn) → read skill "skill-config"
     build_quality: BEFORE writing >a few lines of new self-mod code (a cron gate, hook handler, skill body, tool, lib fn) → read skill "build-quality" (reuse→DRY→minimal→doc-why→test; run route.py dup + route.py verify)
     backup_restore: when user asks to undo/restore a file or memory change, or what backups exist → read skill "backup-restore"
+
+  durability_tripwire:
+    fires_on: own_draft pre_send
+    smell: draft commits remember|note|always|never_again|from_now_on X AND only THIS session context makes it stick
+    rule: red_flag NOT solution; context_only_fix=gone_next_session; STOP send → self_modification_request → route.py classify → land X on durable_surface[cron|hook|skill|tool|root]
+    forbid: ship "ok I'll remember X" | one_turn_change as_fix; change=SYSTEMATIC not context_dependent
+    exit: skip only if X one_off no_future_relevance OR already on durable_surface[verify not_assume]
 DINOMEM_AGENTS_BODY
 )
 BLOCK="$BEGIN
