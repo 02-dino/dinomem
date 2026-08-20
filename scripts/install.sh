@@ -610,7 +610,31 @@ else
   fi
 fi
 
-# ── 2d) Install skills ─────────────────────────────────────────────────────
+# ── 2c2) Install memory-warm hook ──────────────────────────────────────────
+hr "Memory-warm hook (pre-warm memory_search on gateway startup)"
+HOOK3_SRC="$SKILL_DIR/hooks/dinomem-memory-warm"
+HOOK3_DST="$WS/hooks/dinomem-memory-warm"
+if [ -d "$HOOK3_DST" ] && [ "$FORCE" = 0 ]; then
+  skip "hooks/dinomem-memory-warm/ (exists, use --force to overwrite)"
+elif [ "$DRY_RUN" = 1 ]; then
+  plan "copy hooks/dinomem-memory-warm/ -> $WS/hooks/"
+  plan "openclaw hooks enable dinomem-memory-warm"
+else
+  mkdir -p "$WS/hooks"
+  rm -rf "$HOOK3_DST"
+  cp -r "$HOOK3_SRC" "$HOOK3_DST"
+  ok "hooks/dinomem-memory-warm/ copied"
+  if openclaw_running; then
+    openclaw hooks enable dinomem-memory-warm >/dev/null 2>&1 \
+      && ok "dinomem-memory-warm hook enabled (restart OpenClaw to activate)" \
+      || warn "openclaw hooks enable failed — run manually: openclaw hooks enable dinomem-memory-warm"
+  else
+    warn "OpenClaw not running — run after restart: openclaw hooks enable dinomem-memory-warm"
+  fi
+  ok "memory-warm is OPT-IN: set DINOMEM_WARM_AGENTS=<agent-id>[,<id>...] in the gateway env to warm those agents on boot (unset = no-op)."
+fi
+
+# ── 2d) Install skills ───────────────────────────────────────
 hr "Skills (memory-pinning, backup-restore, self-config)"
 if [ -d "$SKILL_DIR/skills" ]; then
   for _sk in "$SKILL_DIR/skills"/*/; do
