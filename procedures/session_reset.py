@@ -390,11 +390,23 @@ def cleanup_old_archives():
     """Delete archived JSONL files older than ARCHIVE_MAX_AGE_DAYS."""
     log("🗑️  Checking for old archived files...")
     cutoff_time = datetime.now().timestamp() - (ARCHIVE_MAX_AGE_DAYS * 24 * 60 * 60)
+    # State-aware guard: never unlink a file still referenced in sessions.json.
+    # Archives are unreferenced by naming convention, but convention != verified
+    # state; a reset that unlinked the mapping but failed to update sessions.json
+    # could leave a live reference. Trust the store, not just the filename.
+    tracked = get_tracked_files()
     total_deleted = 0
     total_kept = 0
+    total_referenced = 0
     deleted_files = []
     kept_files = []
     for file in SESSIONS_DIR.glob("*.archived.*.jsonl"):
+        if file.resolve() in tracked:
+            kept_files.append(file.name)
+            total_kept += 1
+            total_referenced += 1
+            log(f"  🛡️  Kept (still referenced in sessions.json, not pruned): {file.name}")
+            continue
         file_mtime = file.stat().st_mtime
         if file_mtime < cutoff_time:
             deleted_files.append(file.name)
@@ -408,7 +420,9 @@ def cleanup_old_archives():
         log(f"✅ Cleanup complete! Deleted {total_deleted} old archive(s), kept {total_kept}")
     else:
         log(f"✅ No cleanup needed (all archives within {ARCHIVE_MAX_AGE_DAYS} days)")
-    return {'deleted': deleted_files, 'kept': kept_files, 'deleted_count': total_deleted, 'kept_count': total_kept}
+    if total_referenced > 0:
+        log(f"🛡️  {total_referenced} old archive(s) protected: still referenced in sessions.json")
+    return {'deleted': deleted_files, 'kept': kept_files, 'deleted_count': total_deleted, 'kept_count': total_kept, 'referenced_count': total_referenced}
 
 
 def filter_sessions_to_reset(sessions):
