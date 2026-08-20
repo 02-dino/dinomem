@@ -1,0 +1,13 @@
+[Unit]
+Description=Watch openclaw.json for invalid writes (triggers config-guard)
+
+[Path]
+# Fire the guard whenever the config file is modified/replaced. %h expands to
+# the user's home; install.sh rewrites to an absolute path when OpenClaw is not
+# under the default ~/.openclaw location.
+PathModified=%h/.openclaw/openclaw.json
+PathChanged=%h/.openclaw/openclaw.json
+Unit=openclaw-config-guard.service
+
+[Install]
+WantedBy=default.target

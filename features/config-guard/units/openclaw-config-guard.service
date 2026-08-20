@@ -1,0 +1,8 @@
+[Unit]
+Description=Guard openclaw.json: restore last-good snapshot on an invalid write
+
+[Service]
+Type=oneshot
+# %h = the user's home dir (systemd expands it). If your OpenClaw lives at a
+# non-default path, install.sh rewrites this ExecStart to an absolute path.
+ExecStart=%h/.openclaw/scripts/config-guard.sh

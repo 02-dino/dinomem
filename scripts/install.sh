@@ -2079,6 +2079,11 @@ DINOMEM_BODY=$(cat <<'DINOMEM_AGENTS_BODY'
     rule: red_flag NOT solution; context_only_fix=gone_next_session; STOP send → self_modification_request → route.py classify → land X on durable_surface[cron|hook|skill|tool|root]
     forbid: ship "ok I'll remember X" | one_turn_change as_fix; change=SYSTEMATIC not context_dependent
     exit: skip only if X one_off no_future_relevance OR already on durable_surface[verify not_assume]
+
+  config_write_safety:
+    rule: NEVER raw-edit openclaw.json (edit|write|sed|echo|>). writes go through `openclaw config patch/set` (validated, refuses invalid) then `openclaw config validate`.
+    why: one trailing comma = invalid JSON -> gateway crash-loop on reload. validated CLI refuses the bad write; raw edit has no net.
+    enforcement: optional systemd watchdog reverts a broken openclaw.json from last-good snapshot even mid-crash -> features/config-guard/install.sh
 DINOMEM_AGENTS_BODY
 )
 BLOCK="$BEGIN
