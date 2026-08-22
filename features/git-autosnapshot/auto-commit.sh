@@ -37,6 +37,18 @@ RETAIN_DAYS="${AUTOSNAP_RETAIN_DAYS:-30}"
 GIT_DIR="${AUTOSNAP_GIT_DIR:-$REPO/.dinomem-snap.git}"
 [ -f "$GIT_DIR/HEAD" ] || { echo "auto-commit: snapshot git-dir not initialized at $GIT_DIR (run install.sh)" >&2; exit 2; }
 
+# SEMANTIC commit-subject hint (two-tier subjects). A meaningful-write caller
+# (memory_promote graduate/demote, valid_time supersede, resolve_done_notes
+# resolve, extract_memory dedup-merge) drops the WHY of its change here as ONE
+# line via scripts/lib/commit_reason.sh; this tick reads it FIRST, uses it as the
+# commit subject, then clears it. Absent/stale/empty -> fall through to the
+# structural auto-snapshot subject (a blind timer genuinely has no why). Keeps
+# ALL git-writing in THIS one sanctioned script (callers stay git-free), zero new
+# per-tick cost (the reason is a string the caller already held). Fail-open.
+REASON_HINT="${AUTOSNAP_REASON_HINT:-$REPO/.dinomem-commit-reason}"
+# A hint older than this is stale (its write already got committed / was missed).
+REASON_MAX_AGE_S="${AUTOSNAP_REASON_MAX_AGE_S:-900}"
+
 # Address git via the isolated git-dir + the repo as work-tree. Everything below
 # uses `g` instead of bare `git`, so the user's own repo is never touched.
 g() { git --git-dir="$GIT_DIR" --work-tree="$REPO" "$@"; }
@@ -127,21 +139,37 @@ if [ -n "$(g status --porcelain 2>/dev/null | head -c1)" ]; then
     STAMP="$(date '+%Y-%m-%d %H:%M:%S %Z')"
     N="$(g diff --cached --name-only | wc -l | tr -d ' ')"
 
-    # -- Structural subject (pure git, zero LLM) -------------------------------
-    # A machine-recoverable diff already exists; this line just makes `git log
-    # --oneline` scannable for RECOVERY TRIAGE: how many added/modified/deleted
-    # and which top-level dir dominated. No semantic summary (would cost a
-    # cheap-model call per 15-min tick for a log almost nobody reads); the real
-    # "what changed" stays in the diff itself.
-    ADDED=$(g diff --cached --name-status | grep -c '^A' || true)
-    MODED=$(g diff --cached --name-status | grep -c '^M' || true)
-    DELED=$(g diff --cached --name-status | grep -c '^D' || true)
-    # Dominant top-level dir among staged paths (e.g. 'memory', 'logs').
-    TOPDIR=$(g diff --cached --name-only \
-      | sed -e 's#^\([^/]*\)/.*#\1#' -e 's#^[^/]*$#(root)#' \
-      | sort | uniq -c | sort -rn | head -1 | awk '{print $2}')
-    [ -z "$TOPDIR" ] && TOPDIR='(root)'
-    SUBJ="auto-snapshot ${STAMP} · +${ADDED} ~${MODED} -${DELED} · ${TOPDIR} (${N} file(s))"
+    # -- TIER 1: SEMANTIC subject from a meaningful-write hint (zero LLM) -------
+    # A caller that KNEW why it wrote (promotion/supersede/resolve/dedup) dropped
+    # the WHY into $REASON_HINT. Use it as the subject when present + fresh, then
+    # CLEAR it so a later blind tick doesn't reuse a stale why. The reason is a
+    # string the caller already held -> no new cost, no model, no git in callers.
+    SUBJ=""
+    if [ -s "$REASON_HINT" ]; then
+      _hint_age=$(( $(date +%s) - $(stat -c %Y "$REASON_HINT" 2>/dev/null || echo 0) ))
+      if [ "$_hint_age" -ge 0 ] && [ "$_hint_age" -le "$REASON_MAX_AGE_S" ]; then
+        SUBJ="$(head -1 "$REASON_HINT" | tr -d '\r' | cut -c1-72)"
+      fi
+      rm -f "$REASON_HINT" 2>/dev/null || true   # consume-once, even if stale
+    fi
+
+    # -- TIER 2: STRUCTURAL subject (pure git, zero LLM) — the fallback --------
+    # A blind timer genuinely has no why. A machine-recoverable diff already
+    # exists; this line just makes `git log --oneline` scannable for RECOVERY
+    # TRIAGE: how many added/modified/deleted and which top-level dir dominated.
+    # No semantic summary (would cost a cheap-model call per 15-min tick for a
+    # log almost nobody reads); the real "what changed" stays in the diff itself.
+    if [ -z "$SUBJ" ]; then
+      ADDED=$(g diff --cached --name-status | grep -c '^A' || true)
+      MODED=$(g diff --cached --name-status | grep -c '^M' || true)
+      DELED=$(g diff --cached --name-status | grep -c '^D' || true)
+      # Dominant top-level dir among staged paths (e.g. 'memory', 'logs').
+      TOPDIR=$(g diff --cached --name-only \
+        | sed -e 's#^\([^/]*\)/.*#\1#' -e 's#^[^/]*$#(root)#' \
+        | sort | uniq -c | sort -rn | head -1 | awk '{print $2}')
+      [ -z "$TOPDIR" ] && TOPDIR='(root)'
+      SUBJ="auto-snapshot ${STAMP} · +${ADDED} ~${MODED} -${DELED} · ${TOPDIR} (${N} file(s))"
+    fi
 
     g commit --quiet -m "$SUBJ" 2>/dev/null \
       || g commit --quiet -m "auto-snapshot ${STAMP} (${N} file(s))" 2>/dev/null \

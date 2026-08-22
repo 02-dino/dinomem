@@ -19,6 +19,10 @@ Every N minutes it commits all non-ignored changes (edits **and** brand-new file
 
 - **History retention** — old `auto-snapshot` commits collapse into a baseline when disk is tight, so 15-min snapshots (~35k/year) can't balloon `.git`. **Only `auto-snapshot` commits are ever collapsed** — your hand-written commits are permanent at any age. A backup ref is taken before any rewrite; a failed rewrite auto-restores.
 - **Scale config** — enables `core.fsmonitor`, `core.untrackedcache`, `feature.manyFiles` so staging stays sub-second into six-figure file counts.
+- **Two-tier commit subjects** — for a memory system the *why* of a change is as important as the change, so `git log --oneline` reads as a why-changelog instead of noise:
+  - **Semantic** (Tier 1) — when a **meaningful** memory write happens (a pattern graduates/demotes, a fact is superseded, a done-note resolves, a cross-head dedup-merge), the caller hands the already-computed reason to the snapshot writer, producing subjects like `promote: graduate "…" (3 reinforce, conf 0.82)`, `supersede: dino.location old → new`, `resolve: note <slug> done_when met @<sha>`, `dedup-merge: <peer> ← world-fact`.
+  - **Structural** (Tier 2) — a blind timer tick genuinely has no *why*, so it keeps the machine-scannable fallback `auto-snapshot <ts> · +A ~M -D · <topdir> (N file(s))`.
+  - **Zero new cost:** the reason is an f-string over values the caller already held — no LLM, no model call per tick. The mechanism is a fail-open reason-hint file (`.dinomem-commit-reason`) that the writer reads-then-clears; if it's absent/stale, the structural subject is used. Callers stay entirely git-free (one writer).
 
 ## Install
 
