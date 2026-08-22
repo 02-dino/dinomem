@@ -190,6 +190,7 @@ Now **every** investing conversation reflects it — no recall, no prompting, no
 | **Big tasks** | one long session, easy to lose the thread | becomes a **project**: step-by-step plan it executes across sessions, advancing on its own, pausing for approval on anything risky |
 | **Your documents** | not searchable | RAG over contracts, books, PDFs, scanned pages, images — OCR'd by the agent's own vision model (no GPU) |
 | **Your spreadsheets** | embeddings guess | exact SQL: *how many, which ones, under $X, grouped by* — the precise answers embeddings can't give |
+| **Your codebase** | grep it, read whole files into context to trace anything | asks a **ZERO-LLM** graph: *what calls this, what does this script work with, what is it even about* — answered from a `file:line` AST index (~20× fewer tokens than grep-and-read), refreshed daily |
 | **Follow-ups** | you remember to remind it | it writes its own `_note_` files from its own commitments |
 | **Cleanup** | daily janitor already retires simple resolved/stale notes | *extends* it to **projects**: retires finished project notes, promotes the good ones, and a self-improving closer reviews finished work before retiring it |
 
