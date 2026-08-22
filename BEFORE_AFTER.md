@@ -190,7 +190,7 @@ Now **every** investing conversation reflects it — no recall, no prompting, no
 | **Big tasks** | one long session, easy to lose the thread | becomes a **project**: step-by-step plan it executes across sessions, advancing on its own, pausing for approval on anything risky |
 | **Your documents** | not searchable | RAG over contracts, books, PDFs, scanned pages, images — OCR'd by the agent's own vision model (no GPU) |
 | **Your spreadsheets** | embeddings guess | exact SQL: *how many, which ones, under $X, grouped by* — the precise answers embeddings can't give |
-| **Your codebase** | "what calls this function?" — it greps around, reads whole files back at you, and half the time misses a caller in a file it didn't open | ask *what calls this, what does this script lean on, what is this file even for* — and it just answers, straight, like a teammate who's read the whole repo |
+| **Your codebase** | "what calls this function?" — it opens ten files looking for callers, burns your context window reading them all, and still misses the one in a file it didn't think to open | it already has the map. It answers *what calls this, what this script leans on, what this file is even for* by reading the map — not by re-reading the ten files — so the answer comes back fast and doesn't eat the context you needed for the actual work (that's the ~20× fewer tokens — map, not files) |
 | **Follow-ups** | you remember to remind it | it writes its own `_note_` files from its own commitments |
 | **Cleanup** | daily janitor already retires simple resolved/stale notes | *extends* it to **projects**: retires finished project notes, promotes the good ones, and a self-improving closer reviews finished work before retiring it |
 

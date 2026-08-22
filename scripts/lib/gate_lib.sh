@@ -207,6 +207,91 @@ guard_composite() {
   return 1
 }
 
+# guard_composite_pernote <state_file> <min_secs> <input...>   # 0 fire / 1 skip
+# PER-NOTE variant of guard_composite. Fixes the aggregate-hash STARVATION flaw:
+# guard_composite keys one hash over the WHOLE input SET, so a busy note that
+# keeps changing perpetually refreshes the shared stamp and a co-qualifying but
+# quiet note (e.g. one parked between advances) can be starved of fires until the
+# daily floor. This variant keeps ONE state line PER note (basename<TAB>epoch
+# hash), so each note fires on ITS OWN (never-seen | body-changed | own-floor |
+# crash) terms, independent of sibling churn.
+#
+# FIRES (exit 0) if ANY input qualifies on its own terms; stamps ONLY the
+# note(s) that fired (quiet notes keep their prior timer -> their floor still
+# elapses independently). Fail-open: unreadable state / no hash -> treat that
+# note as never-seen (fire), never silently starve. Reuses gate__body_hash +
+# gate__crash_signature (single source of truth, identical claim-line exclusion
+# and crash semantics as guard_composite). Behaviour for a SINGLE input is
+# identical to guard_composite (regression-locked in the test).
+guard_composite_pernote() {
+  local state_file="$1" min_interval="$2"; shift 2
+  local -a inputs=("$@")
+  [ "${#inputs[@]}" -gt 0 ] || return 1
+
+  local now_epoch; now_epoch=$(date -u +%s 2>/dev/null || echo 0)
+
+  # Load prior per-note stamps into an assoc map: key=basename -> "<epoch> <hash>".
+  declare -A _pn_last_run _pn_last_hash
+  if [ -f "$state_file" ]; then
+    local _k _e _h
+    while IFS=$'\t' read -r _k _e _h; do
+      [ -n "$_k" ] || continue
+      case "$_e" in (''|*[!0-9]*) _e=0 ;; esac
+      _pn_last_run["$_k"]="$_e"
+      _pn_last_hash["$_k"]="$_h"
+    done < "$state_file"
+  fi
+
+  local any_fire=1   # 1 = none fired yet (bash: 0 = success/fire)
+  local f base bhash lr lh changed due crashed
+  for f in "${inputs[@]}"; do
+    [ -f "$f" ] || continue
+    base="$(basename "$f")"
+    bhash="$(gate__body_hash "$f")"
+    [ -n "$bhash" ] || bhash="-"          # fail-open: no hash -> forces a fire below
+    lr="${_pn_last_run[$base]:-0}"
+    lh="${_pn_last_hash[$base]:-}"
+
+    # (A) never-seen OR body changed since this note's last real run.
+    changed=1
+    if [ "$lr" -gt 0 ] && [ -n "$lh" ]; then
+      [ "$bhash" != "$lh" ] && changed=0
+    else
+      changed=0
+    fi
+    # (b) this note's OWN min-interval floor elapsed.
+    due=1
+    [ $(( now_epoch - lr )) -ge "$min_interval" ] && due=0
+    # (c) crash-detect early-fire for THIS note (fail-closed).
+    crashed=1
+    gate__crash_signature "$f" && crashed=0
+
+    if [ "$changed" -eq 0 ] || [ "$due" -eq 0 ] || [ "$crashed" -eq 0 ]; then
+      # this note fires -> stamp it fresh.
+      _pn_last_run["$base"]="$now_epoch"
+      _pn_last_hash["$base"]="$bhash"
+      any_fire=0
+    fi
+    # quiet note: leave its prior stamp untouched (timer keeps counting).
+  done
+
+  # Persist the full map (fired notes refreshed, quiet notes preserved). Prune
+  # keys for inputs no longer present is implicit: we only re-write keys we saw
+  # this run PLUS any prior key still in the map. To avoid unbounded growth from
+  # deleted notes, only keep keys that were in THIS run's inputs.
+  local -A _keep
+  for f in "${inputs[@]}"; do _keep["$(basename "$f")"]=1; done
+  {
+    local k
+    for k in "${!_pn_last_run[@]}"; do
+      [ -n "${_keep[$k]:-}" ] || continue    # drop vanished notes (GC)
+      printf '%s\t%s\t%s\n' "$k" "${_pn_last_run[$k]}" "${_pn_last_hash[$k]:-}"
+    done
+  } > "$state_file" 2>/dev/null || true
+
+  return $any_fire
+}
+
 # Back-compat alias: the neuron guard name IS guard_composite. Kept so the thin
 # shim (and any old caller) keeps working with zero churn.
 if ! declare -F refire_should_fire >/dev/null 2>&1; then

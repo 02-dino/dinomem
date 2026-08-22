@@ -334,6 +334,57 @@ env -i PATH="$MOCK7:$PATH" HOME="$(mktemp -d)" bash -c '
 if [ $? -eq 0 ]; then _pb; else _fb; printf '  composite sensor gate exited non-zero\n'; fi
 
 # ─────────────────────────────────────────────────────────────────────────────
+echo "=== Test 8: guard_composite_pernote — no cross-note starvation ==="
+begin "T8 pernote no-starvation"
+TEST8="$MKT/t8"; mkdir -p "$TEST8/input"
+A="$TEST8/input/_note_project_a.md"
+B="$TEST8/input/_note_project_b.md"
+printf 'type: project\nstatus: in_progress\nclaimed_at: now\nbody A v1\n' > "$A"
+printf 'type: project\nstatus: in_progress\nbody B v1\n'                 > "$B"
+st8="$TEST8/state"
+t8_fail=0
+
+# Prime: never-seen -> fires.
+guard_composite_pernote "$st8" 86400 "$A" "$B"; [ $? -eq 0 ] || { t8_fail=1; echo '  prime should fire'; }
+# Unchanged both -> within floor -> suppress.
+guard_composite_pernote "$st8" 86400 "$A" "$B"; [ $? -eq 1 ] || { t8_fail=1; echo '  unchanged should suppress'; }
+
+# THE STARVATION SCENARIO: only A churns for 5 ticks. Aggregate-hash guard would
+# keep firing (A changes) yet the OLD single-line stamp would also mark B fresh
+# each time -> B never earns its own fire. Per-note MUST keep firing (because A
+# changed) AND MUST NOT advance B's stamp (B unchanged -> B's timer keeps aging).
+b_stamp_before=$(grep '^_note_project_b.md' "$st8" | cut -f2)
+for i in 1 2 3 4 5; do
+  printf 'type: project\nstatus: in_progress\nclaimed_at: now\nbody A v%s\n' "$((i+1))" > "$A"
+  guard_composite_pernote "$st8" 86400 "$A" "$B"; [ $? -eq 0 ] || { t8_fail=1; echo "  A-churn tick $i should fire"; }
+done
+b_stamp_after=$(grep '^_note_project_b.md' "$st8" | cut -f2)
+# B's stamp must be UNCHANGED by A's churn (the anti-starvation invariant).
+[ "$b_stamp_before" = "$b_stamp_after" ] || { t8_fail=1; printf '  STARVATION LEAK: B stamp moved %s -> %s during A-only churn\n' "$b_stamp_before" "$b_stamp_after"; }
+
+# Now age B past its own floor while A stays quiet -> B fires on ITS OWN floor,
+# independent of A. Force B's stored stamp into the deep past, freeze A's hash.
+now8=$(date -u +%s); old8=$(( now8 - 200000 ))
+{ grep '^_note_project_a.md' "$st8"; printf '_note_project_b.md\t%s\t%s\n' "$old8" "$(grep '^_note_project_b.md' "$st8" | cut -f3)"; } > "$st8.tmp" && mv "$st8.tmp" "$st8"
+# A unchanged, within floor; B floor elapsed -> fires (because of B).
+guard_composite_pernote "$st8" 86400 "$A" "$B"; [ $? -eq 0 ] || { t8_fail=1; echo '  B own-floor should fire independent of A'; }
+
+# Single-input regression: pernote on ONE note behaves like composite
+# (never-seen fire, unchanged suppress, change fire).
+st8s="$TEST8/state_single"
+printf 'type: project\nstatus: in_progress\nbody one\n' > "$A"
+guard_composite_pernote "$st8s" 86400 "$A"; [ $? -eq 0 ] || { t8_fail=1; echo '  single prime should fire'; }
+guard_composite_pernote "$st8s" 86400 "$A"; [ $? -eq 1 ] || { t8_fail=1; echo '  single unchanged should suppress'; }
+printf 'type: project\nstatus: in_progress\nbody one CHANGED\n' > "$A"
+guard_composite_pernote "$st8s" 86400 "$A"; [ $? -eq 0 ] || { t8_fail=1; echo '  single change should fire'; }
+
+# GC: a vanished note's key must be pruned from the state file.
+guard_composite_pernote "$st8s" 86400 "$A"   # re-stamp A only (B not in inputs here)
+grep -q '^_note_project_b.md' "$st8s" && { t8_fail=1; echo '  vanished note key not GCd'; }
+
+if [ "$t8_fail" -eq 0 ]; then _pb; else _fb; fi
+
+# ─────────────────────────────────────────────────────────────────────────────
 echo
 printf 'TOTAL: %s passed, %s failed, %s skipped\n' "$PASSED" "$FAILED" "$SKIPPED"
 if [ "$FAILED" -gt 0 ]; then
