@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.5.0 — 2026-08-22
+
+**Config crash-loop protection, semantic snapshot subjects, cold-boot warm-up, and a mechanized build-quality/routing floor.**
+### Added
+- **config-guard** — an independent systemd watchdog that reverts `openclaw.json` to the last-good snapshot the instant a syntax-broken write lands, so a bad config can never crash-loop the gateway. Ships opt-in under `features/config-guard/` (guard script + `.path`+`.service` units + dup-aware installer that self-tests on a fake file before arming, and degrades gracefully without `jq`/systemd). A `config_write_safety` rule is added to the managed `AGENTS.md` block: never raw-edit `openclaw.json`, always route through validated `config patch`/`set`.
+- **Two-tier semantic commit subjects** in git-autosnapshot — meaningful memory writes (promote/demote/supersede/resolve/dedup-merge) now stamp a *why* subject via a fail-open reason-hint file that `auto-commit.sh` reads-then-clears; blind ticks keep the structural subject. Zero new per-tick cost, zero LLM. Adds `procedures/commit_reason.py` shared drop helper.
+- **dinomem-memory-warm hook** (`gateway:startup`) — pre-warms `memory_search` so the first real query no longer eats the ~6s cold-boot spike. Opt-in via `DINOMEM_WARM_AGENTS`, fire-and-forget, installer-wired.
+- **route.py multi-axis arbitration** — frequency-aware total-cost routing + secondary axes + a forbidden-target safety floor + a `verify` post-condition wired into all four config-skills; plus a `dup` advisory copy-paste scan wired into the build-quality DRY floor.
+- **build-quality skill** (reuse-first, DRY, minimal, why-not-what docs, test-don't-assume) as a build-time floor across all config-skills.
+- **gate_lib.sh** efficiency+safety primitives (Layers A–D) with `defer_if_busy` CPU-backpressure.
+- **Pre-filled MEMORY.md / USER.md migration** — opt-in `migrate_prefilled_memory.py` (backup-first, never deletes) + `compile_user.py` user-router assembly.
+### Fixed
+- **git-autosnapshot LFS leak** — `git lfs prune` was resolving HEAD from `--git-dir`/`--work-tree` flags (wrong) and failing `can't resolve ref HEAD` every tick, leaking ~1GB of orphaned LFS blobs that never pruned. New `lfsnice()` runs LFS from the work-tree so HEAD resolves; snapshot store no longer balloons.
+- **git-autosnapshot housekeeping** now runs at idle CPU (`nice 19`) + idle IO (`ionice c3`) and cooldown-gates aggressive `gc` to once/24h, so snapshotting never competes with the gateway (was driving load 12–20).
+- **session_reset** — state-aware guard on the 21-day archive prune (skip any `.archived.*.jsonl` still referenced in `sessions.json`); `--force` NameError hoisted; hard-force reset at compaction ≥5 with airtight flush-before-reset.
+- **Install reliability** — timeout-guard every `openclaw status` probe (bare calls could block/freeze the installer), auto-sudo the package step (files/cron/config stay user-owned), SIGPIPE absorbed on head-truncation pipes, skill-body placeholder substitution fixed, Python-3.14 heredoc `$(git …)` command-substitution and `os→_os` NameError fixed, multi-agent cron/hook identity scoped by `agentId` (never clobber another agent's jobs).
+- **durability_tripwire** backported into the managed `AGENTS.md` block — catches context-only "I'll remember X" non-fixes and routes them onto a durable surface.
+
 ## 1.4.3 — 2026-08-13
 
 **Memory-search reliability: graceful embedding fallback.**
