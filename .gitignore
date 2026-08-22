@@ -10,3 +10,6 @@ memory/peers/whatsapp_*.md
 memory/peers/signal_*.md
 memory/peers/discord_*.md
 memory/peers/imessage_*.md
+
+# local code-structure index (built on demand, never versioned)
+kb/code_graph/
