@@ -32,7 +32,10 @@ default you deviate from only with a reason.
 
 3. **Smallest thing that works.** No dead code, no speculative options "in case
    we need it," no config knobs nobody asked for. Ship the minimum that passes
-   the test; add surface only when a real need arrives.
+   the test; add surface only when a real need arrives. **Orphan rule:** remove
+   imports/vars/functions that YOUR change made unused — but do NOT delete
+   PRE-existing dead code as a drive-by; mention it and leave it. Every deleted
+   line must trace to your task, not to "while I was here."
 
 4. **Document the WHY, not the WHAT.** One short header block per unit stating
    *why it exists / what contract it holds / the non-obvious gotcha*. Do NOT

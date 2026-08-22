@@ -45,5 +45,7 @@ preferences — e.g. "stop doing X", "always Y", "call me Z", "add a tool for…
 | `SOUL.md`, `IDENTITY.md`, `AGENTS.md` | **Confirm with the user before writing** — these change core behavior/persona. |
 | `TOOLS.md`, `USER.md` | Write directly, no confirmation needed. |
 
-If the intent is ambiguous about which file/behavior to change, **ask one
-clarifying question**, then route.
+If the intent is ambiguous about which file/behavior to change — OR more than
+one target file/behavior is a plausible reading — **surface the fork, don't pick
+silently**: name the interpretations, ask one clarifying question, then route.
+A wrong-target root write is always-on and costly to unwind.
