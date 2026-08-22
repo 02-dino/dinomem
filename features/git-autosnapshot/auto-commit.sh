@@ -61,6 +61,12 @@ g() { git --git-dir="$GIT_DIR" --work-tree="$REPO" "$@"; }
 _NICE=""; command -v nice   >/dev/null 2>&1 && _NICE="nice -n 19"
 _IONICE=""; command -v ionice >/dev/null 2>&1 && _IONICE="ionice -c3"
 gnice() { $_NICE $_IONICE git --git-dir="$GIT_DIR" --work-tree="$REPO" "$@"; }
+# git-lfs prune resolves HEAD from the CWD, not from --git-dir/--work-tree flags,
+# so calling it via gnice() fails with "Git can't resolve ref HEAD" and leaks
+# orphaned LFS objects forever (observed: ~1GB of stale blobs never pruned despite
+# the timer running). Run lfs FROM INSIDE the work-tree with GIT_DIR via env so
+# HEAD resolves. Still niced/ioniced; still fail-open.
+lfsnice() { ( cd "$REPO" && GIT_DIR="$GIT_DIR" GIT_WORK_TREE="$REPO" $_NICE $_IONICE git lfs "$@"; ); }
 
 # Aggressive gc (full delta recompute) is expensive and near-useless to repeat:
 # once the pack is optimal, re-running it every ≥90% tick burns CPU for nothing.
@@ -196,19 +202,19 @@ if [ "$DISK_PCT" -ge 90 ]; then
     echo "$(date '+%F %T') EMERGENCY disk=${DISK_PCT}% -> light gc prune=now (aggressive on cooldown) + full lfs prune + 7d retention" >> "$LOG"
     gnice gc --quiet --prune=now 2>/dev/null || true
   fi
-  command -v git-lfs >/dev/null 2>&1 && gnice lfs prune --force --quiet 2>/dev/null || true
+  command -v git-lfs >/dev/null 2>&1 && lfsnice prune --force 2>/dev/null || true
   AUTOSNAP_RETAIN_DAYS=7 AUTOSNAP_REPO="$REPO" AUTOSNAP_GIT_DIR="$GIT_DIR" AUTOSNAP_BRANCH="$BRANCH" \
     $_NICE $_IONICE bash "$SELF_DIR/git-retention.sh" 2>/dev/null || true
 elif [ "$DISK_PCT" -ge 80 ]; then
   echo "$(date '+%F %T') WARN disk=${DISK_PCT}% -> gc prune=now + lfs prune + ${RETAIN_DAYS}d retention" >> "$LOG"
   gnice gc --quiet --prune=now 2>/dev/null || true
-  command -v git-lfs >/dev/null 2>&1 && gnice lfs prune --quiet 2>/dev/null || true
+  command -v git-lfs >/dev/null 2>&1 && lfsnice prune 2>/dev/null || true
   AUTOSNAP_RETAIN_DAYS="$RETAIN_DAYS" AUTOSNAP_REPO="$REPO" AUTOSNAP_GIT_DIR="$GIT_DIR" AUTOSNAP_BRANCH="$BRANCH" \
     $_NICE $_IONICE bash "$SELF_DIR/git-retention.sh" 2>/dev/null || true
 else
   # HEALTHY (<80%): light housekeeping ~hourly (the :00-:14 tick only).
   if [ "$(( $(date +%-M) / 15 ))" -eq 0 ]; then
     gnice gc --quiet --auto 2>/dev/null || true
-    command -v git-lfs >/dev/null 2>&1 && gnice lfs prune --quiet 2>/dev/null || true
+    command -v git-lfs >/dev/null 2>&1 && lfsnice prune 2>/dev/null || true
   fi
 fi
