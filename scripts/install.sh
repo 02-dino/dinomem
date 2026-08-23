@@ -892,11 +892,14 @@ if [ "$DO_CRON" = 1 ]; then
   fi
 
   # memory_cleanup — daily at 5:00 UTC
-  CLEANUP_CRON="0 5 * * * cd $WS && ${EMBED_ENV}python3 procedures/memory_cleanup.py >> logs/memory_cleanup.log 2>&1"
+  # MULTI-AGENT SERIALIZATION: heavy-llm class acquires a host-wide flock
+  # (/run/dinomem-locks/heavy-llm.lock) so at most ONE agent's LLM job runs at
+  # a time. Others queue (not skip) — no work is lost. See scripts/dinomem_run.sh.
+  CLEANUP_CRON="0 5 * * * DINOMEM_AGENT_ID=$AGENT_ID bash $WS/scripts/dinomem_run.sh heavy-llm $WS ${EMBED_ENV}python3 procedures/memory_cleanup.py >> logs/memory_cleanup.log 2>&1"
   upsert_cron "memory_cleanup.py" "dinomem: daily memory deduplication" "$CLEANUP_CRON" "memory_cleanup cron (daily 5:00 UTC)"
 
   # memory_review — daily at 5:30 UTC (batched, full cycle ~7 days)
-  REVIEW_CRON="30 5 * * * cd $WS && ${EMBED_ENV}${CHEAP_ENV}python3 procedures/memory_review.py >> logs/memory_review.log 2>&1"
+  REVIEW_CRON="30 5 * * * DINOMEM_AGENT_ID=$AGENT_ID bash $WS/scripts/dinomem_run.sh heavy-llm $WS ${EMBED_ENV}${CHEAP_ENV}python3 procedures/memory_review.py >> logs/memory_review.log 2>&1"
   upsert_cron "memory_review.py" "dinomem: daily batched memory review (LLM)" "$REVIEW_CRON" "memory_review cron (daily 5:30 UTC, batched)"
 
   # cleanup_startup_daily — daily at 2:05 UTC. Prunes bare YYYY-MM-DD.md files
