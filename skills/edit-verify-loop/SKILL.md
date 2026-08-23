@@ -41,10 +41,32 @@ loops on.
 - It's the fast **syntax/type gate** (`py_compile`, `bash -n`, `node --check`,
   `tsc --noEmit`, `jq empty`) — catches the ~80% of breakage that's a syntax /
   parse / broken-JSON error, at ~zero cost, every edit.
-- It is **NOT** the full test suite. When a change needs deeper proof (behavior,
-  integration), run the project's own test after the gate is green — e.g.
-  `bash test/<thing>_test.sh` or `pytest <path>`. The gate first (cheap), the
-  suite second (only when green and warranted).
+- It is **NOT** the full test suite. Once the gate is green, ask
+  `scripts/test-target.sh` for the **smallest meaningful deeper proof** for the
+  edited file, then run it if one exists.
+
+## The deeper-proof step (automatic, after green gate)
+
+After `verify.sh` returns `PASS` (or after `diagnose.sh` returns `CLEAN` on a
+behavior-sensitive change), run:
+
+```bash
+bash scripts/test-target.sh <the-file-you-just-edited>
+```
+
+(Live analyst path: `bash /root/.openclaw/workspace-analyst/scripts/test-target.sh <file>`.)
+
+Read the LAST stdout line. It is always exactly one of:
+- `TEST_TARGET: <command>` → run that command from the repo root as the deeper proof.
+- `TEST_TARGET: NONE` → no narrow repo-local test exists; stop at the green gate unless a broader test is obviously required.
+
+Selection policy:
+- Prefer the **smallest** repo-local proof over a broad suite.
+- If the edited file already IS a test file, run that test directly.
+- If `test-target.sh` returns `NONE`, do **not** invent a guessy test name.
+
+So the full default loop becomes:
+`edit -> verify -> fix if FAIL -> diagnose if needed -> test-target -> run target if present`
 
 ## The cap (don't spin forever)
 
