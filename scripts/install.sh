@@ -249,11 +249,14 @@ if [ "$DRY_RUN" = 1 ]; then
   printf '\033[1;36m== DRY RUN — preview only, nothing will be written ==\033[0m\n'
 fi
 
-# Re-run-safety banner: dinomem is Python-stdlib-only (no pip/venv/requirements),
-# and every write step is idempotent (existing files are skipped unless --force).
-# So if any step fails mid-install, just RE-RUN this script — completed steps are
-# skipped and it resumes from where it stopped. No half-state cleanup needed.
-printf '\033[2m  stdlib-only (no pip deps) · idempotent · safe to re-run on failure (completed steps skip)\033[0m\n'
+# Re-run-safety banner: dinomem is MOSTLY stdlib-only. The core engine still has
+# no Python package requirements / venv / requirements.txt, but the installer now
+# also tries to land a few small CLI helpers when they materially improve the
+# agent's local build loop (today: ruff for Python diagnostics). Every write step
+# is idempotent (existing files are skipped unless --force), so if any step fails
+# mid-install, just RE-RUN this script — completed steps are skipped and it
+# resumes from where it stopped. No half-state cleanup needed.
+printf '\033[2m  mostly-stdlib core · idempotent · safe to re-run on failure (completed steps skip)\033[0m\n'
 
 # ── 0) Pre-flight compatibility checks ───────────────────────────────────────────
 hr "Pre-flight checks"
@@ -286,6 +289,31 @@ if [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 8 ]; };
   warn "Python $PY_VERSION detected — dinomem requires Python 3.8+. Upgrade before continuing."
 else
   ok "Python $PY_VERSION"
+fi
+
+# Ruff install (best available path, idempotent) — why: diagnose.sh falls back
+# to py_compile when no Python linter exists, which misses real issues like
+# undefined names. Ruff is tiny, fast, and materially improves the local
+# edit→diagnose→fix loop, so installs should try to land it automatically.
+if command -v ruff &>/dev/null; then
+  ok "ruff already installed ($(ruff --version 2>/dev/null | head -1))"
+else
+  warn "ruff not found — attempting install for richer Python diagnostics..."
+  if command -v uv &>/dev/null; then
+    uv tool install ruff \
+      && ok "ruff installed (uv)" \
+      || warn "ruff install via uv failed — continuing with syntax-only Python diagnostics"
+  elif command -v pipx &>/dev/null; then
+    pipx install ruff \
+      && ok "ruff installed (pipx)" \
+      || warn "ruff install via pipx failed — continuing with syntax-only Python diagnostics"
+  elif command -v python3 &>/dev/null; then
+    python3 -m pip install --user ruff \
+      && ok "ruff installed (pip --user)" \
+      || warn "ruff install via pip failed — continuing with syntax-only Python diagnostics"
+  else
+    warn "No installer path for ruff — continuing with syntax-only Python diagnostics"
+  fi
 fi
 # ── System resource check (RAM/CPU warn, disk block-unless-force) ─────────────
 # Minimum spec (inferred from footprint; TEI CPU embed server is the driver):
