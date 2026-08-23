@@ -87,16 +87,28 @@ if _load_defer; then
   exit 0
 fi
 
+# ── Resource gate: skip if RAM/CPU tight, cron retries naturally next cycle ──
+if [ -f "$(dirname "$0")/check_resources.sh" ]; then
+  if ! bash "$(dirname "$0")/check_resources.sh" "${CLASS:-}" 2>&1; then
+    exit 0
+  fi
+fi
+
 # ── flock availability check ────────────────────────────────────────────────
 if ! command -v flock >/dev/null 2>&1; then
   _log "WARN: flock not found — running $CLASS job unlocked (install util-linux to enable cross-agent serialization)"
+  _BEFORE_MB=$(awk '/^MemAvailable:/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
   (cd "$WORKSPACE" && exec "$@")
-  exit $?
+  _RC=$?
+  _AFTER_MB=$(awk '/^MemAvailable:/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
+  [ -f "$(dirname "$0")/check_resources.sh" ] && bash "$(dirname "$0")/check_resources.sh" --record-usage "${CLASS:-light}" "$_BEFORE_MB" "$_AFTER_MB" 2>/dev/null || true
+  exit $_RC
 fi
 
 # ── acquire lock + run ───────────────────────────────────────────────────────
 _log "acquiring $CLASS lock (timeout ${TIMEOUT}s, agent=$AGENT_ID): $*"
 START=$(date -u +%s 2>/dev/null || echo 0)
+_BEFORE_MB=$(awk '/^MemAvailable:/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
 
 RC=0
 # flock --timeout: block up to $TIMEOUT seconds, then exit status 1.
@@ -108,6 +120,8 @@ RC=0
 
 END=$(date -u +%s 2>/dev/null || echo 0)
 ELAPSED=$(( END - START ))
+_AFTER_MB=$(awk '/^MemAvailable:/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
+[ -f "$(dirname "$0")/check_resources.sh" ] && bash "$(dirname "$0")/check_resources.sh" --record-usage "${CLASS:-light}" "$_BEFORE_MB" "$_AFTER_MB" 2>/dev/null || true
 
 if [ "$RC" -eq 0 ]; then
   _log "done: $CLASS lock released after ${ELAPSED}s (agent=$AGENT_ID)"

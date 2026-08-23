@@ -88,6 +88,28 @@ if [ "$FAIL" = 0 ]; then
   fi
 fi
 
+# ── Restart=on-failure check ─────────────────────────────────────────────────
+_restart_fail=0
+while IFS= read -r _unit; do
+  _frag=$(systemctl show "$_unit" -p FragmentPath 2>/dev/null | cut -d= -f2)
+  [ -z "$_frag" ] || [ ! -f "$_frag" ] && continue
+  if ! grep -q "^Restart=on-failure" "$_frag" 2>/dev/null; then
+    say "  [warn] $_unit missing Restart=on-failure in $_frag"
+    say "         Run: bash <dinomem-base-dir>/scripts/install.sh to re-apply"
+    _restart_fail=1
+  fi
+done < <(systemctl list-unit-files --type=service --plain --no-legend 2>/dev/null | grep "^openclaw" | grep -v "autosnapshot\|autocommit" | awk '{print $1}')
+[ "$_restart_fail" = 0 ] && say "  [ok]   all openclaw units have Restart=on-failure"
+
+# ── External watchdog check ───────────────────────────────────────────────────
+if [ -z "${DINOMEM_WATCHDOG_CONFIGURED:-}" ]; then
+  say "  [warn] External watchdog not configured. Gateway hangs will cause multi-hour outages."
+  say "         Setup: <dinomem-base-dir>/docs/watchdog/README.md"
+  say "         After setup: export DINOMEM_WATCHDOG_CONFIGURED=1 in gateway env"
+else
+  say "  [ok]   DINOMEM_WATCHDOG_CONFIGURED is set"
+fi
+
 say ""
 if [ "$FAIL" = 0 ]; then
   say "RESULT: PASS — TEI embed server is healthy."

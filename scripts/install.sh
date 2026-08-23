@@ -2458,6 +2458,51 @@ PYEOF
   fi
 fi
 
+# ── System tuning: reduce swap thrashing ──────────────────────────────────────
+hr "System tuning"
+if [ "$(uname)" = "Linux" ]; then
+  _swappy=$(sysctl -n vm.swappiness 2>/dev/null || echo 60)
+  if [ "$_swappy" -gt 10 ]; then
+    sysctl -w vm.swappiness=10 >/dev/null 2>&1 && ok "vm.swappiness=10 applied (was $_swappy)" || warn "sysctl vm.swappiness=10 failed — run: sysctl -w vm.swappiness=10"
+  else
+    ok "vm.swappiness already <= 10 ($_swappy)"
+  fi
+  if ! grep -q "vm.swappiness" /etc/sysctl.conf 2>/dev/null; then
+    echo "vm.swappiness=10" >> /etc/sysctl.conf && ok "vm.swappiness=10 persisted to /etc/sysctl.conf" || warn "could not write /etc/sysctl.conf — add manually: echo 'vm.swappiness=10' >> /etc/sysctl.conf"
+  fi
+fi
+
+# ── Gateway resilience: auto-restart openclaw on crash/OOM ───────────────────
+if [ "$(uname)" = "Linux" ] && command -v systemctl >/dev/null 2>&1; then
+  _patched=0
+  while IFS= read -r _unit; do
+    _frag=$(systemctl show "$_unit" -p FragmentPath 2>/dev/null | cut -d= -f2)
+    [ -z "$_frag" ] || [ ! -f "$_frag" ] && continue
+    if grep -q "^Restart=" "$_frag"; then
+      sed -i 's/^Restart=.*/Restart=on-failure/' "$_frag" && _patched=$((_patched+1))
+    else
+      # inject after [Service] section header
+      sed -i '/^\[Service\]/a Restart=on-failure' "$_frag" && _patched=$((_patched+1))
+    fi
+    # ensure RestartSec is set
+    grep -q "^RestartSec=" "$_frag" || sed -i '/^Restart=on-failure/a RestartSec=5s' "$_frag"
+  done < <(systemctl list-unit-files --type=service --plain --no-legend 2>/dev/null | grep "^openclaw" | grep -v "autosnapshot\|autocommit" | awk '{print $1}')
+  if [ "$_patched" -gt 0 ]; then
+    systemctl daemon-reload 2>/dev/null || true
+    ok "Restart=on-failure applied to $_patched openclaw unit(s) — daemon-reload done"
+  else
+    ok "No openclaw units found to patch (may not be running as systemd service)"
+  fi
+fi
+
+# ── External watchdog reminder ────────────────────────────────────────────────
+if [ -z "${DINOMEM_WATCHDOG_CONFIGURED:-}" ]; then
+  warn "EXTERNAL WATCHDOG NOT CONFIGURED — gateway will stay frozen during swap thrash (2-3h outage)."
+  warn "ACTION REQUIRED: set up external health monitoring."
+  warn "Templates + setup guide: $(realpath "$SKILL_DIR/docs/watchdog/" 2>/dev/null || echo '<dinomem-base-dir>/docs/watchdog/')"
+  warn "After setup: add DINOMEM_WATCHDOG_CONFIGURED=1 to your gateway env to suppress this warning."
+fi
+
 hr "done"
 # ── Tiered "what works now" verdict (noob-smooth) ────────────────────────────
 # A first-time user who sees a wall of yellow warnings assumes it's broken. It
