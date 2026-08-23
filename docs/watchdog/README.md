@@ -20,12 +20,15 @@ The only reliable recovery is a restart triggered from OUTSIDE the frozen box.
 
 ## Templates
 
-Two templates are provided:
+Three templates are provided:
 
-| File | When to use |
-|---|---|
-| `cloudflare-worker-template.js` | You have a Cloudflare account (free tier sufficient). Runs on Cloudflare's network — survives box freeze. |
-| `generic-cron-template.sh` | You have a second Linux machine with SSH access to the gateway box. |
+| File | Type | When to use |
+|---|---|---|
+| `internal-watchdog.sh` | On-box | Always deploy this first. Runs as a cron on the same machine. Catches freeze + crash. Does NOT survive a full box freeze (cron itself may stall). |
+| `cloudflare-worker-template.js` | External | You have a Cloudflare account (free tier sufficient). Runs on Cloudflare's network — survives any box condition including full freeze. |
+| `generic-cron-template.sh` | External | You have a second Linux machine with SSH access to the gateway box. |
+
+Recommended: deploy `internal-watchdog.sh` + one external template for full coverage.
 
 ## Setup (Cloudflare Worker)
 
