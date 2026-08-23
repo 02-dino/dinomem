@@ -2495,11 +2495,31 @@ if [ "$(uname)" = "Linux" ] && command -v systemctl >/dev/null 2>&1; then
   fi
 fi
 
+# ── Internal watchdog: auto-install ──────────────────────────────────────────
+# Copies internal-watchdog.sh to scripts/ and wires a crontab entry.
+# No external infra needed — works on any box. Idempotent.
+hr "Internal watchdog"
+_wdog_src="$SKILL_DIR/docs/watchdog/internal-watchdog.sh"
+_wdog_dst="$WS/scripts/gateway-watchdog.sh"
+if [ -f "$_wdog_src" ]; then
+  cp "$_wdog_src" "$_wdog_dst" && chmod +x "$_wdog_dst" && ok "gateway-watchdog.sh installed to scripts/" || warn "failed to copy gateway-watchdog.sh"
+  _cron_line="*/5 * * * * bash $_wdog_dst >> $WS/logs/gateway-watchdog.log 2>&1"
+  if crontab -l 2>/dev/null | grep -qF "gateway-watchdog.sh"; then
+    ok "gateway-watchdog cron already present"
+  else
+    ( crontab -l 2>/dev/null; echo "$_cron_line" ) | crontab - \
+      && ok "gateway-watchdog cron added (every 5 min)" \
+      || warn "crontab add failed — add manually: $_cron_line"
+  fi
+else
+  warn "internal-watchdog.sh not found at $_wdog_src — skipping auto-install"
+fi
+
 # ── External watchdog reminder ────────────────────────────────────────────────
 if [ -z "${DINOMEM_WATCHDOG_CONFIGURED:-}" ]; then
-  warn "EXTERNAL WATCHDOG NOT CONFIGURED — gateway will stay frozen during swap thrash (2-3h outage)."
-  warn "ACTION REQUIRED: set up external health monitoring."
-  warn "Templates + setup guide: $(realpath "$SKILL_DIR/docs/watchdog/" 2>/dev/null || echo '<dinomem-base-dir>/docs/watchdog/')"
+  warn "EXTERNAL WATCHDOG NOT CONFIGURED — gateway may stay frozen during severe swap thrash."
+  warn "ACTION REQUIRED: deploy an external health monitor for full coverage."
+  warn "Templates: $(realpath "$SKILL_DIR/docs/watchdog/" 2>/dev/null || echo '<dinomem-base-dir>/docs/watchdog/')/{cloudflare-worker-template.js,generic-cron-template.sh}"
   warn "After setup: add DINOMEM_WATCHDOG_CONFIGURED=1 to your gateway env to suppress this warning."
 fi
 
