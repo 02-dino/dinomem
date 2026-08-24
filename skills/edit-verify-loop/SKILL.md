@@ -66,7 +66,26 @@ Selection policy:
 - If `test-target.sh` returns `NONE`, do **not** invent a guessy test name.
 
 So the full default loop becomes:
-`edit -> verify -> fix if FAIL -> diagnose if needed -> test-target -> run target if present`
+`edit -> verify -> fix if FAIL -> diagnose if needed -> test-target -> run target if present -> dependency-check -> run affected dependent targets if present`
+
+## The dependency-aware step (automatic, after the edited file is green)
+
+After the edited file has passed its own narrowest proof, run:
+
+```bash
+bash scripts/dependency-check.sh <the-file-you-just-edited>
+```
+
+(Live analyst path: `bash /root/.openclaw/workspace-analyst/scripts/dependency-check.sh <file>`.)
+
+Read the LAST stdout line. It is always exactly one of:
+- `DEPENDENCY_CHECK: <command> || <command> ...` → run those command(s) from the repo root, in order. They are already deduped and narrowed through `test-target.sh`.
+- `DEPENDENCY_CHECK: NONE` → no graph-backed nearby dependent proof was available; stop at the edited-file proof.
+
+Rules:
+- This step is **neuron-enhanced, base-safe**. If no `code_query`/graph is available, `dependency-check.sh` returns `NONE` instead of guessing.
+- Do **not** invent your own dependent test fan-out when the helper returns `NONE`.
+- Run dependency-check only **after** the edited file itself is green; don't widen the blast radius before the direct gate passes.
 
 ## The cap (don't spin forever)
 
