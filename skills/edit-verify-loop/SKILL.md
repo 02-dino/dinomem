@@ -59,6 +59,19 @@ loops on.
    - `STOP_HEURISTIC: STOP :: ...` → stop the loop and report the stuck state honestly.
    - `STOP_HEURISTIC: WEAK_GREEN :: ...` → the green is shallow; treat it as low confidence until a deeper proof lands.
 
+   Also guard against amnesia before you repeat a move:
+   ```bash
+   bash scripts/loop-state.sh check <file> <gate> <repair> '<exact-error>' '<planned-move>'
+   ```
+   Read the LAST stdout line:
+   - `LOOP_STATE: REPEAT :: ...` → do **not** repeat that same move; choose a materially different patch or escalate.
+   - `LOOP_STATE: FRESH :: ...` → the planned move is new enough; proceed.
+
+   After you make a retry patch, record only the last move:
+   ```bash
+   bash scripts/loop-state.sh record <file> <attempt-count> <gate> <repair> '<exact-error>' '<move-you-just-tried>'
+   ```
+
    Repeat **up to 5 iterations in this same turn.**
 5. **Never end the turn on an unverified code edit.** If you edited code, the
    turn does not finish until you've seen a `PASS` or `SKIP` for it (or hit the
@@ -94,6 +107,11 @@ bash scripts/test-target.sh <the-file-you-just-edited>
 Read the LAST stdout line. It is always exactly one of:
 - `TEST_TARGET: <command>` → run that command from the repo root as the deeper proof.
 - `TEST_TARGET: NONE` → no narrow repo-local test exists; stop at the green gate unless a broader test is obviously required.
+
+When the file is green enough to stop, clear the scratch state for that file:
+```bash
+bash scripts/loop-state.sh clear <the-file-you-just-edited>
+```
 
 If that test command FAILs, route the next repair first:
 ```bash
@@ -142,6 +160,11 @@ bash scripts/stop-heuristic.sh <attempt-count> '<recent loop summary>'
 - `STOP_HEURISTIC: ESCALATE :: ...` → widen inspection before another patch.
 - `STOP_HEURISTIC: STOP :: ...` → stop the churn and report the stuck state.
 
+If you stop or escalate out of the loop, clear the scratch state for that file:
+```bash
+bash scripts/loop-state.sh clear <the-file-you-just-edited>
+```
+
 Rules:
 - This step is **neuron-enhanced, base-safe**. If no `code_query`/graph is available, `dependency-check.sh` returns `NONE` instead of guessing.
 - Do **not** invent your own dependent test fan-out when the helper returns `NONE`.
@@ -160,5 +183,7 @@ the model can't crack in 5 tries needs a human eye, not a 6th blind attempt.
 - [ ] Did I loop on FAIL (read the `::` error, fix, re-run), not just once?
 - [ ] Did I end with PASS/SKIP for each edited file (or an honest stuck-report at the 5-cap)?
 - [ ] For a repeated or weak outcome, did I run `stop-heuristic.sh` before pretending the loop should continue or stop?
+- [ ] Before repeating a patch move, did I run `loop-state.sh check` so I wasn't retrying the exact same move blindly?
 - [ ] For a failure, did I run `repair-hint.sh` before the next patch so I wasn't fixing blind?
+- [ ] On green or stop, did I clear the file's scratch state?
 - [ ] For a behavior change, did I also run the deeper test once the gate was green?
