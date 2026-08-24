@@ -22,9 +22,18 @@ loops on.
    - `VERIFY: PASS <file> (<checker>)` → done, move on.
    - `VERIFY: SKIP <file> (<reason>)` → no checker for this type (or tool
      missing); NOT a failure. Move on; don't chase it.
-   - `VERIFY: FAIL <file> (<checker>) :: <first-error>` → **fix and re-loop.**
-4. **On FAIL:** read the `<first-error>` after `::`, fix the specific cause, go
-   back to step 2. Repeat **up to 5 iterations in this same turn.**
+   - `VERIFY: FAIL <file> (<checker>) :: <first-error>` → **route the repair, then fix and re-loop.**
+4. **On FAIL:** pass the failing output to `scripts/repair-hint.sh` before you patch:
+   ```bash
+   bash scripts/repair-hint.sh verify 'VERIFY: FAIL <file> (<checker>) :: <first-error>'
+   ```
+   Read the LAST stdout line:
+   - `REPAIR_HINT: SYNTAX :: ...` → fix the parser/compiler issue in the edited file first.
+   - `REPAIR_HINT: FS :: ...` → fix the file/path issue first.
+   - `REPAIR_HINT: CONFIG :: ...` → fix the broken config/data parse first.
+   - `REPAIR_HINT: UNKNOWN :: ...` → inspect the raw output manually before another patch.
+
+   Then fix the specific cause and go back to step 2. Repeat **up to 5 iterations in this same turn.**
 5. **Never end the turn on an unverified code edit.** If you edited code, the
    turn does not finish until you've seen a `PASS` or `SKIP` for it (or hit the
    5-try cap and reported the stuck error honestly).
@@ -60,6 +69,12 @@ Read the LAST stdout line. It is always exactly one of:
 - `TEST_TARGET: <command>` → run that command from the repo root as the deeper proof.
 - `TEST_TARGET: NONE` → no narrow repo-local test exists; stop at the green gate unless a broader test is obviously required.
 
+If that test command FAILs, route the next repair first:
+```bash
+bash scripts/repair-hint.sh test '<failing test output>'
+```
+- `REPAIR_HINT: TEST :: ...` → inspect the behavior path the direct test exercises, not just syntax.
+
 Selection policy:
 - Prefer the **smallest** repo-local proof over a broad suite.
 - If the edited file already IS a test file, run that test directly.
@@ -82,6 +97,12 @@ Read the LAST stdout line. It is always exactly one of:
 - `DEPENDENCY_CHECK: <command> || <command> ...` → run those command(s) from the repo root, in order. They are already deduped and narrowed through `test-target.sh`.
 - `DEPENDENCY_CHECK: NONE` → no graph-backed nearby dependent proof was available; stop at the edited-file proof.
 
+If any dependent command FAILs, route the next repair first:
+```bash
+bash scripts/repair-hint.sh dependency-test '<failing dependent test output>'
+```
+- `REPAIR_HINT: DEPENDENT_TEST :: ...` → inspect the caller/importer path that fan-out selected.
+
 Rules:
 - This step is **neuron-enhanced, base-safe**. If no `code_query`/graph is available, `dependency-check.sh` returns `NONE` instead of guessing.
 - Do **not** invent your own dependent test fan-out when the helper returns `NONE`.
@@ -97,4 +118,5 @@ the model can't crack in 5 tries needs a human eye, not a 6th blind attempt.
 - [ ] Did I run `verify.sh` on every code file I edited, this turn?
 - [ ] Did I loop on FAIL (read the `::` error, fix, re-run), not just once?
 - [ ] Did I end with PASS/SKIP for each edited file (or an honest stuck-report at the 5-cap)?
+- [ ] For a failure, did I run `repair-hint.sh` before the next patch so I wasn't fixing blind?
 - [ ] For a behavior change, did I also run the deeper test once the gate was green?
