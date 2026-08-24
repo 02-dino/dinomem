@@ -12,6 +12,20 @@ loops on.
 
 ## The loop (do this every time you edit a code file)
 
+0. **Plan the blast radius before you patch** when the file is non-trivial or shared:
+   ```bash
+   bash scripts/blast-radius.sh <the-file-you-plan-to-edit>
+   ```
+   Read the LAST stdout line:
+   - `BLAST_RADIUS: SINGLE_FILE :: ...` → start with a one-file patch.
+   - `BLAST_RADIUS: COORDINATED :: ...` → plan a coordinated multi-file change before editing.
+   - `BLAST_RADIUS: STOP_AND_INSPECT :: ...` → inspect callers/tests/surrounding files first; do not jump straight into a one-file patch.
+   - `BLAST_RADIUS: UNKNOWN :: ...` → scope is unclear; inspect manually before patching.
+
+   Rules:
+   - Always run this first for shared/load-bearing paths like `scripts/lib/*`, `hooks/*`, installer/update scripts, or anything that smells reused.
+   - On a trivial leaf file with an obvious narrow proof, you may skip it.
+
 1. **Edit** the file (`edit` / `apply_patch` / `write`).
 2. **Verify immediately** — same turn, no waiting:
    ```bash
@@ -115,6 +129,8 @@ looping and report the exact `<first-error>` + what you tried — a stuck error
 the model can't crack in 5 tries needs a human eye, not a 6th blind attempt.
 
 ## Self-check
+- [ ] For a non-trivial/shared path, did I run `blast-radius.sh` before the first patch?
+- [ ] Did I obey `STOP_AND_INSPECT` / `COORDINATED` instead of forcing a one-file patch anyway?
 - [ ] Did I run `verify.sh` on every code file I edited, this turn?
 - [ ] Did I loop on FAIL (read the `::` error, fix, re-run), not just once?
 - [ ] Did I end with PASS/SKIP for each edited file (or an honest stuck-report at the 5-cap)?
