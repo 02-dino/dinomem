@@ -47,7 +47,19 @@ loops on.
    - `REPAIR_HINT: CONFIG :: ...` → fix the broken config/data parse first.
    - `REPAIR_HINT: UNKNOWN :: ...` → inspect the raw output manually before another patch.
 
-   Then fix the specific cause and go back to step 2. Repeat **up to 5 iterations in this same turn.**
+   Then fix the specific cause and go back to step 2.
+
+   Before each new retry after the first, check whether the loop should keep going:
+   ```bash
+   bash scripts/stop-heuristic.sh <attempt-count> '<recent loop summary>'
+   ```
+   Read the LAST stdout line:
+   - `STOP_HEURISTIC: KEEP_GOING :: ...` → make the next targeted fix.
+   - `STOP_HEURISTIC: ESCALATE :: ...` → stop blind patching and inspect broader context first.
+   - `STOP_HEURISTIC: STOP :: ...` → stop the loop and report the stuck state honestly.
+   - `STOP_HEURISTIC: WEAK_GREEN :: ...` → the green is shallow; treat it as low confidence until a deeper proof lands.
+
+   Repeat **up to 5 iterations in this same turn.**
 5. **Never end the turn on an unverified code edit.** If you edited code, the
    turn does not finish until you've seen a `PASS` or `SKIP` for it (or hit the
    5-try cap and reported the stuck error honestly).
@@ -89,6 +101,12 @@ bash scripts/repair-hint.sh test '<failing test output>'
 ```
 - `REPAIR_HINT: TEST :: ...` → inspect the behavior path the direct test exercises, not just syntax.
 
+If the direct test passes but only shallow evidence exists overall, check confidence before declaring done:
+```bash
+bash scripts/stop-heuristic.sh <attempt-count> 'VERIFY: PASS ... ; TEST_TARGET: ... ; DEPENDENCY_CHECK: ...'
+```
+- `STOP_HEURISTIC: WEAK_GREEN :: ...` → syntax gate is green, but confidence is shallow; avoid overclaiming completion.
+
 Selection policy:
 - Prefer the **smallest** repo-local proof over a broad suite.
 - If the edited file already IS a test file, run that test directly.
@@ -117,6 +135,13 @@ bash scripts/repair-hint.sh dependency-test '<failing dependent test output>'
 ```
 - `REPAIR_HINT: DEPENDENT_TEST :: ...` → inspect the caller/importer path that fan-out selected.
 
+If repeated reds keep coming back, check whether to escalate or stop before another patch:
+```bash
+bash scripts/stop-heuristic.sh <attempt-count> '<recent loop summary>'
+```
+- `STOP_HEURISTIC: ESCALATE :: ...` → widen inspection before another patch.
+- `STOP_HEURISTIC: STOP :: ...` → stop the churn and report the stuck state.
+
 Rules:
 - This step is **neuron-enhanced, base-safe**. If no `code_query`/graph is available, `dependency-check.sh` returns `NONE` instead of guessing.
 - Do **not** invent your own dependent test fan-out when the helper returns `NONE`.
@@ -134,5 +159,6 @@ the model can't crack in 5 tries needs a human eye, not a 6th blind attempt.
 - [ ] Did I run `verify.sh` on every code file I edited, this turn?
 - [ ] Did I loop on FAIL (read the `::` error, fix, re-run), not just once?
 - [ ] Did I end with PASS/SKIP for each edited file (or an honest stuck-report at the 5-cap)?
+- [ ] For a repeated or weak outcome, did I run `stop-heuristic.sh` before pretending the loop should continue or stop?
 - [ ] For a failure, did I run `repair-hint.sh` before the next patch so I wasn't fixing blind?
 - [ ] For a behavior change, did I also run the deeper test once the gate was green?
