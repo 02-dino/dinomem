@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.5.1 — 2026-08-27
+
+**Fix: memory DB path resolved by ASKING OpenClaw, never guessed.**
+### Fixed
+- **Portable memory sqlite path resolution (`scripts/install.sh`).** Companion to the neuron 1.17.2 fix. OpenClaw's DB layout is version-dependent (`agents/<id>/agent/openclaw-agent.sqlite` on modern, `memory/<id>.sqlite` on legacy) and the internal agent-id is not always the workspace name, so any hardcoded convention is a guess that crashed some installs with `sqlite3.OperationalError: unable to open database file` at a path that never existed on that box. New `resolve_memory_db` helper asks the single source of truth — `openclaw memory status` prints `Store: <path>` — and bakes the real path at install time (order: `DINOMEM_MEMORY_DB` env → openclaw `Store:` → legacy layout probe). Byte-identical helper across both repos. No manual step for the installer.
+
+---
+
 ## 1.5.0 — 2026-08-22
 
 **Config crash-loop protection, semantic snapshot subjects, cold-boot warm-up, and a mechanized build-quality/routing floor.**
