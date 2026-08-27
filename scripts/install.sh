@@ -148,12 +148,13 @@ _same_content() {
   # same temp) so there is no repeated temp-file churn to race the git-autosnapshot
   # cron on /tmp (which produced cosmetic 'awk: cannot open file' noise). Literal
   # index/substr replace, no regex, order-independent.
-  W="$WS" S="$SESSIONS_DIR" A="$AGENT_ID" awk '
+  W="$WS" S="$SESSIONS_DIR" A="$AGENT_ID" D="$MEMORY_DB" awk '
     BEGIN {
-      n=3
+      n=4
       ph[1]="DINOMEM_WORKSPACE_PLACEHOLDER";        val[1]=ENVIRON["W"]
       ph[2]="DINOMEM_AGENT_SESSIONS_PLACEHOLDER"; val[2]=ENVIRON["S"]
       ph[3]="DINOMEM_AGENT_ID_PLACEHOLDER";           val[3]=ENVIRON["A"]
+      ph[4]="DINOMEM_DB_PLACEHOLDER";                 val[4]=ENVIRON["D"]
     }
     {
       s=$0
@@ -192,12 +193,13 @@ copy_engine_file() {
   # (which produced cosmetic 'awk: cannot open file' noise on re-runs). Atomic:
   # write to a same-dir temp, then mv into place.
   local _ctmp; _ctmp="$(mktemp "${_dst}.tmp.XXXXXX")" || { warn "mktemp failed for $_rel"; return 1; }
-  W="$WS" S="$SESSIONS_DIR" A="$AGENT_ID" awk '
+  W="$WS" S="$SESSIONS_DIR" A="$AGENT_ID" D="$MEMORY_DB" awk '
     BEGIN {
-      n=3
+      n=4
       ph[1]="DINOMEM_WORKSPACE_PLACEHOLDER";        val[1]=ENVIRON["W"]
       ph[2]="DINOMEM_AGENT_SESSIONS_PLACEHOLDER"; val[2]=ENVIRON["S"]
       ph[3]="DINOMEM_AGENT_ID_PLACEHOLDER";           val[3]=ENVIRON["A"]
+      ph[4]="DINOMEM_DB_PLACEHOLDER";                 val[4]=ENVIRON["D"]
     }
     {
       s=$0
@@ -242,6 +244,22 @@ fi
 
 OPENCLAW_DIR="$(dirname "$WS")"
 SESSIONS_DIR="$OPENCLAW_DIR/agents/$AGENT_ID/sessions"
+# Memory sqlite DB path baked into neuron procedures (memory_synthesis/memory_graph).
+# Pick the first EXISTING candidate for THIS box (modern per-agent layout first,
+# then legacy), else fall back to the modern path so the baked value names this
+# box's real home — never a foreign /root or /home/ubuntu. Runtime auto-detect in
+# the procedures is the second safety net if this sed is ever skipped.
+if [ -n "${DINOMEM_MEMORY_DB:-}" ]; then
+  MEMORY_DB="$DINOMEM_MEMORY_DB"
+else
+  MEMORY_DB="$OPENCLAW_DIR/agents/$AGENT_ID/agent/openclaw-agent.sqlite"
+  for _c in \
+    "$OPENCLAW_DIR/agents/$AGENT_ID/agent/openclaw-agent.sqlite" \
+    "$OPENCLAW_DIR/memory/$AGENT_ID.sqlite" \
+    "$OPENCLAW_DIR/memory/main.sqlite"; do
+    if [ -e "$_c" ]; then MEMORY_DB="$_c"; break; fi
+  done
+fi
 
 echo
 hr "dinomem -> $WS (agent: $AGENT_ID)"
