@@ -57,15 +57,37 @@ if [ "$sig1" != "$sig2" ]; then
   exit 0
 fi
 
-# --- JSON syntax check (THIS is the core guard) ---
+# --- JSON syntax check (core guard) ---
 if jq empty "$CFG" 2>/dev/null; then
-  cp -f "$CFG" "$GOOD"                          # valid -> refresh good snapshot
-  # Extra (real config only): schema-level validate is WARN-only, never restore.
+  # Syntax OK. Now guard SCHEMA too: a schema-invalid write (valid JSON, but e.g.
+  # an unrecognized key that additionalProperties:false rejects) crash-loops the
+  # gateway just as hard as a syntax error. This runs the SAME restore, always —
+  # no flag, no single-vs-multi-agent setting. It is ALWAYS safe because:
+  #   * a config that fails 'openclaw config validate' CANNOT be loaded by the
+  #     gateway (it crash-loops), regardless of how many agents it has;
+  #   * $GOOD is by definition a config that already PASSED validation (we only
+  #     refresh it below on a fully-valid file), so restoring it is never
+  #     destructive — worst case an invalid edit is undone + logged + kept for
+  #     forensics, and the operator simply re-edits.
+  # Auto-detect only degrades gracefully: if the openclaw CLI isn't on PATH we
+  # can't schema-check, so we fall through to snapshot-refresh (syntax-only mode).
+  # Escape hatch for the rare operator who wants to inspect broken schema by hand:
+  # GUARD_SCHEMA_RESTORE=0 downgrades to WARN-only.
   if [ "$CFG" = "$REAL_CFG" ] && command -v openclaw >/dev/null 2>&1; then
-    if ! timeout 20 openclaw config validate >/dev/null 2>&1; then
-      log "WARN: syntax OK but 'config validate' (schema) failed — NOT restored, inspect manually"
+    if ! OPENCLAW_CONFIG_PATH="$CFG" timeout 20 openclaw config validate >/dev/null 2>&1; then
+      if [ "${GUARD_SCHEMA_RESTORE:-1}" = "1" ] && [ -s "$GOOD" ]; then
+        ts="$(date '+%Y%m%d-%H%M%S')"
+        cp -f "$CFG" "${CFG}.schema-broken-${ts}" 2>/dev/null || true
+        cp -f "$GOOD" "$CFG"
+        log "RESTORED: $CFG was SCHEMA-invalid (valid JSON, bad key) -> reverted from snapshot. Broken saved: ${CFG}.schema-broken-${ts}"
+        exit 0
+      fi
+      # Only reached if operator explicitly set GUARD_SCHEMA_RESTORE=0, or no snapshot yet.
+      log "WARN: syntax OK but 'config validate' (schema) failed — NOT restored (GUARD_SCHEMA_RESTORE=0 or no snapshot yet), inspect manually"
+      exit 0
     fi
   fi
+  cp -f "$CFG" "$GOOD"                          # fully valid -> refresh good snapshot
   exit 0
 fi
 
