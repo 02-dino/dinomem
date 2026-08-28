@@ -81,6 +81,43 @@ skip() { printf '  \033[33m[skip]\033[0m %s\n' "$*"; }
 warn() { printf '  \033[33m[warn]\033[0m %s\n' "$*"; }
 fail() { printf '  \033[31m[fail]\033[0m %s\n' "$*"; exit 1; }
 hr()   { printf '\033[1m== %s ==\033[0m\n' "$*"; }
+# wire_managed_block FILE BEGIN END BLOCK LABEL — idempotent UNCONDITIONAL upsert of
+# one managed marker span. WHY: the old skip-unless-force wiring meant an upgrade
+# SILENTLY kept a stale managed block (e.g. missing newer hook/skill stubs) forever.
+# Contract: if the BEGIN..END span is present, strip EXACTLY that span (fixed-string
+# match on THESE markers only — a different block's markers are untouched) then
+# append the fresh BLOCK; if absent, just append. ALWAYS writes the current block
+# regardless of same/different (identical content = same result → re-runs stay
+# idempotent; no --force needed). Honors DRY_RUN via plan(). Gotcha: two awk passes
+# — (1) strip inclusive span, (2) trim trailing blanks the strip leaves — so blank
+# lines never accumulate across re-runs.
+wire_managed_block() {
+  local _file="$1" _begin="$2" _end="$3" _block="$4" _label="$5"
+  if [ "$DRY_RUN" = 1 ]; then
+    if grep -qF "$_begin" "$_file" 2>/dev/null; then
+      plan "refresh managed block in $_label (strip old BEGIN..END, write current)"
+    else
+      plan "wire managed block into $_label"
+    fi
+    return 0
+  fi
+  touch "$_file"
+  if grep -qF "$_begin" "$_file" 2>/dev/null; then
+    local _tmp; _tmp="$(mktemp)"
+    awk -v b="$_begin" -v e="$_end" '
+      index($0,b){skip=1}
+      !skip{print}
+      index($0,e){skip=0}
+    ' "$_file" > "$_tmp"
+    awk 'NF{last=NR} {lines[NR]=$0} END{for(i=1;i<=last;i++) print lines[i]}' "$_tmp" > "$_file"
+    rm -f "$_tmp"
+    printf '\n%s\n' "$_block" >> "$_file"
+    ok "$_label block refreshed (old block stripped, current block written)"
+  else
+    printf '\n%s\n' "$_block" >> "$_file"
+    ok "$_label wired"
+  fi
+}
 # openclaw_running: guarded 'is the gateway up?' probe. `openclaw status` can BLOCK
 # indefinitely when the gateway socket/lock is contended, and under `set -e` a bare
 # call in a preflight `if` FREEZES the whole installer (silent kill by the outer
@@ -2182,25 +2219,33 @@ BLOCK="$BEGIN
 $DINOMEM_BODY
 $END"
 
-[ "$DRY_RUN" = 1 ] || touch "$AGENTS"
-if grep -qF "$BEGIN" "$AGENTS" 2>/dev/null; then
-  # Block already present. Refresh it in place ONLY under --force, so upgrades
-  # from an older dinomem (longer block, no hook/skills stubs) actually pick up
-  # the current block instead of keeping stale text. Strip the old
-  # BEGIN..END span first, then append the fresh block (idempotent upsert —
-  # never stacks a second block).
+# Legacy-absorb pre-pass: if an OLD unmarked dinomem section exists (pre-marker
+# installs) AND no BEGIN marker yet, strip it so wire_managed_block doesn't leave
+# a duplicate unmarked copy above the fresh managed block. Marker-bounded blocks
+# are never touched here (this only runs when no BEGIN marker exists).
+if [ "$DRY_RUN" != 1 ] && ! grep -qF "$BEGIN" "$AGENTS" 2>/dev/null \
+   && grep -qE '^## (dinomem|memory_recall|rag_long_docs)([[:space:]]|$)' "$AGENTS" 2>/dev/null; then
+  _tmp_legacy="$(mktemp)"
+  awk '
+    /^## (dinomem|memory_recall|rag_long_docs)([ \t]|$)/ { drop=1; next }
+    drop && /^#{1,2} / { drop=0 }
+    !drop { print }
+  ' "$AGENTS" > "$_tmp_legacy"
+  awk 'NF{last=NR} {lines[NR]=$0} END{for(i=1;i<=last;i++) print lines[i]}' "$_tmp_legacy" > "$AGENTS"
+  rm -f "$_tmp_legacy"
+fi
+wire_managed_block "$AGENTS" "$BEGIN" "$END" "$BLOCK" "AGENTS.md"
+if false; then  # DEAD: legacy wiring, superseded by wire_managed_block above; kept guarded then removed
   if [ "$FORCE" = 1 ]; then
     if [ "$DRY_RUN" = 1 ]; then
       plan "refresh dinomem managed block in AGENTS.md (strip old BEGIN..END, write current)"
     else
       _tmp_agents="$(mktemp)"
-      # Delete the inclusive BEGIN..END region (fixed-string match), keep everything else.
       awk -v b="$BEGIN" -v e="$END" '
         index($0,b){skip=1}
         !skip{print}
         index($0,e){skip=0}
       ' "$AGENTS" > "$_tmp_agents"
-      # Trim trailing blank lines the removal may leave, then append fresh block.
       awk 'NF{last=NR} {lines[NR]=$0} END{for(i=1;i<=last;i++) print lines[i]}' "$_tmp_agents" > "$AGENTS"
       rm -f "$_tmp_agents"
       printf '\n%s\n' "$BLOCK" >> "$AGENTS"
@@ -2242,6 +2287,7 @@ fi
 hr "TOOLS.md"
 TOOLS="$WS/TOOLS.md"
 TOOLS_MARKER="# dinomem: workspace_backup"
+TOOLS_END_MARKER="# END dinomem: workspace_backup"
 TOOLS_BODY=$(cat <<'DINOMEM_TOOLS_BODY'
   workspace_backup:
     path: procedures/workspace_backup.py
@@ -2309,16 +2355,10 @@ TOOLS_BODY=$(cat <<'DINOMEM_TOOLS_BODY'
 DINOMEM_TOOLS_BODY
 )
 TOOLS_BLOCK="$TOOLS_MARKER
-$TOOLS_BODY"
+$TOOLS_BODY
+$TOOLS_END_MARKER"
 
-if grep -qF "$TOOLS_MARKER" "$TOOLS" 2>/dev/null; then
-  skip "TOOLS.md already has workspace_backup entry"
-elif [ "$DRY_RUN" = 1 ]; then
-  plan "append dinomem tool entries to TOOLS.md"
-else
-  printf '\n%s\n' "$TOOLS_BLOCK" >> "$TOOLS"
-  ok "TOOLS.md wired (workspace_backup)"
-fi
+wire_managed_block "$TOOLS" "$TOOLS_MARKER" "$TOOLS_END_MARKER" "$TOOLS_BLOCK" "TOOLS.md"
 
 # ── 7) Verify tools allowlist ─────────────────────────────────────────────────
 hr "Tools allowlist"
