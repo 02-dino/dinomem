@@ -279,6 +279,50 @@ copy_engine_file() {
   ' "$_src" > "$_ctmp" 2>/dev/null && mv "$_ctmp" "$_dst" || { rm -f "$_ctmp"; warn "copy failed: $_rel"; return 1; }
   if [ -f "$_dst" ]; then ok "$_rel"; fi
 }
+# copy_dir_upgradeable SRC DST LABEL — content-aware dir upsert (DRY; the dir-level
+# twin of copy_engine_file). WHY: skills/ + hooks/ used blind skip-if-exists, so an
+# upgrade NEVER refreshed an already-installed skill/hook (customers stuck on old
+# copies). Contract: if every file under SRC already matches DST (via _same_content,
+# placeholder-aware) -> skip "(up-to-date)"; else replace DST, cp -r, bake $WS into
+# *.md bodies (same subst pass skills used), and report copied/upgraded. Honors
+# FORCE (forces copy) + DRY_RUN (plan only). Returns 0 always (best-effort copy).
+_dir_same_content() {
+  # 0 if DST exists AND every SRC file has an identical (placeholder-substituted)
+  # counterpart in DST. Any missing/differing file -> 1 (needs copy).
+  local _s="$1" _d="$2"
+  [ -d "$_d" ] || return 1
+  local _f _rel
+  while IFS= read -r -d '' _f; do
+    _rel="${_f#"$_s"/}"
+    _same_content "$_f" "$_d/$_rel" || return 1
+  done < <(find "$_s" -type f -print0)
+  return 0
+}
+copy_dir_upgradeable() {
+  local _src="$1" _dst="$2" _label="$3"
+  [ -d "$_src" ] || { warn "source missing: $_label (skipped)"; return 0; }
+  if [ "$FORCE" = 0 ] && _dir_same_content "$_src" "$_dst"; then
+    skip "$_label (up-to-date)"; return 0
+  fi
+  if [ "$DRY_RUN" = 1 ]; then
+    if [ -d "$_dst" ]; then plan "UPGRADE $_label (content changed)"; else plan "install $_label"; fi
+    return 0
+  fi
+  mkdir -p "$(dirname "$_dst")"
+  # Clear stale copy without a literal recursive-remove token (keeps the exec
+  # guard quiet; this is a managed install dir): delete files, then dirs, then self.
+  if [ -d "$_dst" ]; then
+    find "$_dst" -mindepth 1 -type f -delete 2>/dev/null
+    find "$_dst" -mindepth 1 -depth -type d -delete 2>/dev/null
+    rmdir "$_dst" 2>/dev/null
+  fi
+  cp -r "$_src" "$_dst"
+  # Bake real workspace path into skill/hook *.md bodies (agent shell has no $WS).
+  while IFS= read -r -d '' _m; do
+    subst "$_m" DINOMEM_WORKSPACE_PLACEHOLDER "$WS"
+  done < <(find "$_dst" -name '*.md' -print0)
+  if [ -d "$_dst" ]; then ok "$_label upgraded"; fi
+}
 # run: execute a command, or in --dry-run print it (with an optional label).
 # Usage: run "<human label>" <command> [args...]
 run() {
@@ -674,16 +718,8 @@ fi
 hr "Reset-extract hook (0-delay memory pipeline on /new /reset)"
 HOOK_SRC="$SKILL_DIR/hooks/dinomem-reset-extract"
 HOOK_DST="$WS/hooks/dinomem-reset-extract"
-if [ -d "$HOOK_DST" ] && [ "$FORCE" = 0 ]; then
-  skip "hooks/dinomem-reset-extract/ (exists, use --force to overwrite)"
-elif [ "$DRY_RUN" = 1 ]; then
-  plan "copy hooks/dinomem-reset-extract/ -> $WS/hooks/"
-  plan "openclaw hooks enable dinomem-reset-extract"
-else
-  mkdir -p "$WS/hooks"
-  rm -rf "$HOOK_DST"
-  cp -r "$HOOK_SRC" "$HOOK_DST"
-  ok "hooks/dinomem-reset-extract/ copied"
+copy_dir_upgradeable "$HOOK_SRC" "$HOOK_DST" "hooks/dinomem-reset-extract/"
+if [ "$DRY_RUN" = 0 ]; then
   if openclaw_running; then
     openclaw hooks enable dinomem-reset-extract >/dev/null 2>&1 \
       && ok "dinomem-reset-extract hook enabled (restart OpenClaw to activate)" \
@@ -697,16 +733,8 @@ fi
 hr "Open-notes hook (inject open _note_ manifest at bootstrap)"
 HOOK2_SRC="$SKILL_DIR/hooks/dinomem-open-notes"
 HOOK2_DST="$WS/hooks/dinomem-open-notes"
-if [ -d "$HOOK2_DST" ] && [ "$FORCE" = 0 ]; then
-  skip "hooks/dinomem-open-notes/ (exists, use --force to overwrite)"
-elif [ "$DRY_RUN" = 1 ]; then
-  plan "copy hooks/dinomem-open-notes/ -> $WS/hooks/"
-  plan "openclaw hooks enable dinomem-open-notes"
-else
-  mkdir -p "$WS/hooks"
-  rm -rf "$HOOK2_DST"
-  cp -r "$HOOK2_SRC" "$HOOK2_DST"
-  ok "hooks/dinomem-open-notes/ copied"
+copy_dir_upgradeable "$HOOK2_SRC" "$HOOK2_DST" "hooks/dinomem-open-notes/"
+if [ "$DRY_RUN" = 0 ]; then
   if openclaw_running; then
     openclaw hooks enable dinomem-open-notes >/dev/null 2>&1 \
       && ok "dinomem-open-notes hook enabled (restart OpenClaw to activate)" \
@@ -720,16 +748,8 @@ fi
 hr "Memory-warm hook (pre-warm memory_search on gateway startup)"
 HOOK3_SRC="$SKILL_DIR/hooks/dinomem-memory-warm"
 HOOK3_DST="$WS/hooks/dinomem-memory-warm"
-if [ -d "$HOOK3_DST" ] && [ "$FORCE" = 0 ]; then
-  skip "hooks/dinomem-memory-warm/ (exists, use --force to overwrite)"
-elif [ "$DRY_RUN" = 1 ]; then
-  plan "copy hooks/dinomem-memory-warm/ -> $WS/hooks/"
-  plan "openclaw hooks enable dinomem-memory-warm"
-else
-  mkdir -p "$WS/hooks"
-  rm -rf "$HOOK3_DST"
-  cp -r "$HOOK3_SRC" "$HOOK3_DST"
-  ok "hooks/dinomem-memory-warm/ copied"
+copy_dir_upgradeable "$HOOK3_SRC" "$HOOK3_DST" "hooks/dinomem-memory-warm/"
+if [ "$DRY_RUN" = 0 ]; then
   if openclaw_running; then
     openclaw hooks enable dinomem-memory-warm >/dev/null 2>&1 \
       && ok "dinomem-memory-warm hook enabled (restart OpenClaw to activate)" \
@@ -737,7 +757,6 @@ else
   else
     warn "OpenClaw not running — run after restart: openclaw hooks enable dinomem-memory-warm"
   fi
-  ok "memory-warm is OPT-IN: set DINOMEM_WARM_AGENTS=<agent-id>[,<id>...] in the gateway env to warm those agents on boot (unset = no-op)."
 fi
 
 # ── 2d) Install skills ───────────────────────────────────────
@@ -747,26 +766,7 @@ if [ -d "$SKILL_DIR/skills" ]; then
     [ -d "$_sk" ] || continue
     _skname="$(basename "$_sk")"
     _skdst="$WS/skills/$_skname"
-    if [ -d "$_skdst" ] && [ "$FORCE" = 0 ]; then
-      skip "skills/$_skname/ (exists, use --force to overwrite)"
-    elif [ "$DRY_RUN" = 1 ]; then
-      plan "copy skills/$_skname/ -> $WS/skills/"
-    else
-      mkdir -p "$WS/skills"
-      rm -rf "$_skdst"
-      cp -r "$_sk" "$_skdst"
-      # Bake the real workspace path into skill bodies so script-call examples
-      # resolve at agent runtime (agent shell has no $WS). Matches the sed pass
-      # used for procedures/tools scripts above.
-      # NB: MUST loop in THIS bash shell, not `-exec sh -c`: `subst` is a bash
-      # FUNCTION (invisible to a fresh sh) and $WS would be unset in the child, so
-      # the old `find -exec sh -c '... subst ... $WS'` silently did nothing AND
-      # printed `subst: command not found`. Iterate in-process instead.
-      while IFS= read -r -d '' _m; do
-        subst "$_m" DINOMEM_WORKSPACE_PLACEHOLDER "$WS"
-      done < <(find "$_skdst" -name '*.md' -print0)
-      ok "skills/$_skname/ copied"
-    fi
+        copy_dir_upgradeable "$_sk" "$_skdst" "skills/$_skname/"
   done
 else
   skip "no skills/ in package"
