@@ -2657,6 +2657,46 @@ fi
 # ── System tuning: reduce swap thrashing ──────────────────────────────────────
 hr "System tuning"
 if [ "$(uname)" = "Linux" ]; then
+  # Ensure at least 4 GiB swap. WHY: dinomem's embedding/ingest path (torch +
+  # sentence-transformers loading a model) spikes RAM 1.5-2.5 GiB for a few
+  # seconds; on an 11 GiB box already ~6.5 GiB used, that spike + a 1 GiB swap
+  # that's already full = OOM-kill. Swap is a DISK-backed safety net for the
+  # transient spike, not a RAM substitute. Idempotent: skips if swap>=4 GiB
+  # already; graceful: any failure warns and continues (never aborts install).
+  _SWAP_MIN_MB=4096
+  if [ "$(id -u 2>/dev/null || echo 1)" = "0" ]; then
+    _swap_mb=$(awk '/^SwapTotal:/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
+    if [ "${_swap_mb:-0}" -lt "$_SWAP_MIN_MB" ]; then
+      _swapfile=/swapfile
+      # Need headroom = target size + 1 GiB slack on the filesystem holding /.
+      _disk_free_mb=$(df -Pm / 2>/dev/null | awk 'NR==2{print $4}')
+      if [ "${_disk_free_mb:-0}" -ge $(( _SWAP_MIN_MB + 1024 )) ]; then
+        # Turn off + remove any existing (smaller) /swapfile before resizing.
+        [ -f "$_swapfile" ] && swapoff "$_swapfile" 2>/dev/null
+        rm -f "$_swapfile" 2>/dev/null
+        if (fallocate -l "${_SWAP_MIN_MB}M" "$_swapfile" 2>/dev/null \
+              || dd if=/dev/zero of="$_swapfile" bs=1M count="$_SWAP_MIN_MB" 2>/dev/null) \
+            && chmod 600 "$_swapfile" 2>/dev/null \
+            && mkswap "$_swapfile" >/dev/null 2>&1 \
+            && swapon "$_swapfile" 2>/dev/null; then
+          ok "swap raised to 4 GiB (was ${_swap_mb} MiB) — OOM safety net for embedding spikes"
+          grep -q "^$_swapfile " /etc/fstab 2>/dev/null \
+            || echo "$_swapfile none swap sw 0 0" >> /etc/fstab 2>/dev/null \
+            && ok "swap persisted to /etc/fstab" \
+            || warn "swap active but not persisted — add to /etc/fstab: $_swapfile none swap sw 0 0"
+        else
+          warn "could not create 4 GiB swap at $_swapfile — set up manually to avoid OOM under embedding load"
+        fi
+      else
+        warn "only ${_disk_free_mb:-0} MiB free on / — skipping swap bump (need >=5 GiB). Free disk then add 4 GiB swap manually to avoid OOM."
+      fi
+    else
+      ok "swap already >= 4 GiB (${_swap_mb} MiB)"
+    fi
+  else
+    warn "not root — skipping swap check. On a <4 GiB-swap box, add 4 GiB swap to avoid OOM under embedding load."
+  fi
+
   _swappy=$(sysctl -n vm.swappiness 2>/dev/null || echo 60)
   if [ "$_swappy" -gt 10 ]; then
     sysctl -w vm.swappiness=10 >/dev/null 2>&1 && ok "vm.swappiness=10 applied (was $_swappy)" || warn "sysctl vm.swappiness=10 failed — run: sysctl -w vm.swappiness=10"
