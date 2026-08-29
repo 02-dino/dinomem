@@ -37,8 +37,16 @@
 set -euo pipefail
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Shared instance-discovery lib (single-agent / multi-agent / multi-gateway aware).
+# Fallback-safe: absent or non-systemd host => selection returns "default" mode and
+# the installer keeps its existing single-config behavior. (Same lib neuron sources.)
+if [ -f "$SKILL_DIR/lib/discover_instances.sh" ]; then
+  # shellcheck source=/dev/null
+  . "$SKILL_DIR/lib/discover_instances.sh"
+fi
 WS="${OPENCLAW_WORKSPACE:-$HOME/.openclaw/workspace}"
 AGENT_ID=""
+INSTANCE_ID=""   # --instance <agent-id>: scripted single-instance target (skips prompt)
 DO_DOCKER=1
 DO_CRON=1
 DO_BACKUP_CRON=1
@@ -61,6 +69,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --workspace)  WS="$2"; shift 2 ;;
     --agent-id)   AGENT_ID="$2"; shift 2 ;;
+    --instance)   INSTANCE_ID="$2"; shift 2 ;;
     --no-docker)  DO_DOCKER=0; shift ;;
     --no-cron)         DO_CRON=0; shift ;;
     --repair-cron)     REPAIR_CRON=1; DO_CRON=1; DO_DOCKER=0; DO_SMART_CACHE=0; DO_GIT_SNAPSHOT=0; shift ;;
@@ -126,7 +135,14 @@ wire_managed_block() {
 # One helper, called everywhere (DRY), so this guarantee holds at all sites.
 openclaw_running() {
   command -v openclaw >/dev/null 2>&1 || return 1
-  timeout 10 openclaw status >/dev/null 2>&1
+  # Probe the TARGET instance, not the default: when a multi-instance selection set
+  # OPENCLAW_STATE_DIR, honor it so we don't false-report "not running" against the
+  # wrong gateway. Empty -> default instance (back-compat, single-agent hosts).
+  if [ -n "${OPENCLAW_STATE_DIR:-}" ]; then
+    OPENCLAW_STATE_DIR="$OPENCLAW_STATE_DIR" timeout 10 openclaw status >/dev/null 2>&1
+  else
+    timeout 10 openclaw status >/dev/null 2>&1
+  fi
 }
 
 # resolve_memory_db <agent_id> <openclaw_dir>: print the REAL sqlite DB path for
@@ -353,6 +369,39 @@ if [ -z "$AGENT_ID" ]; then
 fi
 
 OPENCLAW_DIR="$(dirname "$WS")"
+
+# multi-instance selection (single-agent / multi-agent / multi-gateway aware).
+# Pick the target instance BEFORE resolving config/state so base-only installs are
+# as smooth as neuron ones. 0 found -> unchanged. 1 -> auto. >=2 -> one prompt
+# (numbers + 'A) all'); --instance <id> skips the prompt. Fallback-safe.
+if command -v select_openclaw_instance >/dev/null 2>&1 && [ -z "${DINOMEM_INSTANCE_RESOLVED:-}" ]; then
+  if ! select_openclaw_instance ${INSTANCE_ID:+--instance "$INSTANCE_ID"}; then
+    echo "  [fail] Could not resolve which OpenClaw instance to install into. Re-run with --instance <agent-id>." >&2
+    exit 2
+  fi
+  case "${DINOMEM_SEL_MODE:-default}" in
+    all)
+      ok "Installing into ALL discovered OpenClaw instances"
+      _self="${BASH_SOURCE[0]}"
+      while IFS=$'\t' read -r _aid _sdir _cfg _port; do
+        [ -n "$_aid" ] || continue
+        printf '\n=== instance: %s ===\n' "$_aid" >&2
+        DINOMEM_INSTANCE_RESOLVED=1 bash "$_self" --instance "$_aid" --workspace "$WS" \
+          ${DRY_RUN:+--dry-run} \
+          || skip "install into '$_aid' exited nonzero — continuing with the rest"
+      done <<< "$DINOMEM_SEL_ALL_ROWS"
+      ok "All-instances install complete."
+      exit 0
+      ;;
+    one)
+      AGENT_ID="${DINOMEM_SEL_AGENT_ID:-$AGENT_ID}"
+      [ -n "${DINOMEM_SEL_CONFIG:-}" ] && export OPENCLAW_CONFIG="$DINOMEM_SEL_CONFIG"
+      [ -n "${DINOMEM_SEL_STATE_DIR:-}" ] && export OPENCLAW_STATE_DIR="$DINOMEM_SEL_STATE_DIR"
+      ok "Target OpenClaw instance: $AGENT_ID (config: ${DINOMEM_SEL_CONFIG:-default}${DINOMEM_SEL_PORT:+, port $DINOMEM_SEL_PORT})"
+      ;;
+    default) : ;;
+  esac
+fi
 SESSIONS_DIR="$OPENCLAW_DIR/agents/$AGENT_ID/sessions"
 # Memory sqlite DB path baked into neuron procedures (memory_synthesis/memory_graph).
 # Memory sqlite DB path — ASK OpenClaw, don't guess. OpenClaw's DB layout is
