@@ -2221,16 +2221,16 @@ DINOMEM_BODY=$(cat <<'DINOMEM_AGENTS_BODY'
   memory_index: {file: MEMORY.md, instruction: topic in MEMORY.md → memory_search then memory_get}
   open_work: open _note_ files (status in_progress|pending) are auto-injected each session by the dinomem-open-notes hook as a must-read manifest — read the relevant one and resume from its resume_state before answering; do NOT restart finished work.
   constraints:
-    M0: context_unclear → memory_search + memory_get; fallback: ask
+    M0: context_unclear → recall_first (memory_search + memory_get; upgraded_recall_door replaces if present); fallback: ask
     M1:
       before: tool/script with side effects OR message naming an entity/repo/feature matching an open _note_
       action:
-        - memory_search first
+        - recall_first (memory_search; upgraded_recall_door replaces if present)
         - read open notes (see open_work manifest) before building
       enforce: mandatory; fires on entity-name match too, not only literal "build" requests
     M2:
       when: named entity | temporal ref | implicit ref | continuation request
-      action: rewrite implicit query → memory_search FIRST (before fs/exec/any tool)
+      action: rewrite implicit query → recall_first (before fs/exec/any tool); memory_search/memory_get, upgraded_recall_door replaces if present
       enforce: no exceptions; memory before filesystem; violating M2 = repeating mistakes
     M3_query_style:
       applies_to: memory_search
