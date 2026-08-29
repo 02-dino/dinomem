@@ -958,15 +958,27 @@ if [ "$DO_CRON" = 1 ]; then
     ok "cron embed endpoint: $DINOMEM_EMBED_URL"
   fi
 
-  # Propagate the cheap/non-reasoning model into the LLM review cron.
-  # crond does not inherit the interactive shell, so an unpropagated
-  # DINOMEM_CHEAP_MODEL would be silently ignored on the scheduled run.
-  # Empty when unset -> OpenClaw default (default-safe, no change).
+  # Cheap/non-reasoning model for the LLM crons. THE ANCHOR is
+  # agents.defaults.compaction.model, which _cheap_model.py reads from
+  # openclaw.json AT RUNTIME on every cron run. So crons need NOTHING baked in
+  # the normal case -> set compaction.model once and every cron follows it, no
+  # drift. We bake DINOMEM_CHEAP_MODEL ONLY when the caller set an env value that
+  # actually DIFFERS from the anchor (a deliberate per-script override). Baking
+  # an ambient env value equal-to-or-instead-of the anchor is exactly what caused
+  # silent drift (a stale snapshot overriding a later-changed anchor).
   # (memory_cleanup is embedding-only, no LLM -> not injected there.)
   CHEAP_ENV=""
   if [ -n "${DINOMEM_CHEAP_MODEL:-}" ]; then
-    CHEAP_ENV="DINOMEM_CHEAP_MODEL=$DINOMEM_CHEAP_MODEL "
-    ok "cron cheap model: $DINOMEM_CHEAP_MODEL"
+    # unset DINOMEM_CHEAP_MODEL for this probe or _cheap_model.py returns the env
+    # value (env is checked FIRST) instead of the pure anchor -> comparison always
+    # equal, override never bakes. env -u isolates the anchor read.
+    _anchor_now="$(env -u DINOMEM_CHEAP_MODEL OPENCLAW_CONFIG="${OPENCLAW_JSON:-$HOME/.openclaw/openclaw.json}" python3 "$SKILL_DIR/procedures/_cheap_model.py" 2>/dev/null || true)"
+    if [ "$DINOMEM_CHEAP_MODEL" != "$_anchor_now" ]; then
+      CHEAP_ENV="DINOMEM_CHEAP_MODEL=$DINOMEM_CHEAP_MODEL "
+      ok "cron cheap model (explicit override, differs from anchor): $DINOMEM_CHEAP_MODEL"
+    else
+      ok "cron cheap model: following compaction.model anchor at runtime (no bake)"
+    fi
   fi
 
   # ── Owner id for the memory authority-scope gate (injection defense) ─────────
