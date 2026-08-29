@@ -339,7 +339,7 @@ dinomem's only recurring cost is LLM tokens. Estimated tokens/month (input+outpu
 | Moderate — ~8–12/day    | ~5–9M     | ✅ all          |
 | High — ~30+/day         | ~18–30M   | ✅ all          |
 
-**Every dinomem base LLM call is non-reasoning bulk** (extraction, review) — so **100% of these tokens are non-reasoning.** Set [`DINOMEM_CHEAP_MODEL`](#tuning-guide-manual-strongly-recommended) and all of it routes to your cheap high-context model.
+**Every dinomem base LLM call is non-reasoning bulk** (extraction, review) — so **100% of these tokens are non-reasoning.** Point [`agents.defaults.compaction.model`](#tuning-guide-manual-strongly-recommended) at your cheap high-context model — that's the single anchor: OpenClaw compaction **and** every dinomem bulk script auto-follow it, no separate export needed. (`DINOMEM_CHEAP_MODEL` exists only as a per-script *override* of that anchor.)
 
 _Grounding: extract ~26k tok / 3 sessions · review one ~4k-token call/day · order-of-magnitude, scales with sessions/day + corpus size._
 
