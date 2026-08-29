@@ -2274,6 +2274,12 @@ DINOMEM_BODY=$(cat <<'DINOMEM_AGENTS_BODY'
     rule: NEVER raw-edit openclaw.json (edit|write|sed|echo|>). writes go through `openclaw config patch/set` (validated, refuses invalid) then `openclaw config validate`.
     why: one trailing comma = invalid JSON -> gateway crash-loop on reload. validated CLI refuses the bad write; raw edit has no net.
     enforcement: optional systemd watchdog reverts a broken openclaw.json from last-good snapshot even mid-crash -> features/config-guard/install.sh
+
+  reply_to_context:
+    rule: inbound message has reply_to_id AND the referenced message is visible in the injected conversation context -> read that message FIRST before firing any tool or search
+    forbid: searching/tooling for information already present in the injected context window
+    enforce: reply_to_id present -> scan injected context for the referenced message id -> answer from it; only tool/search if NOT found in context
+    rationale: context-reading failure (ignoring what is already visible) is not a memory gap; the rule must be explicit
 DINOMEM_AGENTS_BODY
 )
 BLOCK="$BEGIN
