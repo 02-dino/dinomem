@@ -72,7 +72,11 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-SHIM_DST="$PREFIX/grep"
+# Track whether --prefix was passed EXPLICITLY (vs the default). If explicit, we
+# honor it verbatim. If NOT, we self-heal: adopt an existing shim's location, or
+# auto-pick the first writable PATH dir that precedes the real grep.
+PREFIX_EXPLICIT=0
+for a in "$@"; do [ "$a" = "--prefix" ] && PREFIX_EXPLICIT=1; done
 
 # Resolve the REAL grep (never our own shim). Prefer known absolute paths.
 REAL_GREP=""
@@ -82,6 +86,41 @@ for cand in /usr/bin/grep /bin/grep; do
   fi
 done
 [ -n "$REAL_GREP" ] || REAL_GREP="/usr/bin/grep"
+RG_DIR="$(dirname "$REAL_GREP")"
+
+# ── Scan the ENTIRE PATH for existing dinomem shims (dedup + adopt) ───────────
+# EXISTING_SHIMS = every dir on PATH that currently holds OUR shim. This is what
+# makes reinstall idempotent across the whole machine instead of per-prefix:
+#   - adopt: an unset --prefix re-targets the shim that already exists (update in
+#     place, no second copy elsewhere).
+#   - sweep: any OTHER shim dirs beyond the one we keep are removed at write time
+#     so exactly one shim survives.
+declare -a EXISTING_SHIMS=()
+IFS=: read -ra _PATH_DIRS <<< "$PATH"
+for d in "${_PATH_DIRS[@]}"; do
+  [ -n "$d" ] || continue
+  if [ -f "$d/grep" ] && grep -qF "$MARKER" "$d/grep" 2>/dev/null; then
+    EXISTING_SHIMS+=("$d")
+  fi
+done
+
+# ── Pick the install dir when --prefix was NOT explicit ──────────────────────
+# Priority: (1) adopt an existing shim's dir (update in place), else (2) the
+# first writable PATH dir that PRECEDES the real grep (so the shim actually
+# fires), else (3) fall back to the compiled-in default $PREFIX (with a warning
+# later if it turns out inert).
+if [ "$PREFIX_EXPLICIT" != 1 ]; then
+  if [ "${#EXISTING_SHIMS[@]}" -gt 0 ]; then
+    PREFIX="${EXISTING_SHIMS[0]}"
+  else
+    for d in "${_PATH_DIRS[@]}"; do
+      [ -n "$d" ] || continue
+      [ "$d" = "$RG_DIR" ] && break   # reached real grep's dir first -> stop; nothing earlier is writable
+      if [ -d "$d" ] && [ -w "$d" ]; then PREFIX="$d"; break; fi
+    done
+  fi
+fi
+SHIM_DST="$PREFIX/grep"
 
 # ── Uninstall ────────────────────────────────────────────────────────────────
 if [ "$UNINSTALL" = 1 ]; then
@@ -182,6 +221,17 @@ fi
 
 printf '%s\n' "$SHIM_BODY" > "$SHIM_DST" || fail "could not write $SHIM_DST (need write perms on $PREFIX; try sudo)"
 chmod 0755 "$SHIM_DST" || fail "could not chmod $SHIM_DST"
+
+# ── Sweep stale dupes ────────────────────────────────────────────────────────
+# Remove any OTHER dinomem shims found elsewhere on PATH so exactly one survives
+# (the one we just wrote). This is what makes a reinstall to a different prefix
+# self-heal instead of leaving a second, possibly-inert, shim behind.
+for d in "${EXISTING_SHIMS[@]}"; do
+  [ "$d" = "$PREFIX" ] && continue
+  if [ -f "$d/grep" ] && grep -qF "$MARKER" "$d/grep" 2>/dev/null; then
+    rm -f "$d/grep" 2>/dev/null && warn "swept stale duplicate shim at $d/grep (kept the one at $SHIM_DST)" || warn "could not remove stale shim at $d/grep — remove manually"
+  fi
+done
 
 # ── Loud banner ──────────────────────────────────────────────────────────────
 if [ "$QUIET" != 1 ]; then
