@@ -52,6 +52,7 @@ DO_CRON=1
 DO_BACKUP_CRON=1
 DO_SMART_CACHE=1
 DO_GIT_SNAPSHOT=1   # default-ON: ISOLATED git snapshot store (.dinomem-snap.git — never touches your own repo). Opt out with --no-git-snapshot. See features/git-autosnapshot
+DO_GREP_GUARD=1     # default-ON (ANNOUNCED at install): PATH-ahead shim blocking ONLY broad recursive greps over large trees. Opt out with --no-grep-guard. See features/grep-guard
 FORCE=0
 DRY_RUN=0
 # --repair-cron: idempotent "just fix the crons" mode. Skips the heavy/one-time
@@ -77,6 +78,8 @@ while [ $# -gt 0 ]; do
     --no-smart-cache)  DO_SMART_CACHE=0; shift ;;
     --git-snapshot)    DO_GIT_SNAPSHOT=1; shift ;;
     --no-git-snapshot) DO_GIT_SNAPSHOT=0; shift ;;
+    --grep-guard)      DO_GREP_GUARD=1; shift ;;
+    --no-grep-guard)   DO_GREP_GUARD=0; shift ;;
     --force)      FORCE=1; shift ;;
     --dry-run)    DRY_RUN=1; shift ;;
     --agree)      shift ;;  # no-op: base has no license gate; neuron passes this through after the human accepted the neuron license. Accept+ignore so neuron auto-base install doesn't die on 'unknown arg'.
@@ -2206,6 +2209,34 @@ else
   skip "git-autosnapshot (disabled via --no-git-snapshot)"
 fi
 
+# ── 5c) grep-guard feature (default-ON, ANNOUNCED; --no-grep-guard to skip) ───
+# PATH-ahead shim at /usr/local/bin/grep that blocks ONLY broad recursive greps
+# over large directory trees (size/depth heuristic) -> exit 2 with a scope-down
+# hint. Every other grep passes straight through to the real binary. Because it
+# sits ahead of the real grep in PATH it affects the WHOLE machine, so its own
+# installer prints a LOUD banner naming what it does + how to remove it (no
+# silent core-binary hijack). Safe to default ON *because* it self-announces and
+# has a clean uninstall + GREPGUARD_OFF=1 kill switch. Self-contained under features/.
+if [ "$DO_GREP_GUARD" = 1 ]; then
+  hr "grep-guard (recursive-grep shim)"
+  GG_INSTALLER="$SKILL_DIR/features/grep-guard/install.sh"
+  if [ ! -f "$GG_INSTALLER" ]; then
+    warn "features/grep-guard/install.sh not found — skipping"
+  elif [ "$DRY_RUN" = 1 ]; then
+    plan "run grep-guard installer (shim at /usr/local/bin/grep, size/depth-based, announced)"
+  else
+    GG_ARGS=()
+    [ "$FORCE" = 1 ] && GG_ARGS+=(--force)
+    if bash "$GG_INSTALLER" "${GG_ARGS[@]}"; then
+      ok "grep-guard installed (broad recursive greps guarded; GREPGUARD_OFF=1 to disable once)"
+    else
+      warn "grep-guard installer returned non-zero — check output above (grep still works normally)"
+    fi
+  fi
+else
+  skip "grep-guard (disabled via --no-grep-guard)"
+fi
+
 # ── 6) Wire AGENTS.md ──────────────────────────────────────────────
 hr "AGENTS.md"
 AGENTS="$WS/AGENTS.md"
@@ -2260,6 +2291,12 @@ DINOMEM_BODY=$(cat <<'DINOMEM_AGENTS_BODY'
     forbid: searching/tooling for information already present in the injected context window
     enforce: reply_to_id present -> scan injected context for the referenced message id -> answer from it; only tool/search if NOT found in context
     rationale: context-reading failure (ignoring what is already visible) is not a memory gap; the rule must be explicit
+  recursive_search_discipline:
+    rule: recursive search -> scope to the smallest relevant dir + a timeout (e.g. `rg <pat> <small-dir>` or `timeout 20 grep -r <pat> <small-dir>`); never bare-grep the whole tree.
+    forbid: bare `grep -r` / `grep -R` over huge roots (the OpenClaw home, agent session dirs, kb/, $HOME) -> slow AND floods context with noise. Scope down first.
+    prefer: ripgrep (`rg`) when available (fast, respects .gitignore); fall back to a timeout-bounded scoped grep.
+    override: need a raw recursive grep for a real reason -> call the real binary directly (`/usr/bin/grep`), bypassing any installed grep-guard.
+    note: the optional grep-guard feature (features/grep-guard) enforces this at the shell level when installed; this rule holds regardless.
 DINOMEM_AGENTS_BODY
 )
 BLOCK="$BEGIN
