@@ -2222,31 +2222,14 @@ DINOMEM_BODY=$(cat <<'DINOMEM_AGENTS_BODY'
   open_work: open _note_ files (status in_progress|pending) are auto-injected each session by the dinomem-open-notes hook as a must-read manifest — read the relevant one and resume from its resume_state before answering; do NOT restart finished work.
   constraints:
     M0: context_unclear → recall_first (memory_search + memory_get; upgraded_recall_door replaces if present); fallback: ask
-    M1:
-      before: tool/script with side effects OR message naming an entity/repo/feature matching an open _note_
-      action:
-        - recall_first (memory_search; upgraded_recall_door replaces if present)
-        - read open notes (see open_work manifest) before building
-      enforce: mandatory; fires on entity-name match too, not only literal "build" requests
-    M2:
-      when: named entity | temporal ref | implicit ref | continuation request | own draft asserts action|property about named/known entity
-      action: rewrite implicit query → recall_first before fs/exec/tool/ship; memory_search/memory_get, upgraded_recall_door replaces if present
-      enforce: no exceptions; memory before filesystem/assertion; named+asserted entity = unverified until recall confirms; violating M2 = repeating mistakes
+    M1_M2: recall_first before fs/exec/tool/ship + before any draft asserting action|property about a named/known entity — dinomem-recall-gate enforces the tool-call half; model enforces the pre-tool draft half. Also: read open notes (see open_work manifest) before building.
     M3_query_style:
       applies_to: memory_search
       prefer: natural_language
       avoid: technical_identifiers | code_terms | exact_strings | variable_names
       enforce: rewrite query to natural language before calling any memory tool
 
-  investigate_before_act:
-    triggers: bug_report | fix_request | refactor | cross_entity_claim | any assertion about file/git/version/config
-    rule:
-      inspect: read real artifact / run command before answering; memory is not a source
-      reproduce: get failure locally before fixing
-      verify: re-run after fix; assert symptom gone
-      cross_entity: shared lineage != shared bug; check target directly
-      stale_claim: prior "it's fixed" is not evidence; re-verify
-    enforce: mutable facts need live check every turn
+  investigate_before_act: cross_entity|stale_claim|bug — inspect real artifact before answering; re-run after fix; mutable facts need live check every turn (gate enforces cold fs/exec reach; model owns reasoning correctness)
 
   memory_tools:
     memory_search: simple recall — facts, preferences, decisions, context; default for most queries
@@ -2270,10 +2253,7 @@ DINOMEM_BODY=$(cat <<'DINOMEM_AGENTS_BODY'
     forbid: ship "ok I'll remember X" | one_turn_change as_fix; change=SYSTEMATIC not context_dependent
     exit: skip only if X one_off no_future_relevance OR already on durable_surface[verify not_assume]
 
-  config_write_safety:
-    rule: NEVER raw-edit openclaw.json (edit|write|sed|echo|>). writes go through `openclaw config patch/set` (validated, refuses invalid) then `openclaw config validate`.
-    why: one trailing comma = invalid JSON -> gateway crash-loop on reload. validated CLI refuses the bad write; raw edit has no net.
-    enforcement: optional systemd watchdog reverts a broken openclaw.json from last-good snapshot even mid-crash -> features/config-guard/install.sh
+  config_write_safety: NEVER raw-edit openclaw.json → use `openclaw config patch/set` (validated; refuses bad JSON). One trailing comma = crash-loop. Gate (dinomem-recall-gate Tier B) re-arms on openclaw.json writes.
 
   reply_to_context:
     rule: inbound message has reply_to_id AND the referenced message is visible in the injected conversation context -> read that message FIRST before firing any tool or search
