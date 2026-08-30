@@ -2229,9 +2229,9 @@ DINOMEM_BODY=$(cat <<'DINOMEM_AGENTS_BODY'
         - read open notes (see open_work manifest) before building
       enforce: mandatory; fires on entity-name match too, not only literal "build" requests
     M2:
-      when: named entity | temporal ref | implicit ref | continuation request
-      action: rewrite implicit query → recall_first (before fs/exec/any tool); memory_search/memory_get, upgraded_recall_door replaces if present
-      enforce: no exceptions; memory before filesystem; violating M2 = repeating mistakes
+      when: named entity | temporal ref | implicit ref | continuation request | own draft asserts action|property about named/known entity
+      action: rewrite implicit query → recall_first before fs/exec/tool/ship; memory_search/memory_get, upgraded_recall_door replaces if present
+      enforce: no exceptions; memory before filesystem/assertion; named+asserted entity = unverified until recall confirms; violating M2 = repeating mistakes
     M3_query_style:
       applies_to: memory_search
       prefer: natural_language
