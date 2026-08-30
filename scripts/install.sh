@@ -2276,6 +2276,7 @@ DINOMEM_BODY=$(cat <<'DINOMEM_AGENTS_BODY'
     skill_config: when user wants the agent to learn a repeatable method/procedure needed sometimes (not every turn) → read skill "skill-config"
     build_quality: BEFORE writing >a few lines of new self-mod code (a cron gate, hook handler, skill body, tool, lib fn) → read skill "build-quality" (reuse→DRY→minimal→doc-why→test; run route.py dup + route.py verify)
     backup_restore: when user asks to undo/restore a file or memory change, or what backups exist → read skill "backup-restore"
+    safe_file_ops: BEFORE any file edit, large write (>~6KB), or multi-step exec → read skill "safe-file-ops" (read-first/exact-oldText/verify-after, atomic-batch rollback trap, incremental large-write, exec single-command discipline). Pre-edit hygiene half; edit-verify-loop is the post-edit syntax-gate half.
 
   durability_tripwire:
     fires_on: own_draft pre_send
