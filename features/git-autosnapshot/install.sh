@@ -28,6 +28,13 @@ DO_LFS=1
 FORCE=0
 DRY_RUN=0
 UNINSTALL=0
+# --all-workspaces: PER-AGENT mode. Instead of one root-level snapshot that
+# lumps every workspace into a single timer (where one busy agent's churn can
+# wedge the snapshot for ALL agents), install a SEPARATE isolated timer +
+# .dinomem-snap.git per OpenClaw workspace dir. This is the multi-agent-correct
+# layout: each agent's rollback history is independent. Implemented as a loop
+# that re-invokes THIS installer once per discovered workspace-* dir.
+ALL_WORKSPACES=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -37,9 +44,10 @@ while [ $# -gt 0 ]; do
     --max-mb)       MAX_MB="$2"; shift 2 ;;
     --retain-days)  RETAIN_DAYS="$2"; shift 2 ;;
     --no-lfs)       DO_LFS=0; shift ;;
-    --force)        FORCE=1; shift ;;
-    --dry-run)      DRY_RUN=1; shift ;;
-    --uninstall)    UNINSTALL=1; shift ;;
+    --force)          FORCE=1; shift ;;
+    --dry-run)        DRY_RUN=1; shift ;;
+    --uninstall)      UNINSTALL=1; shift ;;
+    --all-workspaces) ALL_WORKSPACES=1; shift ;;
     -h|--help)      grep -E '^#( |$)' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
@@ -53,6 +61,40 @@ hr()   { printf '\033[1m== %s ==\033[0m\n' "$*"; }
 plan() { printf '  \033[36m[plan]\033[0m %s\n' "$*"; }
 
 REPO="$(cd "$REPO" 2>/dev/null && pwd || echo "$REPO")"
+
+# ── PER-AGENT FAN-OUT (--all-workspaces) ─────────────────────────────────────
+# Multi-agent-correct install: one isolated timer + .dinomem-snap.git PER
+# workspace, instead of a single root snapshot that lumps every agent together
+# (where one busy agent's churn wedges the snapshot for ALL of them). We keep
+# the single-repo installer below as the primitive and just re-invoke it once
+# per discovered workspace-* dir. Each sub-install derives its own SVC/GIT_DIR
+# from its $REPO (REPO_TAG already makes units distinct), so they never collide.
+# The root-level global timer, if present, should be uninstalled separately
+# (bash install.sh --repo "$OPENCLAW_HOME" --uninstall) so churn stays isolated.
+if [ "$ALL_WORKSPACES" = 1 ]; then
+  hr "git-autosnapshot -> ALL workspaces under $REPO"
+  _found=0
+  for ws in "$REPO"/workspace-*/; do
+    [ -d "$ws" ] || continue
+    _found=1
+    ws="${ws%/}"
+    plan "install per-agent snapshot -> $ws"
+    if [ "$DRY_RUN" = 1 ]; then
+      ok "(dry-run) would install: --repo $ws"
+      continue
+    fi
+    # Re-invoke THIS installer for one workspace. Pass through the same tunables;
+    # drop --all-workspaces so the child does a normal single-repo install.
+    _pt=(); [ "$DO_LFS" = 0 ] && _pt+=(--no-lfs); [ "$FORCE" = 1 ] && _pt+=(--force)
+    bash "$SELF_DIR/install.sh" --repo "$ws" \
+      --interval-min "$INTERVAL_MIN" --max-mb "$MAX_MB" --retain-days "$RETAIN_DAYS" \
+      "${_pt[@]}" || warn "per-agent install failed for $ws (continuing)"
+  done
+  [ "$_found" = 0 ] && warn "no workspace-* dirs found under $REPO — nothing installed"
+  ok "per-agent fan-out complete"
+  exit 0
+fi
+
 # Isolated snapshot git-dir INSIDE the repo, but SEPARATE from any user .git.
 # Files stay in place; only the object DB lives here. Never collides with the
 # user's own $REPO/.git (which we never read or write).

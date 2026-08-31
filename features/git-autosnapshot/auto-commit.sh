@@ -37,6 +37,40 @@ RETAIN_DAYS="${AUTOSNAP_RETAIN_DAYS:-30}"
 GIT_DIR="${AUTOSNAP_GIT_DIR:-$REPO/.dinomem-snap.git}"
 [ -f "$GIT_DIR/HEAD" ] || { echo "auto-commit: snapshot git-dir not initialized at $GIT_DIR (run install.sh)" >&2; exit 2; }
 
+# -- SINGLE-INSTANCE GUARD (flock) ------------------------------------------
+# WHY: without this a tick that HANGS (e.g. `git ls-files` stalling on a huge
+# dirty tree — observed 15k+ files after a migration) keeps holding the git
+# index, and the timer keeps spawning NEW ticks on top of it every interval.
+# They stack, all wedge on the same held index, and the snapshot silently dies.
+# A non-blocking flock makes a new tick EXIT immediately if one is already
+# running, so ticks never pile up. Fail-open: if flock is absent (busybox/mac)
+# or the lock dir isn't writable, just proceed (old behavior) rather than abort.
+_RUN_LOCK="$GIT_DIR/.autosnap-run.lock"
+if command -v flock >/dev/null 2>&1; then
+  exec 9>"$_RUN_LOCK" 2>/dev/null || true
+  if [ -e /proc/self/fd/9 ] && ! flock -n 9; then
+    # Another tick holds it. Normal on a busy box -> quiet exit, not an error.
+    exit 0
+  fi
+fi
+
+# -- STALE index.lock GUARD -------------------------------------------------
+# WHY: if a previous tick was SIGKILLed mid git-write (OOM / reboot / disk-full
+# panic), git leaves a 0-byte $GIT_DIR/index.lock behind. Git then refuses ALL
+# subsequent index ops forever, so the snapshot wedges permanently even after
+# the original cause cleared. We ONLY hold the flock at this point (so no live
+# sibling tick owns the lock), so an index.lock older than the stale threshold
+# is provably orphaned -> remove it. Threshold guards against nuking a lock a
+# concurrent NON-autosnap git op (unlikely on an isolated git-dir) just made.
+_STALE_LOCK_AGE_S="${AUTOSNAP_STALE_LOCK_AGE_S:-120}"
+if [ -f "$GIT_DIR/index.lock" ]; then
+  _lk_age=$(( $(date +%s) - $(stat -c %Y "$GIT_DIR/index.lock" 2>/dev/null || echo 0) ))
+  if [ "$_lk_age" -ge "$_STALE_LOCK_AGE_S" ]; then
+    rm -f "$GIT_DIR/index.lock" 2>/dev/null || true
+    echo "$(date '+%F %T') RECOVER: removed stale index.lock (age ${_lk_age}s)" >> "$REPO/logs/git-autosnapshot.log" 2>/dev/null || true
+  fi
+fi
+
 # SEMANTIC commit-subject hint (two-tier subjects). A meaningful-write caller
 # (memory_promote graduate/demote, valid_time supersede, resolve_done_notes
 # resolve, extract_memory dedup-merge) drops the WHY of its change here as ONE
@@ -135,10 +169,14 @@ if [ -n "$(g status --porcelain 2>/dev/null | head -c1)" ]; then
         EXCLUDES+=(":(exclude)$f")
       fi
     fi
-  done < <(g ls-files --others --exclude-standard 2>/dev/null)
+  done < <(_to g ls-files --others --exclude-standard 2>/dev/null)
 
   # -- Stage everything not ignored, minus oversized new files ---------------
-  g add -A -- . "${EXCLUDES[@]}" 2>/dev/null || g add -A 2>/dev/null || true
+  # WHY the _to timeout wrap: on a huge dirty tree these scans can stall for
+  # minutes (observed hang in `ls-files` at pipe_write). A bounded timeout makes
+  # a wedged tick DIE and release the flock/index instead of hanging forever;
+  # the next tick retries clean. Fail-open: `timeout` absent -> plain g.
+  _to g add -A -- . "${EXCLUDES[@]}" 2>/dev/null || _to g add -A 2>/dev/null || true
 
   # After excludes/ignores there may be nothing actually staged -> no empty commit.
   if ! g diff --cached --quiet 2>/dev/null; then
