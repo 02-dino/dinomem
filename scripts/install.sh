@@ -924,7 +924,16 @@ upsert_cron() {
       {
         line=$0
         if (line ~ /# dinomem-managed:/) { print line; next }
-        dino_sig = (index(line,"dinomem_run.sh")>0 || line ~ /DINOMEM_[A-Z_]+=/)
+        # dino_sig: is THIS line an installer-owned dinomem cron (safe to adopt+replace)?
+        #  (a) the dinomem_run.sh wrapper, OR (b) a DINOMEM_* env the installer bakes,
+        #  OR (c) a bare `procedures/<KNOWN-DINOMEM-SCRIPT>.py` call. (c) closes the
+        #  upgrade-DOUBLE hole: a pre-tag cron with NEITHER wrapper NOR env (e.g.
+        #  cleanup_startup_daily = `cd $WS && python3 procedures/...`, or
+        #  auto_session_reset when owner-id did not resolve at old install time) used
+        #  to escape adoption -> the staggered upgrade appended a 2nd copy instead of
+        #  replacing. A user hand-written cron never calls procedures/<these exact
+        #  dinomem scripts>, so the false-delete guard is preserved.
+        dino_sig = (index(line,"dinomem_run.sh")>0 || line ~ /DINOMEM_[A-Z_]+=/ || line ~ /procedures\/(auto_session_reset|memory_cleanup|memory_review|cleanup_startup_daily|workspace_backup|weekly_stats|memory_graph|memory_synthesis|contradiction_check|confidence_engine|memory_promote|generate_topic_index|docs_ingest|code_graph|code_anchors|_retrieval_log)\.py/)
         if (index(line, ws)>0 && dino_sig && index(line, kw)>0) { print line " " tag }
         else { print line }
       }' | crontab -
