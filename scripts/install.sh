@@ -2713,13 +2713,40 @@ fi
 # ── System tuning: reduce swap thrashing ──────────────────────────────────────
 hr "System tuning"
 if [ "$(uname)" = "Linux" ]; then
-  # Ensure at least 4 GiB swap. WHY: dinomem's embedding/ingest path (torch +
+  # Ensure adequate swap. WHY: dinomem's embedding/ingest path (torch +
   # sentence-transformers loading a model) spikes RAM 1.5-2.5 GiB for a few
   # seconds; on an 11 GiB box already ~6.5 GiB used, that spike + a 1 GiB swap
   # that's already full = OOM-kill. Swap is a DISK-backed safety net for the
-  # transient spike, not a RAM substitute. Idempotent: skips if swap>=4 GiB
+  # transient spike, not a RAM substitute. Idempotent: skips if swap>=target
   # already; graceful: any failure warns and continues (never aborts install).
-  _SWAP_MIN_MB=4096
+  #
+  # SWAP SIZING (tiered by agent count, capped):
+  #   base 4 GiB (1-4 agents), +1 GiB per 5 agents, hard cap 8 GiB.
+  #     5-9 -> 5 GiB, 10-14 -> 6 GiB, 15-19 -> 7 GiB, 20+ -> 8 GiB.
+  #   Multi-agent boxes share ONE global /swapfile (kernel swap is host-wide,
+  #   not per-agent), so this sizes the box as a whole, not per install.
+  #   Override: DINOMEM_SWAP_MIN_MB=<mb> wins over the tier (also lifts the cap).
+  _resolve_swap_target() {
+    if [ -n "${DINOMEM_SWAP_MIN_MB:-}" ] && [ "${DINOMEM_SWAP_MIN_MB}" -gt 0 ] 2>/dev/null; then
+      printf '%d\n' "$DINOMEM_SWAP_MIN_MB"; return 0
+    fi
+    _agent_count=$(find "$OPENCLAW_DIR/agents" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
+    [ "${_agent_count:-0}" -ge 1 ] 2>/dev/null || _agent_count=1
+    _tier=$(( 4096 + 1024 * (_agent_count / 5) ))
+    [ "$_tier" -gt 8192 ] && _tier=8192
+    printf '%d\n' "$_tier"
+  }
+  _SWAP_MIN_MB=$(_resolve_swap_target)
+  _SWAP_MIN_GB=$(( _SWAP_MIN_MB / 1024 ))
+  # Serialize across concurrent multi-agent installs: kernel swap + /swapfile +
+  # /etc/fstab are HOST-GLOBAL. Two installers racing swapoff/rm/mkswap/swapon on
+  # the same file can corrupt it or fail swapon. flock makes them take turns; the
+  # loser re-reads state and idempotently skips. Fail-open if flock is missing.
+  _swap_lock=/run/dinomem-swap.lock
+  exec 9>"$_swap_lock" 2>/dev/null || true
+  if command -v flock >/dev/null 2>&1; then
+    flock -w 30 9 2>/dev/null || warn "another dinomem install is adjusting swap — proceeding without lock"
+  fi
   if [ "$(id -u 2>/dev/null || echo 1)" = "0" ]; then
     _swap_mb=$(awk '/^SwapTotal:/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
     if [ "${_swap_mb:-0}" -lt "$_SWAP_MIN_MB" ]; then
@@ -2735,29 +2762,40 @@ if [ "$(uname)" = "Linux" ]; then
             && chmod 600 "$_swapfile" 2>/dev/null \
             && mkswap "$_swapfile" >/dev/null 2>&1 \
             && swapon "$_swapfile" 2>/dev/null; then
-          ok "swap raised to 4 GiB (was ${_swap_mb} MiB) — OOM safety net for embedding spikes"
-          grep -q "^$_swapfile " /etc/fstab 2>/dev/null \
-            || echo "$_swapfile none swap sw 0 0" >> /etc/fstab 2>/dev/null \
-            && ok "swap persisted to /etc/fstab" \
-            || warn "swap active but not persisted — add to /etc/fstab: $_swapfile none swap sw 0 0"
+          ok "swap raised to ${_SWAP_MIN_GB} GiB (was ${_swap_mb} MiB) — OOM safety net for embedding spikes"
+          if grep -q "^$_swapfile " /etc/fstab 2>/dev/null; then
+            ok "swap already in /etc/fstab"
+          elif echo "$_swapfile none swap sw 0 0" >> /etc/fstab 2>/dev/null; then
+            ok "swap persisted to /etc/fstab"
+          else
+            warn "swap active but not persisted — add to /etc/fstab: $_swapfile none swap sw 0 0"
+          fi
         else
-          warn "could not create 4 GiB swap at $_swapfile — set up manually to avoid OOM under embedding load"
+          warn "could not create ${_SWAP_MIN_GB} GiB swap at $_swapfile — set up manually to avoid OOM under embedding load"
         fi
       else
-        warn "only ${_disk_free_mb:-0} MiB free on / — skipping swap bump (need >=5 GiB). Free disk then add 4 GiB swap manually to avoid OOM."
+        warn "only ${_disk_free_mb:-0} MiB free on / — skipping swap bump (need >= $(( (_SWAP_MIN_MB + 1024) / 1024 )) GiB). Free disk then add ${_SWAP_MIN_GB} GiB swap manually to avoid OOM."
       fi
     else
-      ok "swap already >= 4 GiB (${_swap_mb} MiB)"
+      ok "swap already >= ${_SWAP_MIN_GB} GiB (${_swap_mb} MiB)"
     fi
   else
-    warn "not root — skipping swap check. On a <4 GiB-swap box, add 4 GiB swap to avoid OOM under embedding load."
+    warn "not root — skipping swap check. On a <${_SWAP_MIN_GB} GiB-swap box, add ${_SWAP_MIN_GB} GiB swap to avoid OOM under embedding load."
   fi
+  flock -u 9 2>/dev/null || true; exec 9>&- 2>/dev/null || true
 
-  _swappy=$(sysctl -n vm.swappiness 2>/dev/null || echo 60)
-  if [ "$_swappy" -gt 10 ]; then
-    sysctl -w vm.swappiness=10 >/dev/null 2>&1 && ok "vm.swappiness=10 applied (was $_swappy)" || warn "sysctl vm.swappiness=10 failed — run: sysctl -w vm.swappiness=10"
+  # sysctl often lives in /sbin, absent from a minimal PATH (cron/systemd/docker
+  # exec). Resolve an absolute binary so vm.swappiness actually applies.
+  _SYSCTL_BIN="$(command -v sysctl 2>/dev/null || { for _p in /sbin/sysctl /usr/sbin/sysctl; do [ -x "$_p" ] && { echo "$_p"; break; }; done; })"
+  if [ -n "$_SYSCTL_BIN" ]; then
+    _swappy=$("$_SYSCTL_BIN" -n vm.swappiness 2>/dev/null || echo 60)
+    if [ "$_swappy" -gt 10 ]; then
+      "$_SYSCTL_BIN" -w vm.swappiness=10 >/dev/null 2>&1 && ok "vm.swappiness=10 applied (was $_swappy)" || warn "sysctl vm.swappiness=10 failed — run: $_SYSCTL_BIN -w vm.swappiness=10"
+    else
+      ok "vm.swappiness already <= 10 ($_swappy)"
+    fi
   else
-    ok "vm.swappiness already <= 10 ($_swappy)"
+    warn "sysctl not found in PATH or /sbin — set manually: sysctl -w vm.swappiness=10"
   fi
   if ! grep -q "vm.swappiness" /etc/sysctl.conf 2>/dev/null; then
     echo "vm.swappiness=10" >> /etc/sysctl.conf && ok "vm.swappiness=10 persisted to /etc/sysctl.conf" || warn "could not write /etc/sysctl.conf — add manually: echo 'vm.swappiness=10' >> /etc/sysctl.conf"
