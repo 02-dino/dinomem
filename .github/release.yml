@@ -1,0 +1,17 @@
+# Config for GitHub's auto-generated release notes.
+# GitHub groups PRs by label. For commit-title-driven projects (no PRs),
+# commits still list under "Other Changes" with their conventional-commit
+# prefixes intact (feat:/fix:/docs:), which stays readable. Labels below
+# apply when releases are cut from PRs.
+changelog:
+  categories:
+    - title: 🚀 Features
+      labels: [feature, feat, enhancement]
+    - title: 🐛 Fixes
+      labels: [fix, bug, bugfix]
+    - title: 📝 Docs
+      labels: [docs, documentation]
+    - title: 🧪 Tests / CI / Chore
+      labels: [test, ci, chore]
+    - title: Other Changes
+      labels: ['*']
