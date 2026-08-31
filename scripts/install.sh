@@ -1069,14 +1069,39 @@ if [ "$DO_CRON" = 1 ]; then
     warn "  (agent installers: pass DINOMEM_INSTALLER_OWNER_ID, or ask the owner)."
   fi
 
+  # ── Multi-agent cron STAGGER (thundering-herd guard) ────────────────────────
+  # WHY: every agent used to register the SAME wall-clock minutes (*/15 at :00/:15
+  # /:30/:45; dailies at 02:xx/05:xx; weeklies at Sun 09:00). On a host running N
+  # dinomem agents against ONE gateway, that means N heavy jobs (python spawn +
+  # sqlite + embedding) fire in the SAME minute — a thundering herd that spikes RSS
+  # and stalls the gateway event-loop (observed: 6 agents -> memory pressure +
+  # multi-second freezes). The heavy-llm flock already SERIALIZES the LLM jobs, but
+  # the *scheduling* still bunched every agent's wakeup into one instant.
+  # FIX: derive a deterministic per-agent minute offset from the agent id (stable,
+  # zero-coordination — each install computes its own slot; no shared state). Spread
+  # each recurring job across the available window so agents interleave instead of
+  # colliding. Single-agent hosts are unaffected (offset just shifts the minute).
+  # Deterministic hash -> integer 0..(mod-1), stable per agent id (md5, portable).
+  _stagger() {  # _stagger <mod>  (uses AGENT_ID)
+    local mod="$1" h
+    h=$(printf '%s' "${AGENT_ID:-default}" | (md5sum 2>/dev/null || md5 2>/dev/null) | tr -dc '0-9a-f' | head -c 8)
+    [ -n "$h" ] || h=0
+    printf '%s\n' $(( 0x${h:-0} % mod ))
+  }
+  _S15=$(_stagger 15)          # 0..14  — offset within each 15-min slot
+  _SMIN=$(_stagger 60)         # 0..59  — offset within an hour (dailies/weeklies)
+  ok "cron stagger: agent '${AGENT_ID:-default}' -> +${_S15}m (15-min jobs), :${_SMIN} (daily/weekly)"
+
   # auto_session_reset — every 15 min (orchestrates session archive + memory extraction)
-  RESET_CRON="*/15 * * * * cd $WS && ${EMBED_ENV}${CHEAP_ENV}${OWNER_ENV}python3 procedures/auto_session_reset.py >> logs/auto_reset.log 2>&1"
-  upsert_cron "auto_session_reset.py" "dinomem: auto session reset + memory extraction" "$RESET_CRON" "auto_session_reset cron (every 15 min)"
+  # Staggered: 4 fires/hour, shifted by the per-agent offset so agents interleave.
+  RESET_MINS="${_S15},$((_S15+15)),$((_S15+30)),$((_S15+45))"
+  RESET_CRON="$RESET_MINS * * * * cd $WS && ${EMBED_ENV}${CHEAP_ENV}${OWNER_ENV}python3 procedures/auto_session_reset.py >> logs/auto_reset.log 2>&1"
+  upsert_cron "auto_session_reset.py" "dinomem: auto session reset + memory extraction" "$RESET_CRON" "auto_session_reset cron (every 15 min, staggered +${_S15}m)"
 
   # workspace_backup — weekly Sunday at 2:00 UTC (snapshot of memory + config files)
   if [ "$DO_BACKUP_CRON" = 1 ]; then
-    BACKUP_CRON="0 2 * * 0 cd $WS && python3 procedures/workspace_backup.py >> logs/workspace_backup.log 2>&1"
-    upsert_cron "workspace_backup.py" "dinomem: weekly workspace snapshot (keep 3)" "$BACKUP_CRON" "workspace_backup cron (weekly Sunday 2:00 UTC)"
+    BACKUP_CRON="$_SMIN 2 * * 0 cd $WS && python3 procedures/workspace_backup.py >> logs/workspace_backup.log 2>&1"
+    upsert_cron "workspace_backup.py" "dinomem: weekly workspace snapshot (keep 3)" "$BACKUP_CRON" "workspace_backup cron (weekly Sunday 02:${_SMIN} UTC, staggered)"
   else
     skip "workspace_backup cron (--no-backup-cron)"
   fi
@@ -1085,22 +1110,26 @@ if [ "$DO_CRON" = 1 ]; then
   # MULTI-AGENT SERIALIZATION: heavy-llm class acquires a host-wide flock
   # (/run/dinomem-locks/heavy-llm.lock) so at most ONE agent's LLM job runs at
   # a time. Others queue (not skip) — no work is lost. See scripts/dinomem_run.sh.
-  CLEANUP_CRON="0 5 * * * DINOMEM_AGENT_ID=$AGENT_ID bash $WS/scripts/dinomem_run.sh heavy-llm $WS ${EMBED_ENV}python3 procedures/memory_cleanup.py >> logs/memory_cleanup.log 2>&1"
-  upsert_cron "memory_cleanup.py" "dinomem: daily memory deduplication" "$CLEANUP_CRON" "memory_cleanup cron (daily 5:00 UTC)"
+  CLEANUP_CRON="$_SMIN 5 * * * DINOMEM_AGENT_ID=$AGENT_ID bash $WS/scripts/dinomem_run.sh heavy-llm $WS ${EMBED_ENV}python3 procedures/memory_cleanup.py >> logs/memory_cleanup.log 2>&1"
+  upsert_cron "memory_cleanup.py" "dinomem: daily memory deduplication" "$CLEANUP_CRON" "memory_cleanup cron (daily 05:${_SMIN} UTC, staggered)"
 
   # memory_review — daily at 5:30 UTC (batched, full cycle ~7 days)
-  REVIEW_CRON="30 5 * * * DINOMEM_AGENT_ID=$AGENT_ID bash $WS/scripts/dinomem_run.sh heavy-llm $WS ${EMBED_ENV}${CHEAP_ENV}python3 procedures/memory_review.py >> logs/memory_review.log 2>&1"
-  upsert_cron "memory_review.py" "dinomem: daily batched memory review (LLM)" "$REVIEW_CRON" "memory_review cron (daily 5:30 UTC, batched)"
+  # base minute 30 + per-agent offset, kept inside the hour (30..59 -> wraps via %60 stays same hour band since _SMIN<60; clamp with %60 on sum for safety)
+  _REVIEW_MIN=$(( (30 + _SMIN) % 60 ))
+  REVIEW_CRON="$_REVIEW_MIN 5 * * * DINOMEM_AGENT_ID=$AGENT_ID bash $WS/scripts/dinomem_run.sh heavy-llm $WS ${EMBED_ENV}${CHEAP_ENV}python3 procedures/memory_review.py >> logs/memory_review.log 2>&1"
+  upsert_cron "memory_review.py" "dinomem: daily batched memory review (LLM)" "$REVIEW_CRON" "memory_review cron (daily 05:${_REVIEW_MIN} UTC, batched, staggered)"
 
   # cleanup_startup_daily — daily at 2:05 UTC. Prunes bare YYYY-MM-DD.md files
   # (memoryFlush output for startupContext) older than 2 days. Never touches
   # per-item dinomem files, pins, or MEMORY.md.
-  STARTUP_CLEANUP_CRON="5 2 * * * cd $WS && python3 procedures/cleanup_startup_daily.py >> logs/cleanup.log 2>&1"
-  upsert_cron "cleanup_startup_daily.py" "dinomem: prune bare daily files for startupContext (>2d)" "$STARTUP_CLEANUP_CRON" "cleanup_startup_daily cron (daily 2:05 UTC)"
+  # base minute 5 + per-agent offset
+  _STARTUP_MIN=$(( (5 + _SMIN) % 60 ))
+  STARTUP_CLEANUP_CRON="$_STARTUP_MIN 2 * * * cd $WS && python3 procedures/cleanup_startup_daily.py >> logs/cleanup.log 2>&1"
+  upsert_cron "cleanup_startup_daily.py" "dinomem: prune bare daily files for startupContext (>2d)" "$STARTUP_CLEANUP_CRON" "cleanup_startup_daily cron (daily 02:${_STARTUP_MIN} UTC, staggered)"
 
   # weekly_stats — Sunday 09:00 local, zero LLM, sends stats card to Telegram
-  STATS_CRON="0 9 * * 0 python3 $SKILL_DIR/scripts/weekly_stats.py --workspace $WS >> $WS/logs/weekly_stats.log 2>&1"
-  upsert_cron "weekly_stats.py" "dinomem: weekly stats card (Sunday 09:00, no LLM)" "$STATS_CRON" "weekly_stats cron (Sunday 09:00)"
+  STATS_CRON="$_SMIN 9 * * 0 python3 $SKILL_DIR/scripts/weekly_stats.py --workspace $WS >> $WS/logs/weekly_stats.log 2>&1"
+  upsert_cron "weekly_stats.py" "dinomem: weekly stats card (Sunday 09:00, no LLM)" "$STATS_CRON" "weekly_stats cron (Sunday 09:${_SMIN}, staggered)"
 
   # ── Note-janitor crons: Daily Note Review + Pending Note Reminder ────────────
   # ZERO-LLM GATE DESIGN (shared with dinomem-neuron): both are agentTurn crons
