@@ -1480,11 +1480,22 @@ else:
             },
             "delivery": {"mode": "none"},
         }
-        ar = subprocess.run(_cron_add_argv(gate), capture_output=True, text=True, timeout=15)
-        gid = ''
+        # timeout 60 (not 15): on a busy multi-agent box the gateway can take >15s
+        # to answer `cron add`. A timeout here must NOT abort the whole install
+        # (the AGENTS.md memory-block injection happens AFTER this) — catch it and
+        # fall back to self-scheduled lanes instead of letting the exception kill
+        # the base installer nonzero (which then skips AGENTS.md wiring entirely).
         try:
+            ar = subprocess.run(_cron_add_argv(gate), capture_output=True, text=True, timeout=60)
+        except subprocess.TimeoutExpired:
+            print("  \033[33m[warn]\033[0m Note Cron Gate add timed out (gateway busy) — falling back to self-scheduled lanes; install continues.")
+            _fallback_selfsched()
+            ar = None
+        if ar is not None:
+         gid = ''
+         try:
             gid = json.loads(ar.stdout).get('id','')
-        except Exception:
+         except Exception:
             gid = _cron_verify(GATE_NAME)
         # Confirm the gateway stored a REAL command-kind job (some builds downgrade).
         kind_ok = False
