@@ -69,7 +69,7 @@ SMART_CACHE_BRANCH="${SMART_CACHE_BRANCH:-feat/compression-only-generalized}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --workspace)  WS="$2"; shift 2 ;;
-    --agent-id)   AGENT_ID="$2"; shift 2 ;;
+    --agent-id)   AGENT_ID="$2"; AGENT_ID_EXPLICIT=1; shift 2 ;;
     --instance)   INSTANCE_ID="$2"; shift 2 ;;
     --no-docker)  DO_DOCKER=0; shift ;;
     --no-cron)         DO_CRON=0; shift ;;
@@ -397,7 +397,12 @@ if command -v select_openclaw_instance >/dev/null 2>&1 && [ -z "${DINOMEM_INSTAN
       exit 0
       ;;
     one)
-      AGENT_ID="${DINOMEM_SEL_AGENT_ID:-$AGENT_ID}"
+      # Do NOT let the discovered-instance id clobber an EXPLICIT --agent-id.
+      # On a multi-agent gateway one instance id is shared by many agents;
+      # overwriting here collapses every agent onto the same _stagger(AGENT_ID)
+      # offset -> cron collision (the exact thing stagger prevents). Explicit
+      # --agent-id is authoritative.
+      [ "${AGENT_ID_EXPLICIT:-0}" = 1 ] || AGENT_ID="${DINOMEM_SEL_AGENT_ID:-$AGENT_ID}"
       [ -n "${DINOMEM_SEL_CONFIG:-}" ] && export OPENCLAW_CONFIG="$DINOMEM_SEL_CONFIG"
       [ -n "${DINOMEM_SEL_STATE_DIR:-}" ] && export OPENCLAW_STATE_DIR="$DINOMEM_SEL_STATE_DIR"
       ok "Target OpenClaw instance: $AGENT_ID (config: ${DINOMEM_SEL_CONFIG:-default}${DINOMEM_SEL_PORT:+, port $DINOMEM_SEL_PORT})"

@@ -28,17 +28,29 @@ discover_openclaw_instances() {
   command -v systemctl >/dev/null 2>&1 || return 0
   # list-units (running) OR list-unit-files (installed-but-stopped) — union, dedup.
   local units unit
+  # Match BOTH the suffixed per-agent units (openclaw-gateway-<id>.service) AND the
+  # suffixless DEFAULT/main gateway (openclaw-gateway.service). The default unit is
+  # the single most common single-box gateway and was previously invisible to the
+  # regex `^openclaw-gateway-.*` (required a dash) — so main-gateway agents could
+  # not be targeted at all. Glob 'openclaw-gateway*.service' catches both; sort -u dedups.
   units="$(
-    { systemctl --user list-units --type=service --all --no-legend --plain 'openclaw-gateway-*.service' 2>/dev/null
-      systemctl --user list-unit-files --no-legend --plain 'openclaw-gateway-*.service' 2>/dev/null
-    } | awk '{print $1}' | grep -E '^openclaw-gateway-.*\.service$' | sort -u
+    { systemctl --user list-units --type=service --all --no-legend --plain 'openclaw-gateway*.service' 2>/dev/null
+      systemctl --user list-unit-files --no-legend --plain 'openclaw-gateway*.service' 2>/dev/null
+    } | awk '{print $1}' | grep -E '^openclaw-gateway(-[^.]+)?\.service$' | sort -u
   )"
   [ -n "$units" ] || return 0
 
   while IFS= read -r unit; do
     [ -n "$unit" ] || continue
-    # agent-id = unit name between 'openclaw-gateway-' and '.service'
+    # Skip non-gateway helper units (watchdogs etc) that the glob may catch.
+    case "$unit" in
+      openclaw-gateway-watchdog.service|openclaw-gateway-split-watchdog.service) continue ;;
+    esac
+    # agent-id = unit name between 'openclaw-gateway-' and '.service'.
+    # Suffixless default unit (openclaw-gateway.service) -> id 'main' (stable, non-empty).
     local aid="${unit#openclaw-gateway-}"; aid="${aid%.service}"
+    [ "$aid" = "openclaw-gateway.service" ] && aid="main"
+    case "$unit" in openclaw-gateway.service) aid="main" ;; esac
     # Pull the Environment= assignments the unit was installed with. `systemctl --user
     # show -p Environment` prints: Environment=KEY=val KEY2=val2 ... (space-separated).
     local envline state_dir config port
@@ -56,6 +68,14 @@ discover_openclaw_instances() {
     done
     # Derive config from state_dir when the unit didn't set it explicitly.
     [ -z "$config" ] && [ -n "$state_dir" ] && config="$state_dir/openclaw.json"
+    # DEFAULT/main gateway fallback: the suffixless unit typically sets neither
+    # OPENCLAW_STATE_DIR nor OPENCLAW_CONFIG_PATH (it runs on OpenClaw's default
+    # paths). Without this it would be dropped by the emptiness guard below and
+    # main-gateway agents would stay untargetable. Resolve to the default home.
+    if [ -z "$config" ] && [ "$aid" = "main" ]; then
+      state_dir="${state_dir:-$HOME/.openclaw}"
+      config="$state_dir/openclaw.json"
+    fi
     # Skip units we couldn't resolve a config for (nothing to patch).
     [ -n "$config" ] || continue
     printf '%s\t%s\t%s\t%s\n' "$aid" "$state_dir" "$config" "$port"
