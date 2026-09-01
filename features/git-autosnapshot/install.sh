@@ -35,6 +35,12 @@ UNINSTALL=0
 # layout: each agent's rollback history is independent. Implemented as a loop
 # that re-invokes THIS installer once per discovered workspace-* dir.
 ALL_WORKSPACES=0
+# --include-only <glob> (repeatable): SCOPE the snapshot to only these repo-
+# relative pathspecs instead of the whole $REPO. Used for the root-level store
+# that should cover ONLY agents/ + shared/ (which live outside any workspace),
+# so its `git add` stays small and cannot lump the whole box into one snapshot.
+# Empty = snapshot everything (original behavior).
+INCLUDE_ONLY=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -48,6 +54,7 @@ while [ $# -gt 0 ]; do
     --dry-run)        DRY_RUN=1; shift ;;
     --uninstall)      UNINSTALL=1; shift ;;
     --all-workspaces) ALL_WORKSPACES=1; shift ;;
+    --include-only) INCLUDE_ONLY+=("$2"); shift 2 ;;
     -h|--help)      grep -E '^#( |$)' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
@@ -279,7 +286,26 @@ fi
 
 # ── scheduler: systemd timer preferred, cron fallback ────────────────────────
 hr "Scheduler (every ${INTERVAL_MIN} min)"
+# --include-only globs -> a single space-joined AUTOSNAP_INCLUDE_ONLY env value
+# (auto-commit.sh splits on whitespace into pathspecs). Empty when unset, so the
+# default whole-repo behavior is untouched. Globs here must not contain spaces.
+INCLUDE_ONLY_ENV=""
+if [ "${#INCLUDE_ONLY[@]}" -gt 0 ]; then
+  INCLUDE_ONLY_ENV="${INCLUDE_ONLY[*]}"
+fi
+# Base env (no spaces in any value here). AUTOSNAP_INCLUDE_ONLY is space-separated
+# globs (e.g. "agents/** shared/**") so it MUST be quoted wherever it lands, or
+# the scheduler splits it into separate tokens and only the first glob survives
+# (observed: scoped root store fell back to whole-repo, tracking (root) not
+# agents/+shared/). systemd Environment= and cron get it as its OWN quoted var.
 ENVLINE="AUTOSNAP_REPO=$REPO AUTOSNAP_GIT_DIR=$GIT_DIR AUTOSNAP_MAX_MB=$MAX_MB AUTOSNAP_RETAIN_DAYS=$RETAIN_DAYS AUTOSNAP_BRANCH=$BRANCH"
+# systemd: separate quoted Environment= line (a single Environment= can't safely
+# hold a space-containing value inline among other bare KEY=VAL pairs).
+ENV_INCLUDE_SYSTEMD=""
+[ -n "$INCLUDE_ONLY_ENV" ] && ENV_INCLUDE_SYSTEMD=$'\n'"Environment=\"AUTOSNAP_INCLUDE_ONLY=$INCLUDE_ONLY_ENV\""
+# cron: append as a quoted assignment so the shell keeps the globs as ONE value.
+ENV_INCLUDE_CRON=""
+[ -n "$INCLUDE_ONLY_ENV" ] && ENV_INCLUDE_CRON=" AUTOSNAP_INCLUDE_ONLY='$INCLUDE_ONLY_ENV'"
 if command -v systemctl >/dev/null 2>&1 && [ -d /etc/systemd/system ] && [ -w /etc/systemd/system ]; then
   if [ "$DRY_RUN" = 1 ]; then
     plan "write /etc/systemd/system/${SVC}.{service,timer} + enable --now"
@@ -291,7 +317,7 @@ After=network.target
 
 [Service]
 Type=oneshot
-Environment=${ENVLINE}
+Environment=${ENVLINE}${ENV_INCLUDE_SYSTEMD}
 ExecStart=${BIN_DIR}/auto-commit.sh
 Nice=10
 EOF
@@ -313,7 +339,7 @@ EOF
   fi
 else
   # cron fallback
-  CRON_LINE="*/${INTERVAL_MIN} * * * * ${ENVLINE} ${BIN_DIR}/auto-commit.sh >> ${REPO}/logs/git-autosnapshot.log 2>&1  # git-autosnapshot ${REPO}"
+  CRON_LINE="*/${INTERVAL_MIN} * * * * ${ENVLINE}${ENV_INCLUDE_CRON} ${BIN_DIR}/auto-commit.sh >> ${REPO}/logs/git-autosnapshot.log 2>&1  # git-autosnapshot ${REPO}"
   if [ "$DRY_RUN" = 1 ]; then
     plan "register cron: $CRON_LINE"
   elif ! command -v crontab >/dev/null 2>&1; then
@@ -329,10 +355,43 @@ else
 fi
 
 # ── first snapshot ───────────────────────────────────────────────────────────
+# (2b) NON-BLOCKING first snapshot. On a big/busy repo the very first `git add`
+# can take minutes (13k+ files observed). When THIS installer is invoked as a
+# sub-step of a larger installer (dinomem base/neuron), a synchronous first
+# snapshot HANGS the whole install before it reaches later stages (AGENTS.md
+# wiring). So we run it in the BACKGROUND with a hard timeout: the scheduled
+# timer/cron will take the first real snapshot on its next tick anyway, so a
+# missed/slow initial run is harmless. AUTOSNAP_FIRST_SNAPSHOT_SYNC=1 forces the
+# old blocking behavior (e.g. for a standalone interactive install that wants to
+# confirm the first snapshot before exiting).
 if [ "$DRY_RUN" != 1 ]; then
   hr "First snapshot"
-  AUTOSNAP_REPO="$REPO" AUTOSNAP_GIT_DIR="$GIT_DIR" AUTOSNAP_MAX_MB="$MAX_MB" AUTOSNAP_RETAIN_DAYS="$RETAIN_DAYS" AUTOSNAP_BRANCH="$BRANCH" \
-    "$BIN_DIR/auto-commit.sh" && ok "initial snapshot run complete" || warn "initial snapshot returned non-zero (check logs/git-autosnapshot.log)"
+  _FS_TIMEOUT="${AUTOSNAP_FIRST_SNAPSHOT_TIMEOUT_S:-90}"
+  _run_first_snapshot() {
+    # Export the env in the function body so a space-containing value
+    # (AUTOSNAP_INCLUDE_ONLY="agents/** shared/**") keeps its quoting. The old
+    # inline `${INCLUDE_ONLY_ENV:+AUTOSNAP_INCLUDE_ONLY="$INCLUDE_ONLY_ENV"}`
+    # prefix dropped the quotes on expansion, so `shared/**` was parsed as a
+    # COMMAND (observed: "AUTOSNAP_INCLUDE_ONLY=agents/** shared/**: No such
+    # file or directory" -> first snapshot failed, scoped root store empty).
+    export AUTOSNAP_REPO="$REPO" AUTOSNAP_GIT_DIR="$GIT_DIR" AUTOSNAP_MAX_MB="$MAX_MB" \
+           AUTOSNAP_RETAIN_DAYS="$RETAIN_DAYS" AUTOSNAP_BRANCH="$BRANCH"
+    [ -n "$INCLUDE_ONLY_ENV" ] && export AUTOSNAP_INCLUDE_ONLY="$INCLUDE_ONLY_ENV"
+    if command -v timeout >/dev/null 2>&1; then
+      timeout "$_FS_TIMEOUT" "$BIN_DIR/auto-commit.sh"
+    else
+      "$BIN_DIR/auto-commit.sh"
+    fi
+  }
+  if [ "${AUTOSNAP_FIRST_SNAPSHOT_SYNC:-0}" = 1 ]; then
+    # Blocking (opt-in): wait for the first snapshot, still bounded by timeout.
+    _run_first_snapshot && ok "initial snapshot run complete" \
+      || warn "initial snapshot returned non-zero/timed out (check logs/git-autosnapshot.log; the timer will retry)"
+  else
+    # Default: fire-and-forget so a slow first `git add` can't stall the caller.
+    ( _run_first_snapshot >> "$REPO/logs/git-autosnapshot.log" 2>&1 ) &
+    ok "initial snapshot dispatched in background (timer will also snapshot on next tick; set AUTOSNAP_FIRST_SNAPSHOT_SYNC=1 to block)"
+  fi
 
   # Safety net (defense-in-depth): the snapshot store object DB lives INSIDE the
   # work-tree. info/exclude is written BEFORE the first snapshot so its internals

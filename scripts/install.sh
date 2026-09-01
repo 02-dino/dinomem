@@ -2236,27 +2236,49 @@ PYEOF
 fi
 
 # ── 5b) git-autosnapshot feature (default-ON; --no-git-snapshot to skip) ──────
-# ISOLATED git snapshot safety net for the whole ~/.openclaw repo: a timer
-# commits all non-ignored changes every 15 min into a SEPARATE git-dir
-# (.dinomem-snap.git), with disk-aware cleanup, lfs media handling, and history
-# retention. It NEVER touches the user's own repo — separate git-dir + private
-# info/exclude, no .gitignore/.gitattributes dropped into their working tree.
-# Because it's fully isolated it's safe to default ON. Self-contained under features/.
+# ISOLATED git snapshot safety net: a timer commits all non-ignored changes
+# every 15 min into a SEPARATE git-dir (.dinomem-snap.git), disk-aware cleanup,
+# lfs media handling, history retention. NEVER touches the user's own repo.
+#
+# MULTI-AGENT LAYOUT (why not one root store): a single root-level store lumps
+# EVERY workspace + agents/ + kb/ into ONE `git add` (observed: 13k+ files in a
+# busy agent alone) — the first snapshot then HANGS long enough to stall THIS
+# installer before it reaches the AGENTS.md wiring stage. Worse, one busy agent's
+# churn wedges the snapshot for ALL agents. So we install PER-WORKSPACE stores
+# via --all-workspaces (feature already supports it: one isolated timer +
+# .dinomem-snap.git per workspace-* dir) = many small independent stores.
+#
+# ROOT-LEVEL orphans: agents/*/sessions (session history) and shared/ live at the
+# ~/.openclaw ROOT, inside no workspace, so per-workspace stores would leave them
+# un-covered. We add ONE extra SCOPED root store that snapshots ONLY those two
+# subtrees (they churn rarely, so it stays cheap) via --include-only. Full
+# coverage, still isolated, no one-big-`git add`.
 if [ "$DO_GIT_SNAPSHOT" = 1 ]; then
-  hr "git-autosnapshot (isolated snapshot store)"
+  hr "git-autosnapshot (isolated per-workspace stores)"
   GS_INSTALLER="$SKILL_DIR/features/git-autosnapshot/install.sh"
-  GS_REPO="$OPENCLAW_DIR"   # the ~/.openclaw root (parent of the workspace)
+  GS_ROOT="$OPENCLAW_DIR"   # the ~/.openclaw root (parent of the workspaces)
   if [ ! -f "$GS_INSTALLER" ]; then
     warn "features/git-autosnapshot/install.sh not found — skipping"
   elif [ "$DRY_RUN" = 1 ]; then
-    plan "run git-autosnapshot installer against $GS_REPO (every 15 min, disk-aware)"
+    plan "run git-autosnapshot --all-workspaces under $GS_ROOT (one small store per workspace, every 15 min)"
+    plan "run git-autosnapshot scoped root store for agents/ + shared/ (session history + shared knowledge)"
   else
-    GS_ARGS=(--repo "$GS_REPO")
+    # (1a+3c) PER-WORKSPACE fan-out: many small isolated stores, not one giant.
+    GS_ARGS=(--repo "$GS_ROOT" --all-workspaces)
     [ "$FORCE" = 1 ] && GS_ARGS+=(--force)
     if bash "$GS_INSTALLER" "${GS_ARGS[@]}"; then
-      ok "git-autosnapshot installed (repo: $GS_REPO)"
+      ok "git-autosnapshot installed (per-workspace stores under $GS_ROOT)"
     else
-      warn "git-autosnapshot installer returned non-zero — check output above"
+      warn "git-autosnapshot per-workspace install returned non-zero — check output above"
+    fi
+    # (Opsi X) SCOPED ROOT store: cover agents/ (session history) + shared/ only,
+    # which sit outside every workspace. --include-only keeps its `git add` small.
+    GS_ROOT_ARGS=(--repo "$GS_ROOT" --include-only "agents/**" --include-only "shared/**")
+    [ "$FORCE" = 1 ] && GS_ROOT_ARGS+=(--force)
+    if bash "$GS_INSTALLER" "${GS_ROOT_ARGS[@]}"; then
+      ok "git-autosnapshot installed (scoped root store: agents/ + shared/)"
+    else
+      warn "git-autosnapshot scoped-root install returned non-zero — check output above"
     fi
   fi
 else

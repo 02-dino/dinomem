@@ -30,6 +30,12 @@ set -euo pipefail
 
 REPO="${AUTOSNAP_REPO:-}"
 MAX_MB="${AUTOSNAP_MAX_MB:-10}"
+# AUTOSNAP_INCLUDE_ONLY (optional, whitespace-separated globs): SCOPE the snapshot
+# to only these repo-relative pathspecs. Empty = whole repo (default). Used by the
+# scoped ROOT store to cover ONLY agents/ + shared/ (which live outside any
+# workspace) so its `git add` never lumps the whole box into one snapshot.
+INCLUDE_ONLY_PS=()
+for _ip in ${AUTOSNAP_INCLUDE_ONLY:-}; do INCLUDE_ONLY_PS+=("$_ip"); done
 RETAIN_DAYS="${AUTOSNAP_RETAIN_DAYS:-30}"
 [ -z "$REPO" ] && { echo "auto-commit: AUTOSNAP_REPO not set" >&2; exit 2; }
 
@@ -49,9 +55,32 @@ _RUN_LOCK="$GIT_DIR/.autosnap-run.lock"
 if command -v flock >/dev/null 2>&1; then
   exec 9>"$_RUN_LOCK" 2>/dev/null || true
   if [ -e /proc/self/fd/9 ] && ! flock -n 9; then
-    # Another tick holds it. Normal on a busy box -> quiet exit, not an error.
-    exit 0
+    # Could not grab the lock. TWO cases, must be told apart:
+    #  (a) a LIVE sibling tick holds it -> correct to quiet-exit (single-instance).
+    #  (b) NO live holder, but the advisory lock lingers (e.g. a background
+    #      first-snapshot proc whose fd 9 outlived a bounded/killed parent, or an
+    #      inherited-fd leak). Case (b) used to wedge the store FOREVER: every
+    #      future tick saw `flock -n 9` fail and quiet-exit(0), so NO commit ever
+    #      landed again (observed: install left no snapshot + a stuck lock).
+    # Distinguish via a bounded blocking wait: if we can acquire within a short
+    # window, no live holder was really there (case b) -> proceed. If the wait
+    # times out, a real tick is running (case a) -> quiet-exit as before.
+    _LOCK_WAIT_S="${AUTOSNAP_LOCK_WAIT_S:-3}"
+    if flock -w "$_LOCK_WAIT_S" 9 2>/dev/null; then
+      : # acquired -> the earlier failure was a lingering/orphaned lock, continue
+    else
+      # A live sibling tick genuinely holds it. Normal on a busy box -> quiet exit.
+      exit 0
+    fi
   fi
+  # Release fd 9 (and drop the advisory lock) on ANY exit. WHY: when this script
+  # is invoked SYNCHRONOUSLY inside a parent shell (the installer's first-snapshot
+  # under AUTOSNAP_FIRST_SNAPSHOT_SYNC=1), a bare `exec 9>` leaks fd 9 into the
+  # parent's process group; the advisory lock then lingers past our exit and the
+  # NEXT tick sees `flock -n 9` fail -> quiet-exit(0) -> no commit (observed:
+  # first install landed no snapshot + left a stale .autosnap-run.lock). An
+  # explicit trap closes fd 9 so the lock is always freed the instant we finish.
+  trap 'flock -u 9 2>/dev/null || true; exec 9>&- 2>/dev/null || true' EXIT
 fi
 
 # -- STALE index.lock GUARD -------------------------------------------------
@@ -169,14 +198,20 @@ if [ -n "$(g status --porcelain 2>/dev/null | head -c1)" ]; then
         EXCLUDES+=(":(exclude)$f")
       fi
     fi
-  done < <(_to g ls-files --others --exclude-standard 2>/dev/null)
+  done < <(g ls-files --others --exclude-standard 2>/dev/null)
 
   # -- Stage everything not ignored, minus oversized new files ---------------
   # WHY the _to timeout wrap: on a huge dirty tree these scans can stall for
   # minutes (observed hang in `ls-files` at pipe_write). A bounded timeout makes
   # a wedged tick DIE and release the flock/index instead of hanging forever;
   # the next tick retries clean. Fail-open: `timeout` absent -> plain g.
-  _to g add -A -- . "${EXCLUDES[@]}" 2>/dev/null || _to g add -A 2>/dev/null || true
+  # Stage scope: whole repo ('.') by default, OR only the include-only pathspecs
+  # when AUTOSNAP_INCLUDE_ONLY is set (scoped root store). Excludes still apply.
+  if [ "${#INCLUDE_ONLY_PS[@]}" -gt 0 ]; then
+    g add -A -- "${INCLUDE_ONLY_PS[@]}" "${EXCLUDES[@]}" 2>/dev/null || g add -A -- "${INCLUDE_ONLY_PS[@]}" 2>/dev/null || true
+  else
+    g add -A -- . "${EXCLUDES[@]}" 2>/dev/null || g add -A 2>/dev/null || true
+  fi
 
   # After excludes/ignores there may be nothing actually staged -> no empty commit.
   if ! g diff --cached --quiet 2>/dev/null; then
@@ -208,8 +243,12 @@ if [ -n "$(g status --porcelain 2>/dev/null | head -c1)" ]; then
       MODED=$(g diff --cached --name-status | grep -c '^M' || true)
       DELED=$(g diff --cached --name-status | grep -c '^D' || true)
       # Dominant top-level dir among staged paths (e.g. 'memory', 'logs').
+      # top-level dir per staged path: dir before first '/', else '(root)' for a
+      # root-level file. Single-pass awk (the old two -e sed rules collided: rule
+      # 2 's#^[^/]*$#(root)#' re-matched the top-dir that rule 1 already produced,
+      # so EVERY path collapsed to '(root)' in the subject line).
       TOPDIR=$(g diff --cached --name-only \
-        | sed -e 's#^\([^/]*\)/.*#\1#' -e 's#^[^/]*$#(root)#' \
+        | awk -F/ '{ if (NF>1) print $1; else print "(root)" }' \
         | sort | uniq -c | sort -rn | head -1 | awk '{print $2}')
       [ -z "$TOPDIR" ] && TOPDIR='(root)'
       SUBJ="auto-snapshot ${STAMP} · +${ADDED} ~${MODED} -${DELED} · ${TOPDIR} (${N} file(s))"
