@@ -89,11 +89,36 @@ discover_openclaw_instances() {
 openclaw_running_for() {
   command -v openclaw >/dev/null 2>&1 || return 1
   local state_dir="$1"
-  if [ -n "$state_dir" ]; then
-    OPENCLAW_STATE_DIR="$state_dir" timeout 10 openclaw status >/dev/null 2>&1
-  else
-    timeout 10 openclaw status >/dev/null 2>&1
-  fi
+  # Probe with `openclaw health` (a LIGHT liveness ping), NOT `openclaw status`.
+  # WHY: `openclaw status` is a HEAVY command (fetches channel health + recent
+  # sessions + model status). On a multi-gateway box, probing a NON-local gateway
+  # by state-dir alone makes it HANG to the timeout -> false-negative "not
+  # running" -> the installer silently SKIPS all config patches -> a half-wired
+  # install (the exact "installer blunders on to an incomplete install" failure).
+  # `openclaw health` just asks "is this gateway alive?" (internal durationMs ~86ms).
+  # Redirect stdin from /dev/null so a status/health that ever waits on a TTY
+  # can't block. Fall back to `status` only if `health` is unavailable (older CLI).
+  #
+  # TIMEOUT: the bottleneck is NOT the gateway (health answers in <100ms) but the
+  # NODE CLI COLD-START (~10-12s: node boot + plugin load) on a busy box. A bare
+  # `timeout 10` clips the health call MID-STARTUP -> false-negative "not running"
+  # -> config patches skipped -> half-wired install. Use a generous bound
+  # (AUTOSNAP-style override) and pass --timeout to `health` so its own connect
+  # deadline is separate from the CLI-boot allowance. Default 45s covers a slow
+  # cold start with headroom; override via DINOMEM_PROBE_TIMEOUT_S.
+  local _pt="${DINOMEM_PROBE_TIMEOUT_S:-45}"
+  local probe
+  for probe in health status; do
+    local _args=""
+    [ "$probe" = health ] && _args="--timeout $(( _pt * 1000 ))"
+    # shellcheck disable=SC2086
+    if [ -n "$state_dir" ]; then
+      OPENCLAW_STATE_DIR="$state_dir" timeout "$_pt" openclaw "$probe" $_args </dev/null >/dev/null 2>&1 && return 0
+    else
+      timeout "$_pt" openclaw "$probe" $_args </dev/null >/dev/null 2>&1 && return 0
+    fi
+  done
+  return 1
 }
 
 # ── selection ────────────────────────────────────────────────────────────────
