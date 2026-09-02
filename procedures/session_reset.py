@@ -218,6 +218,73 @@ def get_active_compaction_count(session_file):
     if count == 0:
         count = get_compaction_depth(session_file)
     return count
+def get_lineage_compaction_count(session_file):
+    """
+    4th detection source (ADDITIVE — does not replace chain/inline/registry).
+
+    Motivation (OpenClaw builds that compact in-place, e.g. 2026.7.x):
+      On each compaction OpenClaw writes a NEW successor .jsonl whose header
+      carries parentSession -> predecessor, and advances sessions.json
+      [key].sessionFile to that successor while RESETTING compactionCount to 0.
+      A freshly-spawned successor momentarily holds 0 inline 'compaction'
+      records (they live in the predecessor), and the newest post-storm
+      successor is written as an orphan-root (parentSession=null). Result:
+      the registry-pointed file the cron scans can read 0 even mid-storm,
+      so none of the first three sources trip the threshold.
+
+    This walker is direction-agnostic and counts the DEEPER of:
+      (a) inline 'compaction' records found anywhere along the backward
+          parentSession chain starting at session_file, and
+      (b) the number of predecessor hops in that chain.
+    Either way it recovers the true compaction depth of a live storm.
+
+    Safe: bounded hops, cycle-guarded, exception-swallowing, read-only.
+    Returns 0 when no lineage/compaction is detectable (never raises).
+    """
+    MAX_HOPS = 40  # generous ceiling; storms are pathological but finite
+    best = 0
+    hops = 0
+    current = Path(session_file)
+    seen = set()
+    try:
+        while current and current.exists() and hops < MAX_HOPS:
+            resolved = str(current.resolve())
+            if resolved in seen:
+                break
+            seen.add(resolved)
+            # (a) inline compaction records carried in THIS file
+            inline = 0
+            header = None
+            try:
+                with open(current, 'r', encoding='utf-8', errors='replace') as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            data = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if header is None and data.get('type') == 'session':
+                            header = data
+                        if data.get('type') == 'compaction':
+                            inline += 1
+            except Exception:
+                pass
+            # inline count is cumulative in in-place builds; take the max seen
+            if inline > best:
+                best = inline
+            # (b) advance up the parentSession chain
+            parent = header.get('parentSession') if isinstance(header, dict) else None
+            if not parent:
+                break
+            hops += 1
+            if hops > best:
+                best = hops
+            current = Path(parent)
+    except Exception:
+        pass
+    return best
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # SESSION FUNCTIONS
@@ -448,12 +515,17 @@ def filter_sessions_to_reset(sessions):
                     age_trigger = True
             except Exception:
                 pass
-        # Check compaction count from THREE sources, take the max (OR logic):
+        # Check compaction count from FOUR sources, take the max (OR logic):
         #   1. JSONL inline type="compaction" entries (truncate=false mode)
         #   2. parentSession chain depth fallback (truncate=true mode) — both via get_active_compaction_count
         #   3. sessions.json "compactionCount" field — OpenClaw's authoritative runtime counter,
         #      survives JSONL cleanup/truncation/chain breaks. Defensive belt-and-suspenders:
         #      catches the case where (1)+(2) read 0 but OpenClaw knows compactions happened.
+        #   4. lineage walk (get_lineage_compaction_count) — ADDITIVE for in-place-compaction
+        #      builds (e.g. OpenClaw 2026.7.x) where sessions.json advances sessionFile to a
+        #      freshly-spawned successor (0 inline records, compactionCount reset to 0) mid-storm,
+        #      so sources 1-3 all read 0 even at compaction depth 9. Walks the parentSession
+        #      chain to recover true depth. Only ever RAISES the count; never lowers it.
         session_id = session_data.get("sessionId", "")
         session_file_str = session_data.get("sessionFile")
         if session_file_str:
@@ -466,25 +538,48 @@ def filter_sessions_to_reset(sessions):
         if session_file and session_file.exists():
             jsonl_compaction_count = get_active_compaction_count(session_file)
         sessions_json_compaction_count = session_data.get("compactionCount", 0) or 0
-        compaction_count = max(jsonl_compaction_count, sessions_json_compaction_count)
+        lineage_compaction_count = 0
+        if session_file and session_file.exists():
+            lineage_compaction_count = get_lineage_compaction_count(session_file)
+        compaction_count = max(
+            jsonl_compaction_count,
+            sessions_json_compaction_count,
+            lineage_compaction_count,
+        )
         if compaction_count >= COMPACTION_THRESHOLD:
             compaction_trigger = True
         should_reset = age_trigger or compaction_trigger
-        # HARD-FORCE override: in --force mode (compaction hook), a session at the
-        # hard ceiling bypasses the active-conversation grace. A session compacting
-        # in a storm never idles 10 min, so honoring grace here would defeat the
-        # whole point of the immediate force. The flush-first guarantee still holds:
-        # reset_session archives the JSONL before deleting the mapping, and extract
-        # runs on that archive next. Below the ceiling, force respects grace normally.
+        # HARD-FORCE override: at the hard ceiling, bypass the active-conversation
+        # grace. A session compacting in a storm never idles 10 min, so honoring
+        # grace here would defeat the whole point. The flush-first guarantee still
+        # holds: reset_session archives the JSONL before deleting the mapping, and
+        # extract runs on that archive next. Below the ceiling, grace is respected.
+        #
+        # Two ways to reach the ceiling override:
+        #   (a) FORCE_MODE  — the session:compact:after hook fired us with --force
+        #       (immediate, per-compaction). This is the primary path.
+        #   (b) storm_breaker — ADDITIVE belt-and-suspenders for boxes where that
+        #       hook is NOT installed / NOT firing / the OpenClaw build compacts
+        #       in-place so the hook never lands (e.g. 2026.7.x). Without this, a
+        #       live storm is ALWAYS grace-protected on the 15-min cron and can run
+        #       to compaction depth 9+ unchecked (the exact bug this fixes). At the
+        #       hard ceiling we let even the plain cron break the storm. Does NOT
+        #       change normal below-ceiling behavior; only fires at >= the ceiling.
         force_override = (
             FORCE_MODE
             and compaction_count >= FORCE_COMPACTION_THRESHOLD
         )
+        storm_breaker = (
+            not FORCE_MODE
+            and compaction_count >= FORCE_COMPACTION_THRESHOLD
+        )
+        force_override = force_override or storm_breaker
         if should_reset and not force_override and minutes_since_update is not None and minutes_since_update < GRACE_PERIOD_MINUTES:
             log(f"  ⏳ Skipping {session_key} - active conversation (updated {minutes_since_update:.1f} min ago)")
             should_reset = False
         elif force_override:
-            log(f"  🔥 HARD-FORCE reset {session_key} - compaction depth {compaction_count} >= {FORCE_COMPACTION_THRESHOLD} (grace bypassed; JSONL archived first, memory flushed by extract)")
+            _mode = "HARD-FORCE" if FORCE_MODE else "STORM-BREAKER (cron, hook absent)"
+            log(f"  🔥 {_mode} reset {session_key} - compaction depth {compaction_count} >= {FORCE_COMPACTION_THRESHOLD} (grace bypassed; JSONL archived first, memory flushed by extract)")
             should_reset = True
         if should_reset:
             sessions_to_reset[session_key] = session_data

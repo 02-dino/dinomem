@@ -175,8 +175,14 @@ has exactly one home and is never disowned by both.
 |-----------|---------|
 | Session age (chat) | > 7 days idle |
 | Session age (cron/isolated) | > 1 day |
-| Compaction generations | ≥ 2 (parentSession chain depth) |
+| Compaction generations | ≥ 2 (max of 4 sources: inline records, parentSession chain depth, `sessions.json` counter, lineage walk) |
+| Compaction storm (hard ceiling) | ≥ 5 → grace-bypassed reset even on the plain 15-min cron (storm-breaker) |
 | Orphaned file age | > 48 hours |
+
+**Two ways a compaction reset fires:**
+
+1. **Immediate (per-compaction):** the `dinomem-reset-extract` hook binds `session:compact:after` and re-runs the pipeline in `--force` mode. At compaction depth ≥ 5 it bypasses the 10-min active-conversation grace and resets right then.
+2. **Storm-breaker (cron fallback, ADDITIVE):** on builds where that hook isn't installed / isn't firing / the OpenClaw build compacts in-place so `--force` never lands (e.g. **2026.7.x**), a live storm would otherwise be grace-protected forever on the 15-min cron and climb to depth 9+. The plain cron now also bypasses grace once depth hits the hard ceiling (≥ 5), so a runaway storm is always broken — at worst one cron tick (≤ 15 min) late instead of never. Below the ceiling, the 10-min grace is respected exactly as before (no behavior change for normal sessions).
 
 ---
 
@@ -564,7 +570,7 @@ The installer automatically patches `~/.openclaw/openclaw.json`:
 | `session.reset.idleMinutes` | `10080` | Reset only after 7 days of inactivity |
 | `contextPruning.mode` | `off` | Compaction summarizes — TTL pruning just drops |
 | `compaction.mode` | `safeguard` | Summarizes before dropping context |
-| `compaction.truncateAfterCompaction` | `true` | Enabled — successor transcript prevents unbounded JSONL growth. `session_reset.py` now tracks compaction depth via `parentSession` chain traversal instead of `compactionCount`, so this is safe. Predecessor JSONLs are archived immediately on reset (no 48h orphan delay). |
+| `compaction.truncateAfterCompaction` | `true` | Enabled — successor transcript prevents unbounded JSONL growth. `session_reset.py` tracks compaction depth via **four independent sources**, taking the max (OR logic), so it stays correct across differing OpenClaw builds: (1) inline `type:"compaction"` records, (2) `parentSession` chain-depth, (3) the `sessions.json` `compactionCount` runtime counter, and (4) a **lineage walk** that follows the `parentSession` chain across successor files. Source 4 is additive belt-and-suspenders for builds that compact **in-place** (e.g. 2026.7.x): those advance `sessions.json.sessionFile` to a freshly-spawned successor whose own header/records momentarily read 0, which would otherwise let a live compaction storm climb to depth 9+ unchecked. Predecessor JSONLs are archived immediately on reset (no 48h orphan delay). |
 | `compaction.memoryFlush.enabled` | `true` | Enabled as a guarded writer of the bare daily file `memory/YYYY-MM-DD.md` that feeds `startupContext`. A prompt override confines it to that file and forbids touching `MEMORY.md`. |
 | `memorySearch.provider` | `openai-compatible` | Use local TEI server |
 | `memorySearch.remote.baseUrl` | `http://localhost:8080/v1` | TEI Docker endpoint |
