@@ -1168,6 +1168,15 @@ if [ "$DO_CRON" = 1 ]; then
     DINOMEM_AGENT_ID="$AGENT_ID" DINOMEM_WS="$WS" python3 - <<'PYEOF'
 import subprocess, json
 import os as _os
+# CLI-TIMEOUT: `openclaw cron *` ops shell out to the node CLI, whose cold-start
+# alone is ~10-12s on a busy box. Hardcoded 10/15s timeouts here get clipped
+# MID-STARTUP -> the whole install aborts on a spurious TimeoutExpired (this is
+# the BUG #6 sibling that stopped the live --instance main roll at the cron
+# stage). Read a generous budget once; override via DINOMEM_CLI_TIMEOUT_S.
+try:
+    _CLI_T = max(45, int(_os.environ.get('DINOMEM_CLI_TIMEOUT_S', '60')))
+except Exception:
+    _CLI_T = 60
 _DINO_AID = (_os.environ.get('DINOMEM_AGENT_ID','') or '').strip().lower()
 def _dino_name_agent_match(j, name):
     if j.get('name','').strip().lower() != name.strip().lower():
@@ -1257,7 +1266,7 @@ def _cron_verify(name):
     """Read back a cron job by name via `cron list --json`. Returns its id, or ''
     if the gateway did not actually store it (silent-failure guard)."""
     try:
-        lr = subprocess.run(['openclaw', 'cron', 'list', '--all', '--json'], capture_output=True, text=True, timeout=10)
+        lr = subprocess.run(['openclaw', 'cron', 'list', '--all', '--json'], capture_output=True, text=True, timeout=_CLI_T)
         if lr.returncode != 0:
             return ''
         data = json.loads(lr.stdout)
@@ -1277,7 +1286,7 @@ def upsert_selfsched(job, label):
     name = job['name']
     existing_id = ''
     try:
-        lr = subprocess.run(['openclaw', 'cron', 'list', '--all', '--json'], capture_output=True, text=True, timeout=10)
+        lr = subprocess.run(['openclaw', 'cron', 'list', '--all', '--json'], capture_output=True, text=True, timeout=_CLI_T)
         if lr.returncode == 0:
             data = json.loads(lr.stdout)
             joblist = data if isinstance(data, list) else (data.get('jobs') if isinstance(data.get('jobs'), list) else (data.get('jobs') or {}).get('jobs', []))
@@ -1294,11 +1303,11 @@ def upsert_selfsched(job, label):
             # cron CLI (2026.6.x) rejects an edit that repeats a schedule flag on an
             # already-scheduled job ('Choose exactly one schedule'). We only refresh
             # message + re-enable here; the existing schedule is preserved as-is.
-            subprocess.run(args, capture_output=True, text=True, timeout=15)
+            subprocess.run(args, capture_output=True, text=True, timeout=_CLI_T)
             print(f"  \033[32m[ok]\033[0m   {label} OpenClaw cron updated (prompt refreshed, stays enabled)")
         else:
             ar = subprocess.run(_cron_add_argv(job),
-                                capture_output=True, text=True, timeout=15)
+                                capture_output=True, text=True, timeout=_CLI_T)
             if ar.returncode != 0:
                 print(f"  \033[33m[warn]\033[0m Could not register {label} cron: {ar.stderr[:120]}")
                 print(f"  \033[33m[warn]\033[0m   Add it manually via the OpenClaw cron tool, name='{name}'. Install continues.")
@@ -1315,7 +1324,7 @@ import os
 
 def _find_cron(name):
     try:
-        lr = subprocess.run(['openclaw', 'cron', 'list', '--all', '--json'], capture_output=True, text=True, timeout=10)
+        lr = subprocess.run(['openclaw', 'cron', 'list', '--all', '--json'], capture_output=True, text=True, timeout=_CLI_T)
         if lr.returncode != 0:
             return ''
         data = json.loads(lr.stdout)
@@ -1340,11 +1349,11 @@ def upsert_gated_worker(job, label):
             jid = existing_id
             msg = job.get('payload', {}).get('message', '')
             subprocess.run(['openclaw', 'cron', 'edit', existing_id, '--message', msg],
-                           capture_output=True, text=True, timeout=15)
+                           capture_output=True, text=True, timeout=_CLI_T)
             print(f"  \033[32m[ok]\033[0m   {label} OpenClaw cron updated (prompt refreshed)")
         else:
             j2 = dict(job); j2['enabled'] = False
-            ar = subprocess.run(_cron_add_argv(j2), capture_output=True, text=True, timeout=15)
+            ar = subprocess.run(_cron_add_argv(j2), capture_output=True, text=True, timeout=_CLI_T)
             if ar.returncode != 0:
                 print(f"  \033[33m[warn]\033[0m Could not register {label} cron: {ar.stderr[:120]}")
                 return ''
@@ -1409,7 +1418,7 @@ PNR_ID = upsert_gated_worker(job, "pending_note_reminder")
 # cleanup: never creates anything, only removes true dupes.
 _CANON_BASE = ["Daily Note Review", "Pending Note Reminder", "Note Cron Gate"]
 try:
-    _lr = subprocess.run(['openclaw','cron','list','--json'], capture_output=True, text=True, timeout=10)
+    _lr = subprocess.run(['openclaw','cron','list','--json'], capture_output=True, text=True, timeout=_CLI_T)
     _data = json.loads(_lr.stdout) if _lr.returncode == 0 else []
     _jl = _data if isinstance(_data, list) else _data.get('jobs', {}).get('jobs', _data.get('jobs', []))
 except Exception:
@@ -1422,7 +1431,7 @@ for _cn in _CANON_BASE:
     for _dup in _m[1:]:
         _did = _dup.get('id','')
         if _did:
-            subprocess.run(['openclaw','cron','remove',_did], capture_output=True, text=True, timeout=15)
+            subprocess.run(['openclaw','cron','remove',_did], capture_output=True, text=True, timeout=_CLI_T)
             print("  \033[32m[ok]\033[0m   deduped '%s' — removed duplicate %s (kept newest)" % (_cn, _did[:8]))
 
 # ── Note Cron Gate (command cron, */15, ZERO LLM) ───────────────────────────
@@ -1436,7 +1445,7 @@ GATE_NAME = "Note Cron Gate"
 
 def _gate_env(gate_id):
     try:
-        g = subprocess.run(['openclaw', 'cron', 'get', gate_id, '--json'], capture_output=True, text=True, timeout=15)
+        g = subprocess.run(['openclaw', 'cron', 'get', gate_id, '--json'], capture_output=True, text=True, timeout=_CLI_T)
         if g.returncode == 0:
             return (json.loads(g.stdout).get('payload', {}) or {}).get('env', {}) or {}
     except Exception:
@@ -1449,7 +1458,7 @@ def _fallback_selfsched():
     print("  \033[33m[WARN]\033[0m That path COSTS an LLM turn on every idle fire. Allow command crons (operator.admin) + re-run for the free path.")
     for jid in (DNR_ID, PNR_ID):
         if jid:
-            subprocess.run(['openclaw', 'cron', 'enable', jid], capture_output=True, text=True, timeout=15)
+            subprocess.run(['openclaw', 'cron', 'enable', jid], capture_output=True, text=True, timeout=_CLI_T)
 
 if not (DNR_ID or PNR_ID):
     print("  \033[33m[warn]\033[0m No worker ids captured — skipping Note Cron Gate wiring.")
@@ -1464,8 +1473,8 @@ else:
         args = ['openclaw', 'cron', 'edit', gate_id]
         for k, v in env.items():
             args += ['--command-env', f'{k}={v}']
-        subprocess.run(args, capture_output=True, text=True, timeout=15)
-        subprocess.run(['openclaw', 'cron', 'enable', gate_id], capture_output=True, text=True, timeout=15)
+        subprocess.run(args, capture_output=True, text=True, timeout=_CLI_T)
+        subprocess.run(['openclaw', 'cron', 'enable', gate_id], capture_output=True, text=True, timeout=_CLI_T)
         print(f"  \033[32m[ok]\033[0m   Note Cron Gate found — merged base lanes into its env (gate-driven, zero idle LLM)")
     else:
         gate = {
@@ -1501,7 +1510,7 @@ else:
         kind_ok = False
         if gid:
             try:
-                g = subprocess.run(['openclaw', 'cron', 'get', gid, '--json'], capture_output=True, text=True, timeout=15)
+                g = subprocess.run(['openclaw', 'cron', 'get', gid, '--json'], capture_output=True, text=True, timeout=_CLI_T)
                 if g.returncode == 0:
                     kind_ok = (json.loads(g.stdout).get('payload', {}) or {}).get('kind') == 'command'
             except Exception:
@@ -1510,7 +1519,7 @@ else:
             print(f"  \033[32m[ok]\033[0m   Note Cron Gate registered (*/15 command cron, zero-LLM) — drives note janitor lanes")
         else:
             if gid:
-                subprocess.run(['openclaw', 'cron', 'remove', gid], capture_output=True, text=True, timeout=15)
+                subprocess.run(['openclaw', 'cron', 'remove', gid], capture_output=True, text=True, timeout=_CLI_T)
             _fallback_selfsched()
 PYEOF
   fi
@@ -1558,6 +1567,10 @@ PYEOF
     DINOMEM_AGENT_ID="$AGENT_ID" python3 - <<'PYEOF'
 import subprocess, json
 import os as _os
+try:
+    _CLI_T = max(45, int(_os.environ.get('DINOMEM_CLI_TIMEOUT_S', '60')))
+except Exception:
+    _CLI_T = 60
 _DINO_AID = (_os.environ.get('DINOMEM_AGENT_ID','') or '').strip().lower()
 def _dino_name_agent_match(j, name):
     if j.get('name','').strip().lower() != name.strip().lower():
@@ -1647,7 +1660,7 @@ def _cron_verify(name):
     """Read back a cron job by name via `cron list --json`. Returns its id, or ''
     if the gateway did not actually store it (silent-failure guard)."""
     try:
-        lr = subprocess.run(['openclaw', 'cron', 'list', '--all', '--json'], capture_output=True, text=True, timeout=10)
+        lr = subprocess.run(['openclaw', 'cron', 'list', '--all', '--json'], capture_output=True, text=True, timeout=_CLI_T)
         if lr.returncode != 0:
             return ''
         data = json.loads(lr.stdout)
@@ -1667,7 +1680,7 @@ def upsert_selfsched(job, label):
     name = job['name']
     existing_id = ''
     try:
-        lr = subprocess.run(['openclaw', 'cron', 'list', '--all', '--json'], capture_output=True, text=True, timeout=10)
+        lr = subprocess.run(['openclaw', 'cron', 'list', '--all', '--json'], capture_output=True, text=True, timeout=_CLI_T)
         if lr.returncode == 0:
             data = json.loads(lr.stdout)
             joblist = data if isinstance(data, list) else (data.get('jobs') if isinstance(data.get('jobs'), list) else (data.get('jobs') or {}).get('jobs', []))
@@ -1684,11 +1697,11 @@ def upsert_selfsched(job, label):
             # cron CLI (2026.6.x) rejects an edit that repeats a schedule flag on an
             # already-scheduled job ('Choose exactly one schedule'). We only refresh
             # message + re-enable here; the existing schedule is preserved as-is.
-            subprocess.run(args, capture_output=True, text=True, timeout=15)
+            subprocess.run(args, capture_output=True, text=True, timeout=_CLI_T)
             print(f"  \033[32m[ok]\033[0m   {label} OpenClaw cron updated (prompt refreshed, stays enabled)")
         else:
             ar = subprocess.run(_cron_add_argv(job),
-                                capture_output=True, text=True, timeout=15)
+                                capture_output=True, text=True, timeout=_CLI_T)
             if ar.returncode != 0:
                 print(f"  \033[33m[warn]\033[0m Could not register {label} cron: {ar.stderr[:120]}")
                 print(f"  \033[33m[warn]\033[0m   Add it manually via the OpenClaw cron tool, name='{name}'. Install continues.")
