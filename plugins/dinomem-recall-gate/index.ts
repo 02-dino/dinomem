@@ -57,7 +57,20 @@ type Cfg = {
   // a FRESH recall this turn even if recallDone is already latched.
   writeTools: string[];      // write/edit/apply_patch (+aliases)
   hotZoneGlobs: string[];    // substrings that mark a mechanism path (scripts/, tools/, config)
+  // ── TIER C: fuzzy-recall route enforcement (2026-09-02) ──
+  // NEURON-ONLY. Neuron ships a single fuzzy-recall "door" (hybrid_recall) that fuses
+  // + reranks the individual legs. But the model's habit is to reach the raw
+  // gatedTool (memory_search) reflex instead of routing through the door. Tier C
+  // routes that reflex to the door. OFF by default (routeEnforce:false) so BASE
+  // users -- who have NO hybrid_recall -- are never blocked reaching a tool they
+  // lack. Neuron's config turns it ON. Soft-nudge once, then hard-block on repeat.
+  // EXEMPT: gatedTool is allowed once hybrid_recall has run this turn, because
+  // hybrid_recall itself calls memory_search natively for --external-hits folding;
+  // blocking that would make the door self-block into an infinite stall.
   hotZoneExclude: string[];  // substrings that DISQUALIFY (memory/, gate's own dir) -> loop-safe
+  routeEnforce: boolean;     // TIER C master switch (default false = base-safe, neuron turns on)
+  routeTool: string;         // the fuzzy "door" to route to (hybrid_recall)
+  gatedTool: string;         // the raw tool whose reflex we redirect (memory_search)
 };
 
 function cfg(raw: any): Cfg {
@@ -85,6 +98,11 @@ function cfg(raw: any): Cfg {
     // nor the extension's own dir, nor backup/log churn.
     hotZoneExclude: Array.isArray(c.hotZoneExclude) ? c.hotZoneExclude
       : ["memory/", "extensions/dinomem-", ".backups/", "logs/"],
+    // TIER C (fuzzy-recall route). OFF by default -> base users (no hybrid_recall)
+    // are never gated. Neuron config sets routeEnforce:true.
+    routeEnforce: c.routeEnforce === true,
+    routeTool: typeof c.routeTool === "string" ? c.routeTool : "hybrid_recall",
+    gatedTool: typeof c.gatedTool === "string" ? c.gatedTool : "memory_search",
   };
 }
 
@@ -133,6 +151,7 @@ type TurnState = {
   recallDone: boolean;  // a recallTool ran during this turn
   firedTurn: number;    // turnIndex of last cold-fs fire (-Infinity if never) -> cooldown
   writeFiredTurn: number; // turnIndex of last hot-zone-write fire -> independent cooldown
+  routeFiredTurn: number;  // turnIndex of last TIER-C route soft-nudge -> soft-then-hard within turn
 };
 const _state = new Map<string, TurnState>();
 
@@ -180,6 +199,7 @@ export default definePluginEntry({
             recallDone: false,
             firedTurn: st?.firedTurn ?? -Infinity,
             writeFiredTurn: st?.writeFiredTurn ?? -Infinity,
+            routeFiredTurn: st?.routeFiredTurn ?? -Infinity,
           };
           _state.set(sessionKey, st);
         }
@@ -188,6 +208,43 @@ export default definePluginEntry({
         if (c.recallTools.includes(toolName)) {
           st.recallDone = true;
           return undefined;
+        }
+
+        // ── TIER C: fuzzy-recall route enforcement (NEURON-only, OFF by default) ──
+        // Route the raw gatedTool (memory_search) reflex to the fuzzy door
+        // (hybrid_recall). EXEMPT: once routeTool ran this turn, gatedTool is
+        // allowed -- hybrid_recall itself calls memory_search for --external-hits
+        // folding, so blocking it post-door would self-stall the door. recallDone
+        // is set by the recallTools latch above (hybrid_recall is in recallTools),
+        // giving us a clean "door already opened this turn" signal. Soft-nudge once
+        // (routeFiredTurn), hard-block on repeat within the turn.
+        if (c.routeEnforce && toolName === c.gatedTool) {
+          if (st.recallDone) return undefined;              // door opened this turn -> exempt
+          if (!c.enforce) return undefined;                 // dry-run
+          const firedThisTurn = st.routeFiredTurn === st.turnIndex;
+          st.routeFiredTurn = st.turnIndex;
+          if (!firedThisTurn) {
+            // FIRST reach this turn = soft nudge (let it through once).
+            return {
+              block: true,
+              blockReason:
+                `dinomem-recall-gate (route): you reached '${c.gatedTool}' directly. The ` +
+                `dinomem-neuron "one fuzzy door" is '${c.routeTool}' -- it fires the right legs, ` +
+                `fuses + reranks with provenance (and folds '${c.gatedTool}' via --external-hits ` +
+                `internally). Prefer '${c.routeTool}' for semantic recall. If you specifically ` +
+                `need raw '${c.gatedTool}' this turn, just re-issue -- this soft nudge won't ` +
+                `repeat, but a THIRD blind reach will hard-block.`,
+            };
+          }
+          // SECOND+ reach this turn without opening the door = hard block.
+          return {
+            block: true,
+            blockReason:
+              `dinomem-recall-gate (route, HARD): repeated raw '${c.gatedTool}' this turn without ` +
+              `going through '${c.routeTool}'. Run '${c.routeTool} "<natural-language query>"' ` +
+              `instead -- it folds '${c.gatedTool}' hits for you. (If '${c.routeTool}' is ` +
+              `genuinely broken, that's a separate bug to report, not a reason to bypass the door.)`,
+          };
         }
 
         // ── TIER B: hot-zone WRITE re-arm ──

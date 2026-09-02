@@ -146,5 +146,67 @@ gate(SK,"exec","bt10");
 chk("openclaw.json write re-arms -> BLOCK",
     gate(SK,"edit","bt10",["/root/.openclaw/openclaw.json"]), "BLOCK");
 
+// ── TIER C: fuzzy-recall route enforcement (neuron-only, config-gated) ──
+// Mirror the engine's Tier C with a route-enabled cfg. Base default is
+// routeEnforce:false (proven below: gatedTool passes untouched); neuron sets true.
+// NOTE: base cfg.recallTools LISTS memory_search (it counts as a recall). But under
+// Tier C (neuron), memory_search is the GATED raw tool -- the door is hybrid_recall.
+// So the neuron recallTools set must DROP memory_search (it no longer "satisfies"
+// recall by itself; you go through the door). This mirrors what neuron's plugin.json
+// ships. If memory_search stayed in recallTools, the recall-latch would fire before
+// Tier C ever sees it -> gate dead. This is the key base-vs-neuron config difference.
+const cfgC = {
+  ...cfg,
+  recallTools: ["memory_get","graph_search","session_search","semantic_search","docs_search","data_query","hybrid_recall"],
+  routeEnforce: true, routeTool: "hybrid_recall", gatedTool: "memory_search",
+};
+const _stateC = new Map();
+function gateC(sessionKey, toolName, msg){
+  const c = cfgC;
+  if(c.agentFilter && !sessionKey.includes(c.agentFilter)) return null;
+  if(!toolName) return null;
+  const turnId = fp(msg||sessionKey);
+  let st=_stateC.get(sessionKey);
+  if(!st||st.turnId!==turnId){
+    const turnIndex=(st?.turnIndex??0)+1;
+    st={turnId,turnIndex,recallDone:false,firedTurn:st?.firedTurn??-Infinity,writeFiredTurn:st?.writeFiredTurn??-Infinity,routeFiredTurn:st?.routeFiredTurn??-Infinity};
+    _stateC.set(sessionKey,st);
+  }
+  if(c.recallTools.includes(toolName)){st.recallDone=true;return null;}
+  if(c.routeEnforce && toolName===c.gatedTool){
+    if(st.recallDone) return null;               // door opened this turn -> exempt
+    if(!c.enforce) return null;
+    const firedThisTurn = st.routeFiredTurn===st.turnIndex;
+    st.routeFiredTurn = st.turnIndex;
+    if(!firedThisTurn) return "SOFT";            // first reach = soft nudge
+    return "HARD";                                // repeat = hard block
+  }
+  return null;
+}
+const SKC = "agent:analyst:telegram:direct:1";
+// base-safe: with routeEnforce OFF (base default cfg), gatedTool passes untouched
+chk("TierC OFF (base): memory_search passes untouched",
+    gate(SKC,"memory_search","c0"), null);
+// neuron ON: first raw memory_search this turn = soft nudge
+_stateC.clear();
+chk("TierC ON: 1st raw memory_search -> SOFT nudge",
+    gateC(SKC,"memory_search","c1"), "SOFT");
+// same turn, repeat raw memory_search = hard block
+chk("TierC ON: 2nd raw memory_search same turn -> HARD block",
+    gateC(SKC,"memory_search","c1"), "HARD");
+// EXEMPT: hybrid_recall ran this turn -> memory_search allowed (protects --external-hits)
+_stateC.clear();
+gateC(SKC,"hybrid_recall","c2");                 // door opened (in recallTools -> recallDone)
+chk("TierC ON: memory_search AFTER hybrid_recall -> exempt (null)",
+    gateC(SKC,"memory_search","c2"), null);
+// new turn resets: soft nudge fires again
+gateC(SKC,"memory_search","c3-newturn");
+chk("TierC ON: new turn re-arms soft nudge",
+    gateC(SKC,"memory_search","c3-newturn"), "HARD");  // 2nd in the c3 turn = hard
+// non-gated tool untouched under Tier C
+_stateC.clear();
+chk("TierC ON: memory_get (not gatedTool) untouched",
+    gateC(SKC,"memory_get","c4"), null);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);

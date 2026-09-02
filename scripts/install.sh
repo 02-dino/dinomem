@@ -835,6 +835,61 @@ if [ "$DRY_RUN" = 0 ]; then
   fi
 fi
 
+# ── 2c3) Wire warming + memory_search timeout ENV (the piece 2c2 forgot) ─────
+# WHY: 2c2 copies + ENABLES the warm hook, but the hook is OPT-IN via the env
+# DINOMEM_WARM_AGENTS -- unset => the hook is a NO-OP (ships "installed but inert").
+# That's the historical gap: warming looked wired but never fired. We fix it by
+# ADDING this agent to top-level env.DINOMEM_WARM_AGENTS (merge, never clobber) so
+# the first real memory_search lands warm instead of paying the ~76s cold
+# torch-import+model-load spike (which blows the 15s tool timeout). Same block
+# raises MEMORY_SEARCH_TOOL_TIMEOUT_MS 15000->90000 as a safety net for the cold/
+# mid-reindex edge (native OpenClaw default is 15e3 -- too tight after a restart).
+# Idempotent: appends this agent to the CSV if missing; never removes others.
+if [ -f "$OPENCLAW_JSON" ]; then
+  DINOMEM_DRY_RUN="$DRY_RUN" DINOMEM_OPENCLAW_JSON="$OPENCLAW_JSON" DINOMEM_AGENT_ID="$AGENT_ID" python3 - <<'PYEOF'
+import json, os
+path = os.environ["DINOMEM_OPENCLAW_JSON"]
+agent = os.environ.get("DINOMEM_AGENT_ID", "").strip()
+try:
+    cfg = json.load(open(path))
+except Exception as e:
+    print(f"  \033[33m[skip]\033[0m env-wire: cannot read {path}: {e}")
+    raise SystemExit(0)
+changed = []
+env = cfg.setdefault("env", {})
+if not isinstance(env, dict):
+    env = {}
+    cfg["env"] = env
+# 1) DINOMEM_WARM_AGENTS: merge this agent into the CSV (dedup, order-stable).
+if agent:
+    raw = str(env.get("DINOMEM_WARM_AGENTS", "") or "")
+    lst = [a.strip() for a in raw.split(",") if a.strip()]
+    if agent not in lst:
+        lst.append(agent)
+        env["DINOMEM_WARM_AGENTS"] = ",".join(lst)
+        changed.append(f"env.DINOMEM_WARM_AGENTS += {agent} -> {env['DINOMEM_WARM_AGENTS']}")
+# 2) memory_search tool timeout safety net: 15s -> 90s (only raise, never lower).
+try:
+    cur = int(str(env.get("MEMORY_SEARCH_TOOL_TIMEOUT_MS", "")).strip() or 0)
+except ValueError:
+    cur = 0
+if cur < 90000:
+    env["MEMORY_SEARCH_TOOL_TIMEOUT_MS"] = "90000"
+    changed.append("env.MEMORY_SEARCH_TOOL_TIMEOUT_MS -> 90000 (was %s)" % (cur or "unset"))
+if changed and os.environ.get("DINOMEM_DRY_RUN") == "1":
+    for c in changed:
+        print(f"  \033[36m[plan]\033[0m wire openclaw.json: {c}")
+elif not changed:
+    print("  \033[33m[skip]\033[0m warming+timeout env already wired")
+else:
+    with open(path, "w") as f:
+        json.dump(cfg, f, indent=2)
+    for c in changed:
+        print(f"  \033[32m[ok]\033[0m   wired: {c}")
+    print("  \033[33m[warn]\033[0m Restart OpenClaw for env to take effect: openclaw gateway restart")
+PYEOF
+fi
+
 # ── 2d) Install skills ───────────────────────────────────────
 hr "Skills (memory-pinning, backup-restore, self-config)"
 if [ -d "$SKILL_DIR/skills" ]; then
