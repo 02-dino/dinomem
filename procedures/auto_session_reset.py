@@ -26,7 +26,13 @@ from pathlib import Path
 from datetime import datetime
 
 LOG_FILE = Path(__file__).parent.parent / "logs" / "auto_reset.log"
-LOCK_FILE = Path("/tmp/dinomem_auto_reset.lock")
+# PER-AGENT LOCK (was a single global /tmp/dinomem_auto_reset.lock shared by ALL
+# agents on a multi-agent box -> whenever two agents' cron ticks overlapped by a
+# minute, the later one lost the race and quiet-skipped with 'Another instance is
+# running', so busy agents could go hours without ever resetting. Key the lock on
+# this agent's own workspace dir name so each agent has its own lane.)
+_WS_NAME = Path(__file__).parent.parent.name or "default"
+LOCK_FILE = Path(f"/tmp/dinomem_auto_reset_{_WS_NAME}.lock")
 EXTRACT_STATUS_FILE = Path(__file__).parent.parent / "logs" / ".extract_memory_status.json"
 LOG_FILE.parent.mkdir(exist_ok=True)
 
