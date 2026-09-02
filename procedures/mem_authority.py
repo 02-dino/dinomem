@@ -40,9 +40,11 @@ personalization and never crashes the extractor):
   classify_scope(text)   -> "personalization" | "directive"
   gate_peer_fact(text, is_owner_src) -> (keep: bool, out_text: str, demoted: bool)
   gate_world_fact(text, is_owner_src) -> (keep: bool, out_text: str, demoted: bool)
+  authority_tier(platform_id, agent_id="") -> "owner" | "scoped" | "world"
 """
 import os
 import re
+import json
 
 # ── Owner ids ────────────────────────────────────────────────────────────────
 # Owner id is resolved through a SMOOTH CHAIN so a non-technical installer gets
@@ -86,17 +88,76 @@ def _openclaw_config_paths():
     return out
 
 
-def _ids_from_dinotrust_config():
-    """Parse dinotrust's injected `owner_ids:` line out of openclaw.json.
-    dinotrust stores owners as a YAML line inside a string-valued config field,
-    so we regex the raw file text rather than assume a fixed JSON path.
-    Fail-open -> empty set."""
+def _find_dinotrust_maps(doc):
+    """Recursive-scan a parsed openclaw.json for dinotrust's config, wherever the
+    plugin config nests. Returns (agentOwners, ownerIds, trustedIds). WHY recursive:
+    the plugin block sits under plugins.<name>.pluginConfig and the exact path has
+    drifted across installs, so we walk instead of assuming a fixed path. Fail-open."""
+    ao, flat, trusted = {}, [], []
+    def walk(o):
+        nonlocal ao, flat, trusted
+        if isinstance(o, dict):
+            if isinstance(o.get("agentOwners"), dict) and not ao:
+                ao = o["agentOwners"]
+            if isinstance(o.get("ownerIds"), list) and not flat:
+                flat = o["ownerIds"]
+            if isinstance(o.get("trustedIds"), list) and not trusted:
+                trusted = o["trustedIds"]
+            for v in o.values():
+                walk(v)
+        elif isinstance(o, list):
+            for v in o:
+                walk(v)
+    walk(doc)
+    return ao, flat, trusted
+
+def _iter_config_blobs():
+    """Yield the raw text of each existing candidate openclaw.json, in order.
+    ONE place for the fail-open file-open preamble both dinotrust readers share
+    (DRY — the loop used to be duplicated). Skips missing/unreadable files."""
     for path in _openclaw_config_paths():
         try:
             if not os.path.exists(path):
                 continue
             with open(path, "r", encoding="utf-8", errors="replace") as f:
-                blob = f.read()
+                yield f.read()
+        except Exception:
+            continue
+
+def _ids_from_dinotrust_config():
+    """Owner ids from dinotrust's openclaw.json config. Reads BOTH shapes, first
+    hit wins:
+      A. JSON agentOwners + ownerIds (what CURRENT dinotrust writes) — agent-scoped
+         to DINOMEM_AGENT_ID when set (substring match, mirrors dinotrust's
+         pickAgentOwners), else union of all agents; ALWAYS union the flat ownerIds
+         so global owners (e.g. the two real owners) stay owner in every agent.
+      B. flat `owner_ids:` YAML line (OLDER dinotrust) — regex fallback.
+    WHY both: the config shape drifted from a flat YAML line to nested JSON; the
+    old regex-only reader went BLIND on every agentOwners-based install, silently
+    returning empty and desyncing dinomem's owner view from dinotrust's. Fail-open."""
+    aid = (os.environ.get("DINOMEM_AGENT_ID", "") or "").strip().lower()
+    for blob in _iter_config_blobs():
+        try:
+            # A. structured JSON (agentOwners + ownerIds), same source dinotrust uses
+            try:
+                ao, flat, _ = _find_dinotrust_maps(json.loads(blob))
+                ids = set()
+                if aid and ao:
+                    for k, v in ao.items():
+                        if k and aid in str(k).lower() and isinstance(v, list):
+                            ids |= _parse_id_blob(" ".join(map(str, v)))
+                if not ids and ao:  # no agent match / no DINOMEM_AGENT_ID -> union all
+                    for v in ao.values():
+                        if isinstance(v, list):
+                            ids |= _parse_id_blob(" ".join(map(str, v)))
+                if flat:
+                    ids |= _parse_id_blob(" ".join(map(str, flat)))  # global owners everywhere
+                ids = {i for i in ids if i.isdigit()}
+                if ids:
+                    return ids
+            except Exception:
+                pass
+            # B. flat `owner_ids:` YAML line (older dinotrust) — original behavior
             m = re.search(r"owner_ids:\s*(\[[^\]]*\]|[0-9][0-9,\s\\\"']*)", blob)
             if m:
                 ids = _parse_id_blob(re.sub(r'[\[\]"\'\\]', " ", m.group(1)))
@@ -215,6 +276,70 @@ def is_owner(platform_id):
         return True  # no owner configured -> cannot classify, don't over-filter
     return str(platform_id).strip() in ids
 
+# ── Tier-aware authority (owner / scoped / world) ─────────────────────────────
+# WHY (dino, 2026-09-02): dinotrust grew a THIRD tier — a "trusted" (scoped-owner
+# = karyawan) who is owner-LEVEL for their OWN agent only. dinomem must mirror it
+# so a karyawan's workspace DIRECTIVE ("from now on ads captions lead with a
+# hook") is stored as a standing rule INSIDE THEIR AGENT, but the SAME id acting
+# on another agent, or a plain non-owner, is still demoted. Global owners stay
+# owner everywhere. dinotrust still gates EXECUTION (scopeAgents + protectedGlobs),
+# so raising memory-authority here never widens what a karyawan can actually DO.
+_SCOPED_CACHE = {}
+def _scoped_owner_agents(platform_id):
+    """Set of agent-key substrings where platform_id is a dinotrust TRUSTED
+    (scoped-owner) entry. Empty scopeAgents on an entry -> '*' (all agents).
+    Non-trusted id -> empty set. Memoized per id. Fail-open."""
+    pid = str(platform_id).strip()
+    if pid in _SCOPED_CACHE:
+        return _SCOPED_CACHE[pid]
+    out = set()
+    for blob in _iter_config_blobs():
+        try:
+            _, _, trusted = _find_dinotrust_maps(json.loads(blob))
+            got = set()
+            for t in trusted or []:
+                if isinstance(t, dict) and str(t.get("id", "")).strip() == pid:
+                    sa = t.get("scopeAgents")
+                    if isinstance(sa, list) and sa:
+                        got |= {str(k).strip().lower() for k in sa if str(k).strip()}
+                    else:
+                        got.add("*")  # trusted everywhere
+            if got:
+                out = got
+                break
+        except Exception:
+            continue
+    _SCOPED_CACHE[pid] = out
+    return out
+
+def authority_tier(platform_id, agent_id=""):
+    """Classify a source: "owner" | "scoped" | "world".
+      owner  = global/agent owner (resolved owner_ids) OR platform_id None.
+      scoped = dinotrust trusted (karyawan) AND the current agent is in its
+               scopeAgents (or scopeAgents empty=all). Owner-LEVEL memory
+               authority, but only inside its own agent.
+      world  = everyone else (incl. a trusted id acting OUTSIDE its scope).
+    Fail-open -> "owner" when no owner configured (don't over-filter). agent_id
+    falls back to DINOMEM_AGENT_ID env when omitted."""
+    try:
+        if platform_id is None:
+            return "owner"
+        ids = _owner_ids()
+        if not ids:
+            return "owner"  # cannot classify -> don't eat operator memory
+        if str(platform_id).strip() in ids:
+            return "owner"
+        aid = (agent_id or os.environ.get("DINOMEM_AGENT_ID", "") or "").strip().lower()
+        scoped = _scoped_owner_agents(platform_id)
+        if scoped:
+            if "*" in scoped:
+                return "scoped"
+            if aid and any(k and (k in aid or aid in k) for k in scoped):
+                return "scoped"
+        return "world"
+    except Exception:
+        return "owner"  # fail-open: never over-filter on error
+
 
 # ── Authority-scope classifier (deterministic regex, NOT an LLM) ──────────────
 # A "directive" = text that tries to install a STANDING RULE governing the
@@ -257,16 +382,27 @@ def classify_scope(text):
 
 
 # ── Gates ─────────────────────────────────────────────────────────────────────
+def _is_authoritative(src):
+    """Normalize a gate's source arg to an authoritative-flag. BACK-COMPAT: old
+    callers pass a bool (True=owner). New callers may pass an authority_tier
+    string ('owner'|'scoped'|'world'); 'owner' and 'scoped' (karyawan in their
+    own agent) are BOTH authoritative for their memory, 'world' is not. Any
+    truthy non-string stays truthy (fail-open toward the old semantics)."""
+    if isinstance(src, str):
+        return src in ("owner", "scoped")
+    return bool(src)
+
 def gate_peer_fact(text, is_owner_src):
     """Gate a PERSON fact (extract_user lane).
     Returns (keep, out_text, demoted).
-      - owner source: pass untouched.
+      - authoritative source (owner OR scoped karyawan in own agent): pass untouched.
       - non-owner + personalization: pass untouched (FULLY TRUSTED about them).
       - non-owner + directive: DEMOTE to a neutral observation (never a rule),
         so the intent is recorded as a fact ABOUT the person, not obeyed.
-    Fail-open: on any error, keep original (never crash the extractor)."""
+    is_owner_src accepts a bool (legacy) OR an authority_tier string. Fail-open:
+    on any error, keep original (never crash the extractor)."""
     try:
-        if is_owner_src or classify_scope(text) == "personalization":
+        if _is_authoritative(is_owner_src) or classify_scope(text) == "personalization":
             return True, text, False
         # non-owner directive -> demote to observation, keep as behavioral fact
         demoted = f"[observed] this person asked the assistant to: {text.strip()}"
@@ -284,9 +420,10 @@ def gate_world_fact(text, is_owner_src):
         system rule via world-memory. (Not demoted-in-place because world-facts
         have no person to attribute the observation to; the peer lane already
         captured it as an observation if relevant.)
-    Fail-open: on any error, keep original."""
+    is_owner_src accepts a bool (legacy) OR an authority_tier string (owner/scoped
+    both authoritative). Fail-open: on any error, keep original."""
     try:
-        if is_owner_src or classify_scope(text) == "personalization":
+        if _is_authoritative(is_owner_src) or classify_scope(text) == "personalization":
             return True, text, False
         return False, text, True  # non-owner system-directive -> not stored
     except Exception:
