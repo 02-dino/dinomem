@@ -856,6 +856,13 @@ except Exception as e:
     print(f"  \033[33m[skip]\033[0m env-wire: cannot read {path}: {e}")
     raise SystemExit(0)
 changed = []
+# NOTE: OpenClaw does NOT read the openclaw.json top-level "env" block into the
+# gateway PROCESS environment (verified against dist: the dotenv loader reads
+# {configdir}/.env + gateway.env, NOT this key). The warm hook + tool-timeout
+# read process.env, so this block is written to the .env file below (real target).
+# We still mirror into openclaw.json.env for human visibility/back-compat, but the
+# authoritative write is {dirname(openclaw.json)}/.env (== state dir; honors
+# OPENCLAW_STATE_DIR because OPENCLAW_JSON already resolves from OPENCLAW_CONFIG).
 env = cfg.setdefault("env", {})
 if not isinstance(env, dict):
     env = {}
@@ -876,17 +883,77 @@ except ValueError:
 if cur < 90000:
     env["MEMORY_SEARCH_TOOL_TIMEOUT_MS"] = "90000"
     changed.append("env.MEMORY_SEARCH_TOOL_TIMEOUT_MS -> 90000 (was %s)" % (cur or "unset"))
-if changed and os.environ.get("DINOMEM_DRY_RUN") == "1":
+# ---- authoritative target: {configdir}/.env (what the process ACTUALLY reads) ----
+# Desired keys, resolved from the merged json.env (so we write the same values).
+_want = {}
+if env.get("DINOMEM_WARM_AGENTS"):
+    _want["DINOMEM_WARM_AGENTS"] = str(env["DINOMEM_WARM_AGENTS"])
+_want["MEMORY_SEARCH_TOOL_TIMEOUT_MS"] = str(env.get("MEMORY_SEARCH_TOOL_TIMEOUT_MS", "90000") or "90000")
+
+def _merge_dotenv(envpath, want):
+    """Idempotent upsert of key=val lines; preserves other lines/order. Returns changelog."""
+    lines = []
+    if os.path.exists(envpath):
+        with open(envpath) as fh:
+            lines = fh.read().splitlines()
+    idx = {}
+    for i, ln in enumerate(lines):
+        s = ln.strip()
+        if not s or s.startswith("#") or "=" not in s:
+            continue
+        k = s.split("=", 1)[0].strip()
+        idx[k] = i
+    dchanges = []
+    for k, v in want.items():
+        newline = f"{k}={v}"
+        if k in idx:
+            old = lines[idx[k]]
+            # only raise the timeout, never lower an existing higher value
+            if k == "MEMORY_SEARCH_TOOL_TIMEOUT_MS":
+                try:
+                    cur = int(old.split("=", 1)[1].strip() or 0)
+                except Exception:
+                    cur = 0
+                if cur >= int(v):
+                    continue
+            if old.strip() == newline:
+                continue
+            lines[idx[k]] = newline
+            dchanges.append(f".env {k} -> {v} (was {old.split('=',1)[1].strip() if '=' in old else '?'})")
+        else:
+            lines.append(newline)
+            dchanges.append(f".env {k} += {v}")
+    return lines, dchanges
+
+_envdir = os.path.dirname(os.path.abspath(path))
+_envfile = os.path.join(_envdir, ".env")
+_dotlines, _dotchanges = _merge_dotenv(_envfile, _want)
+
+if os.environ.get("DINOMEM_DRY_RUN") == "1":
     for c in changed:
-        print(f"  \033[36m[plan]\033[0m wire openclaw.json: {c}")
-elif not changed:
-    print("  \033[33m[skip]\033[0m warming+timeout env already wired")
+        print(f"  \033[36m[plan]\033[0m mirror openclaw.json.env: {c}")
+    for c in _dotchanges:
+        print(f"  \033[36m[plan]\033[0m wire {_envfile}: {c}")
+    if not changed and not _dotchanges:
+        print("  \033[33m[skip]\033[0m warming+timeout env already wired")
 else:
-    with open(path, "w") as f:
-        json.dump(cfg, f, indent=2)
-    for c in changed:
-        print(f"  \033[32m[ok]\033[0m   wired: {c}")
-    print("  \033[33m[warn]\033[0m Restart OpenClaw for env to take effect: openclaw gateway restart")
+    wrote_any = False
+    if changed:
+        with open(path, "w") as f:
+            json.dump(cfg, f, indent=2)
+        for c in changed:
+            print(f"  \033[32m[ok]\033[0m   mirrored openclaw.json.env: {c}")
+        wrote_any = True
+    if _dotchanges:
+        with open(_envfile, "w") as f:
+            f.write("\n".join(_dotlines) + "\n")
+        for c in _dotchanges:
+            print(f"  \033[32m[ok]\033[0m   wired (authoritative): {c}")
+        wrote_any = True
+    if not wrote_any:
+        print("  \033[33m[skip]\033[0m warming+timeout env already wired")
+    else:
+        print("  \033[33m[warn]\033[0m Restart OpenClaw for env to take effect: openclaw gateway restart")
 PYEOF
 fi
 
