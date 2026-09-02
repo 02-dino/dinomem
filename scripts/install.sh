@@ -2647,6 +2647,36 @@ if openclaw_running; then
       REQUIRED_CRON_GAP=1
     fi
   fi
+else
+  # GATEWAY DOWN AT INSTALL TIME: the cron self-check above is the ONLY thing that
+  # verifies the note-lifecycle lanes actually landed. If the gateway isn't up we
+  # cannot register OR verify any cron — so the whole note spine (Note Cron Gate,
+  # Daily Note Review, memory janitor) is silently absent and the install would
+  # otherwise exit 0 looking successful. That is exactly how agents end up with
+  # dinomem FILES present but ZERO crons (a half-install). Make it LOUD and flag it.
+  warn "gateway not reachable — SKIPPED cron self-check; note-lifecycle crons are NOT verified."
+  warn "dinomem files are installed but the cron spine (Note Cron Gate / Daily Note Review / janitor) may be ABSENT."
+  printf '  \033[33m[fix]\033[0m Start the gateway, then run (idempotent, cron-only):\n'
+  printf '        bash %s/scripts/install.sh --workspace %s --agent-id %s --repair-cron\n' "$SKILL_DIR" "$WS" "$AGENT_ID"
+  REQUIRED_CRON_GAP=1
+fi
+
+# ── INSTALL-COMPLETENESS GATE (make a half-install FAIL loudly) ──────────────
+# BUG this closes: REQUIRED_CRON_GAP used to be SET here but never READ, so a
+# missing cron spine (gateway down, or command-crons refused at install) exited
+# 0 as if the install succeeded. Result observed live: 6 agents with dinomem
+# files present but 0 crons — a silent half-install. Now a real gap is a
+# non-silent, non-zero outcome (skipped only inside --repair-cron self-recursion,
+# which surfaces its own warnings and must not abort the parent).
+if [ "$REQUIRED_CRON_GAP" = 1 ] && [ "$REPAIR_CRON" = 0 ]; then
+  warn "INSTALL INCOMPLETE: the dinomem cron spine is not fully registered (see [fix] above)."
+  warn "Files are in place but the note lifecycle will NOT self-drive until the crons land."
+  # Non-fatal by choice: we do not want to trash an otherwise-good install (hooks,
+  # memory wiring, docker) just because the gateway was down — but we exit NONZERO
+  # so any orchestrating installer / CI treats this as a real, actionable failure
+  # instead of a green run. Re-run with --repair-cron once the gateway accepts
+  # command crons (operator.admin) to clear it.
+  INSTALL_INCOMPLETE=1
 fi
 
 # ── Hook liveness self-check (L3/L3b) ───────────────────────────────────────
@@ -2983,4 +3013,15 @@ if command -v _maybe_restart >/dev/null 2>&1; then
   _maybe_restart
 else
   echo "  → Restart OpenClaw to apply:  openclaw gateway restart"
+fi
+
+# ── Final completeness verdict (exit code reflects reality) ──────────────────
+# A half-install (dinomem files present but the cron spine missing) now exits
+# NONZERO so an orchestrating installer / CI / agent treats it as an actionable
+# failure instead of a green run. All the human-facing [fix] guidance already
+# printed above. Skipped inside --repair-cron (that path reports its own status).
+if [ "${INSTALL_INCOMPLETE:-0}" = 1 ]; then
+  echo ""
+  warn "Install finished with an INCOMPLETE cron spine — exiting nonzero (run the --repair-cron [fix] above once the gateway accepts command crons)."
+  exit 4
 fi
