@@ -55,6 +55,21 @@ DO_GIT_SNAPSHOT=1   # default-ON: ISOLATED git snapshot store (.dinomem-snap.git
 DO_GREP_GUARD=1     # default-ON (ANNOUNCED at install): PATH-ahead shim blocking ONLY broad recursive greps over large trees. Opt out with --no-grep-guard. See features/grep-guard
 FORCE=0
 DRY_RUN=0
+# ── Topology-aware auto-restart (owner-requested UX) ─────────────────────────
+# WHY: dinomem's config/plugin/hook wiring only takes effect after a gateway
+# restart, so a fresh install otherwise ends with a "now restart" nag — not
+# "install and done". We CAN auto-restart (config is validated FIRST, so a bad
+# config never triggers a restart that wouldn't come back), but blindly
+# restarting is unsafe on a MULTI-AGENT shared gateway: one restart drops every
+# agent on that gateway — possibly belonging to different owners — at once, and
+# this installer only owns ONE of them. So the default is TOPOLOGY-AWARE: a
+# single-agent gateway auto-restarts (true "install and done"); a multi-agent
+# gateway does NOT restart unilaterally — it prints the one-line restart command
+# instead, unless the operator explicitly opts in with --restart. Overrides:
+#   --restart     force a restart after a validated install (any topology)
+#   --no-restart  never auto-restart (just print the command)
+#   (default)     restart IFF single-agent gateway AND config validates
+AUTO_RESTART=auto   # auto | always | never
 # --repair-cron: idempotent "just fix the crons" mode. Skips the heavy/one-time
 # phases (docker/TEI, pip, file copy, config/hook wiring, git-snapshot, smart-cache)
 # and flows straight to cron registration + gate + self-check. Safe to re-run any
@@ -80,6 +95,8 @@ while [ $# -gt 0 ]; do
     --no-git-snapshot) DO_GIT_SNAPSHOT=0; shift ;;
     --grep-guard)      DO_GREP_GUARD=1; shift ;;
     --no-grep-guard)   DO_GREP_GUARD=0; shift ;;
+    --restart)         AUTO_RESTART=always; shift ;;
+    --no-restart)      AUTO_RESTART=never; shift ;;
     --force)      FORCE=1; shift ;;
     --dry-run)    DRY_RUN=1; shift ;;
     --agree)      shift ;;  # no-op: base has no license gate; neuron passes this through after the human accepted the neuron license. Accept+ignore so neuron auto-base install doesn't die on 'unknown arg'.
@@ -147,6 +164,8 @@ openclaw_running() {
     timeout 10 openclaw status >/dev/null 2>&1
   fi
 }
+# _agent_count + _maybe_restart (topology-aware auto-restart) live in the shared
+# lib/discover_instances.sh so BOTH base and neuron get them from one source (DRY).
 
 # resolve_memory_db <agent_id> <openclaw_dir>: print the REAL sqlite DB path for
 # this box. WHY: OpenClaw's DB layout is version-dependent
@@ -2955,3 +2974,13 @@ echo "  https://github.com/02-dino/dinomem#want-more--dinomem-neuron-private-rep
 echo ""
 echo "  License: MIT — https://github.com/02-dino/dinomem/blob/main/LICENSE"
 echo "  Undo: bash $SKILL_DIR/scripts/uninstall.sh --workspace $WS --agent-id $AGENT_ID"
+echo ""
+# Topology-aware restart: single-agent -> auto-restart (install & done);
+# multi-agent -> print the command; --restart forces, --no-restart suppresses.
+# Always validates config before any restart. Guarded: helper lives in the shared
+# discover lib (sourced only if present) -> fall back to the plain nag otherwise.
+if command -v _maybe_restart >/dev/null 2>&1; then
+  _maybe_restart
+else
+  echo "  → Restart OpenClaw to apply:  openclaw gateway restart"
+fi

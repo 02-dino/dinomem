@@ -215,3 +215,72 @@ _dinomem_export_row() {
   DINOMEM_SEL_CONFIG="$(printf '%s' "$row" | cut -f3)"
   DINOMEM_SEL_PORT="$(printf '%s' "$row" | cut -f4)"
 }
+
+# ── Topology-aware auto-restart helpers (shared by base + neuron installers) ──
+# WHY here: dinomem's config/plugin/hook wiring only applies after a gateway
+# restart. Auto-restart makes it "install and done" — BUT on a multi-agent
+# shared gateway one restart drops every agent on it (possibly different owners)
+# at once, and an installer only owns one of them. So restart is TOPOLOGY-AWARE.
+# These live in the shared lib (sourced by both install.sh scripts) so the logic
+# exists once, not copy-pasted per repo. They read installer-scoped vars
+# (AUTO_RESTART, OPENCLAW_JSON, DRY_RUN, OPENCLAW_STATE_DIR) from the caller.
+
+# _agent_count <config_json>: how many agents this gateway config declares.
+# 1 => safe to restart unilaterally (single tenant); >1 => shared gateway.
+# On any parse failure prints 99 (fail-SAFE toward "multi" = do NOT auto-restart).
+_agent_count() {
+  local cfg="$1"
+  [ -f "$cfg" ] || { echo 99; return; }
+  python3 - "$cfg" <<'PYEOF' 2>/dev/null || echo 99
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+    a = d.get('agents')
+    if isinstance(a, dict): a = a.get('list', [])
+    n = len(a) if isinstance(a, list) else 0
+    print(n if n > 0 else 1)   # no agents array => single default agent
+except Exception:
+    print(99)
+PYEOF
+}
+
+# _maybe_restart: the restart gate, called ONCE at the end of a successful install.
+#   AUTO_RESTART=never  -> print the command, do nothing.
+#   AUTO_RESTART=always -> restart IFF config validates.
+#   AUTO_RESTART=auto   -> restart IFF single-agent gateway AND config validates.
+# Validate is the load-bearing safety: a config failing schema would not come back
+# after restart (total silence), so we NEVER restart past a failed validate in any
+# mode. Honors OPENCLAW_STATE_DIR (right gateway on a multi-instance box). No-op
+# under --dry-run. Defaults AUTO_RESTART=auto if the caller left it unset.
+_maybe_restart() {
+  [ "${DRY_RUN:-0}" = 1 ] && return 0
+  command -v openclaw >/dev/null 2>&1 || return 0
+  local mode="${AUTO_RESTART:-auto}"
+  local restart_cmd="openclaw gateway restart"
+  [ -n "${OPENCLAW_STATE_DIR:-}" ] && restart_cmd="OPENCLAW_STATE_DIR=$OPENCLAW_STATE_DIR openclaw gateway restart"
+
+  if [ "$mode" = never ]; then
+    echo "  → Restart to apply dinomem changes:  $restart_cmd"
+    return 0
+  fi
+
+  local n; n="$(_agent_count "${OPENCLAW_JSON:-$HOME/.openclaw/openclaw.json}")"
+  if [ "$mode" = auto ] && [ "$n" != 1 ]; then
+    echo "  → Multi-agent gateway ($n agents) — NOT auto-restarting (would drop the others)."
+    echo "    Restart when ready:  $restart_cmd    (or re-run with --restart to force)"
+    return 0
+  fi
+
+  # always, or auto+single-agent: validate FIRST, then restart.
+  if ! openclaw config validate >/dev/null 2>&1; then
+    echo "  ✖ Config FAILS validation — NOT restarting (gateway would not come back)."
+    echo "    Fix, then:  openclaw config validate && $restart_cmd"
+    return 0
+  fi
+  echo "  ↻ Config valid — restarting gateway to apply dinomem changes…"
+  if eval "timeout 90 $restart_cmd" >/dev/null 2>&1; then
+    echo "  ✓ Gateway restarted — dinomem is live. Install and done."
+  else
+    echo "  ! Restart command returned nonzero — verify manually:  $restart_cmd"
+  fi
+}
