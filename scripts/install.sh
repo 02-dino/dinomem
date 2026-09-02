@@ -408,7 +408,41 @@ if command -v select_openclaw_instance >/dev/null 2>&1 && [ -z "${DINOMEM_INSTAN
       while IFS=$'\t' read -r _aid _sdir _cfg _port; do
         [ -n "$_aid" ] || continue
         printf '\n=== instance: %s ===\n' "$_aid" >&2
-        DINOMEM_INSTANCE_RESOLVED=1 bash "$_self" --instance "$_aid" --workspace "$WS" \
+        # PER-AGENT WORKSPACE (was: reused the outer $WS for every agent -> the
+        # recursive install got --instance <aid> but --workspace <FIRST agent's ws>,
+        # so cron `cd $WS` + state/db all pointed at the WRONG workspace while the
+        # managed tag correctly said :<aid>. Live symptom: a cron tagged
+        # `:analyst` doing `cd workspace-event` -> that agent's sessions never
+        # scanned. Derive each agent's OWN workspace here.)
+        # Source order (authoritative -> convention -> last-resort outer $WS):
+        #   1. ASK OpenClaw for this agent's configured workspace (per its own
+        #      state dir/config, so multi-gateway boxes resolve correctly).
+        #   2. the `workspace-<aid>` convention dir, if it exists.
+        #   3. fall back to the outer $WS (old behavior) so nothing regresses on
+        #      a single-agent box where discovery yields one row == $WS anyway.
+        _ws_agent=""
+        _ws_agent="$(
+          OPENCLAW_STATE_DIR="${_sdir:-}" OPENCLAW_CONFIG="${_cfg:-}" \
+            timeout "${DINOMEM_PROBE_TIMEOUT_S:-45}" openclaw config get "agents.$_aid.workspace" \
+            </dev/null 2>/dev/null | tr -d '"' | tr -d '[:space:]'
+        )"
+        case "$_ws_agent" in
+          /*) : ;;                       # got an absolute path — trust it
+          *)  _ws_agent="" ;;            # empty/relative/junk — discard, try convention
+        esac
+        if [ -z "$_ws_agent" ]; then
+          # convention: sibling workspace-<aid> next to the outer $WS's parent
+          _ws_parent="$(dirname "$WS")"
+          if [ "$_aid" = "main" ] && [ -d "$_ws_parent/workspace" ]; then
+            _ws_agent="$_ws_parent/workspace"
+          elif [ -d "$_ws_parent/workspace-$_aid" ]; then
+            _ws_agent="$_ws_parent/workspace-$_aid"
+          fi
+        fi
+        # last resort: outer $WS (single-agent / non-systemd fallback path)
+        [ -n "$_ws_agent" ] && [ -d "$_ws_agent" ] || _ws_agent="$WS"
+        ok "  workspace for '$_aid': $_ws_agent"
+        DINOMEM_INSTANCE_RESOLVED=1 bash "$_self" --instance "$_aid" --workspace "$_ws_agent" \
           ${DRY_RUN:+--dry-run} \
           || skip "install into '$_aid' exited nonzero — continuing with the rest"
       done <<< "$DINOMEM_SEL_ALL_ROWS"
