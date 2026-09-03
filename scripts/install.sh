@@ -3171,6 +3171,58 @@ else
   echo "  → Restart OpenClaw to apply:  openclaw gateway restart"
 fi
 
+# ── Placeholder-leftover safety net (self-healing) ───────────────────────────
+# WHY: the per-file awk subst in copy_engine_file resolves DINOMEM_*_PLACEHOLDER
+# tokens at copy time, but a file can slip through unresolved if it was installed
+# by an OLDER installer (before that file joined the auto-discovery loop) or if a
+# copy path was ever added that bypassed the subst pass. A single unresolved
+# DINOMEM_AGENT_SESSIONS_PLACEHOLDER in session_reset.py silently BREAKS the
+# auto-reset cron for that agent (path points nowhere -> crash every run), and it
+# stays invisible until sessions stop resetting. Observed live: agents installed
+# at different times had session_reset.py / extract_memory.py / config_tool.py
+# still carrying raw placeholders. Rather than trust every future copy path to
+# remember the subst, we do ONE authoritative sweep here at the end: find any
+# installed *.py/*.sh under the managed dirs that still contains a
+# DINOMEM_*_PLACEHOLDER token, resolve the 4 known tokens in place, and report.
+# Idempotent (a clean install finds nothing), self-healing (fixes stragglers),
+# and loud (prints what it healed) so it can never silently rot again.
+if [ "$DRY_RUN" = 0 ]; then
+  _ph_healed=0
+  while IFS= read -r -d '' _phf; do
+    if grep -q 'DINOMEM_[A-Z_]*_PLACEHOLDER' "$_phf" 2>/dev/null; then
+      W="$WS" S="$SESSIONS_DIR" A="$AGENT_ID" D="$MEMORY_DB" awk '
+        BEGIN {
+          n=4
+          ph[1]="DINOMEM_WORKSPACE_PLACEHOLDER";      val[1]=ENVIRON["W"]
+          ph[2]="DINOMEM_AGENT_SESSIONS_PLACEHOLDER"; val[2]=ENVIRON["S"]
+          ph[3]="DINOMEM_AGENT_ID_PLACEHOLDER";        val[3]=ENVIRON["A"]
+          ph[4]="DINOMEM_DB_PLACEHOLDER";             val[4]=ENVIRON["D"]
+        }
+        {
+          s=$0
+          for (i=1;i<=n;i++) {
+            L=length(ph[i]); out=""
+            while ((p=index(s,ph[i]))>0) { out=out substr(s,1,p-1) val[i]; s=substr(s,p+L) }
+            s=out s
+          }
+          print s
+        }
+      ' "$_phf" > "$_phf.phtmp.$$" 2>/dev/null && mv "$_phf.phtmp.$$" "$_phf" || rm -f "$_phf.phtmp.$$"
+      # Re-check: any placeholder still left is an UNKNOWN token (not one of the 4)
+      # -> warn but do not fail (may be an intentional sed-template like a *_reconcile.sh).
+      if grep -q 'DINOMEM_[A-Z_]*_PLACEHOLDER' "$_phf" 2>/dev/null; then
+        warn "placeholder-heal: $_phf still has an UNRESOLVED token (not one of WORKSPACE/SESSIONS/AGENT_ID/DB) — inspect manually"
+      else
+        warn "placeholder-heal: resolved leftover token(s) in ${_phf#$WS/}"
+        _ph_healed=$((_ph_healed+1))
+      fi
+    fi
+  done < <(find "$WS/procedures" "$WS/tools" "$WS/scripts" -type f \( -name '*.py' -o -name '*.sh' \) ! -name '*.bak*' -print0 2>/dev/null)
+  if [ "$_ph_healed" -gt 0 ]; then
+    warn "placeholder-heal: patched $_ph_healed installed file(s) that shipped with unresolved DINOMEM_*_PLACEHOLDER tokens (older-installer straggler). Clean now."
+  fi
+fi
+
 # ── Final completeness verdict (exit code reflects reality) ──────────────────
 # A half-install (dinomem files present but the cron spine missing) now exits
 # NONZERO so an orchestrating installer / CI / agent treats it as an actionable
