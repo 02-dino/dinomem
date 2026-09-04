@@ -83,7 +83,7 @@ SMART_CACHE_BRANCH="${SMART_CACHE_BRANCH:-feat/compression-only-generalized}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --workspace)  WS="$2"; shift 2 ;;
+    --workspace)  WS="$2"; WS_EXPLICIT=1; shift 2 ;;
     --agent-id)   AGENT_ID="$2"; AGENT_ID_EXPLICIT=1; shift 2 ;;
     --instance)   INSTANCE_ID="$2"; shift 2 ;;
     --no-docker)  DO_DOCKER=0; shift ;;
@@ -517,6 +517,29 @@ if command -v select_openclaw_instance >/dev/null 2>&1 && [ -z "${DINOMEM_INSTAN
       ;;
     default) : ;;
   esac
+fi
+# P7 GUARD — agent/workspace mismatch (the batch-install footgun, 2026-09-04).
+# WHY: on a multi-agent gateway each agent has its OWN workspace-<id> dir. If a
+# caller passes --agent-id <X> but NO --workspace, WS silently stays at the
+# generic default ($HOME/.openclaw/workspace) and EVERY agent gets written into
+# the SAME dir -> shared AGENTS.md re-wired per agent -> double-BEGIN orphan +
+# wrong cron/config target. It failed identically whether serial or parallel;
+# the real bug was the missing --workspace, not concurrency. The per-agent
+# workspace auto-resolution only runs inside the multi-agent discovery loop, so
+# a direct --agent-id X --instance main invocation bypasses it. Refuse it here.
+# CONTRACT: explicit --agent-id + NON-explicit workspace + resolved WS basename
+# that does not correspond to that agent (basename != workspace-<id> and the
+# agent isn't the literal 'main'/'workspace' default owner) => hard fail with the
+# exact fix. Anyone who KNOWS the default is right passes --workspace explicitly
+# (WS_EXPLICIT=1) or sets OPENCLAW_WORKSPACE, both of which bypass the guard.
+if [ "${AGENT_ID_EXPLICIT:-0}" = 1 ] && [ "${WS_EXPLICIT:-0}" != 1 ] && [ -z "${OPENCLAW_WORKSPACE:-}" ]; then
+  _ws_base="$(basename "$WS")"
+  if [ "$_ws_base" != "workspace-$AGENT_ID" ] \
+     && [ "$AGENT_ID" != "main" ] && [ "$AGENT_ID" != "workspace" ] \
+     && [ "$_ws_base" != "$AGENT_ID" ]; then
+    _ws_want="$OPENCLAW_DIR/workspace-$AGENT_ID"
+    fail "agent/workspace mismatch: --agent-id '$AGENT_ID' but workspace resolved to '$WS' (the generic default). On a multi-agent gateway this writes every agent into the SAME dir and corrupts the shared AGENTS.md. Pass the agent's real workspace: --workspace ${_ws_want} (or export OPENCLAW_WORKSPACE). If '$WS' really is correct for this agent, pass --workspace '$WS' explicitly to confirm."
+  fi
 fi
 SESSIONS_DIR="$OPENCLAW_DIR/agents/$AGENT_ID/sessions"
 # Memory sqlite DB path baked into neuron procedures (memory_synthesis/memory_graph).
