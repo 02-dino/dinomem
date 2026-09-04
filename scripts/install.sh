@@ -131,13 +131,23 @@ wire_managed_block() {
     return 0
   fi
   touch "$_file"
-  if grep -qF "$_begin" "$_file" 2>/dev/null; then
+  # Fire the strip path if EITHER marker is present (orphan BEGIN-without-END or
+  # END-without-BEGIN both need cleaning, not just a complete span).
+  if grep -qF "$_begin" "$_file" 2>/dev/null || grep -qF "$_end" "$_file" 2>/dev/null; then
     local _tmp; _tmp="$(mktemp)"
+    # Orphan-aware strip: BUFFER from a BEGIN until its END; on a real END discard
+    # the whole buffered block. A second BEGIN while buffering => prior BEGIN was an
+    # orphan -> FLUSH its lines back (keep content; the lone BEGIN marker itself is
+    # dropped by grep -vxF). EOF still buffering = trailing orphan -> flush too.
+    # WHY: the old skip-flag awk set skip=1 at BEGIN and never reset without an END,
+    # silently DELETING every line after an orphan BEGIN (data loss). Pinned by a
+    # 4-case test (orphan / clean-refresh / double-BEGIN / fresh).
     awk -v b="$_begin" -v e="$_end" '
-      index($0,b){skip=1}
-      !skip{print}
-      index($0,e){skip=0}
-    ' "$_file" > "$_tmp"
+      index($0,b){ if(buffering){for(i=1;i<=n;i++)print buf[i]} buffering=1; n=0; buf[++n]=$0; next }
+      buffering{ buf[++n]=$0; if(index($0,e)){buffering=0;n=0} next }
+      {print}
+      END{ if(buffering) for(i=1;i<=n;i++) print buf[i] }
+    ' "$_file" | grep -vxF "$_begin" > "$_tmp"
     awk 'NF{last=NR} {lines[NR]=$0} END{for(i=1;i<=last;i++) print lines[i]}' "$_tmp" > "$_file"
     rm -f "$_tmp"
     printf '\n%s\n' "$_block" >> "$_file"
@@ -623,6 +633,27 @@ fi
 OPENCLAW_JSON="${OPENCLAW_CONFIG:-$HOME/.openclaw/openclaw.json}"
 if [ -f "$OPENCLAW_JSON" ]; then
   ok "openclaw.json found ($OPENCLAW_JSON)"
+  # P5 pre-flight: if the TARGET config is ALREADY invalid before we touch a single
+  # file, STOP now — so a pre-existing breakage is never misattributed to this
+  # installer (the classic "install ran, config crashed" false blame). `config
+  # validate` exits non-zero ONLY on hard errors; warnings (stale plugins etc.)
+  # exit 0 and must NOT block. Guarded: skip cleanly if the CLI/subcommand is
+  # absent (older OpenClaw) or the gateway isn't reachable — validate is a
+  # safety gate, not a hard dependency. timeout so a hung CLI can't freeze us.
+  if [ "$DRY_RUN" != 1 ] && command -v openclaw >/dev/null 2>&1; then
+    _vout="$(OPENCLAW_CONFIG="$OPENCLAW_JSON" timeout 30 openclaw config validate 2>&1)"; _vrc=$?
+    if [ "$_vrc" -ne 0 ]; then
+      # Distinguish "already invalid" (hard fail) from "subcommand unknown" (skip).
+      if printf '%s' "$_vout" | grep -qiE 'unknown|unrecognized|not a (valid )?command|no such'; then
+        warn "openclaw config validate unavailable on this build — skipping pre-flight validation (non-blocking)."
+      else
+        printf '%s\n' "$_vout" | head -20
+        fail "target config was ALREADY invalid BEFORE install (see above) — fix it first, then re-run. This is NOT caused by the installer (pre-flight guard)."
+      fi
+    else
+      ok "pre-flight: target config validates (warnings, if any, are non-blocking)"
+    fi
+  fi
 else
   warn "openclaw.json not found at $OPENCLAW_JSON — config patches will be skipped. Set OPENCLAW_CONFIG or ensure OpenClaw is initialized."
 fi
@@ -1970,6 +2001,19 @@ fi
 hr "OpenClaw config"
 OPENCLAW_JSON="${OPENCLAW_JSON:-$HOME/.openclaw/openclaw.json}"
 [ -f "$OPENCLAW_JSON" ] || OPENCLAW_JSON="$OPENCLAW_DIR/openclaw.json"
+# P2 anti-race: serialize the whole config-patch section on a per-config lockfile.
+# WHY: parallel installs (multi-agent on one shared openclaw.json) each read-modify-
+# write the SAME file; interleaved writes corrupt it (real incident: 9-way parallel
+# run left the config invalid). flock makes them take turns — a queued install re-
+# reads fresh state and idempotently patches. FD 8 (swap logic below uses FD 9, keep
+# distinct). Fail-open if flock is absent (older/leaner host): degrade to unlocked
+# rather than block. Lock keyed on the config path so different instances don't
+# false-contend. Held only for section 5 (released at 5-close marker below).
+_CFG_LOCK="${TMPDIR:-/tmp}/dinomem-config-$(printf '%s' "$OPENCLAW_JSON" | md5sum 2>/dev/null | cut -c1-16).lock"
+if [ "$DRY_RUN" != 1 ] && command -v flock >/dev/null 2>&1; then
+  exec 8>"$_CFG_LOCK" 2>/dev/null || true
+  flock -w 120 8 2>/dev/null || warn "another dinomem install holds the config lock — proceeding without lock after 120s wait"
+fi
 if [ -f "$OPENCLAW_JSON" ] && [ "$DRY_RUN" != 1 ]; then
   bash "$SKILL_DIR/scripts/file-backup.sh" "$OPENCLAW_JSON" >/dev/null 2>&1 && ok "openclaw.json backed up" || true  # backup is a safety nicety; original untouched, so a failed .bak is not user-actionable — stay silent
 fi
@@ -2337,6 +2381,10 @@ else:
             print("  \033[32m[ok]\033[0m   openclaw.json validated against schema")
     print("  \033[33m[warn]\033[0m Restart OpenClaw: openclaw gateway restart")
 PYEOF
+fi
+# P2: release the config lock (section 5 done). Fail-safe if it was never taken.
+if [ "$DRY_RUN" != 1 ] && command -v flock >/dev/null 2>&1; then
+  flock -u 8 2>/dev/null || true; exec 8>&- 2>/dev/null || true
 fi
 
 # ── 5b) smart-cache-pro (compression-only) plugin ────────────────────────────
