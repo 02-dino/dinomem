@@ -2071,14 +2071,6 @@ if not isinstance(subagents.get("runTimeoutSeconds"), int) or subagents.get("run
     prev = subagents.get("runTimeoutSeconds")
     subagents["runTimeoutSeconds"] = TIMEOUT_FLOOR
     changed.append(f"agents.defaults.subagents.runTimeoutSeconds -> {TIMEOUT_FLOOR}s floor (was {prev}; sub-agent headroom)")
-# subagent lightContext default -> true (cheap/focused bootstrap for the common
-# read/summarize/research task). Build/self-mod spawns override per-call to false
-# (see subagent_build_discipline in AGENTS.md). NON-CLOBBER: only sets when unset
-# or currently false; a user who deliberately set true is unchanged (idempotent).
-if subagents.get("lightContext") is not True:
-    prev = subagents.get("lightContext")
-    subagents["lightContext"] = True
-    changed.append(f"agents.defaults.subagents.lightContext -> true (was {prev}; cheap default, build spawns override to false)")
 
 # bootstrapMaxChars / bootstrapTotalMaxChars -> raise caps to fit what dinomem
 # injects, so the policy blocks are never silently truncated. Measured, not a
@@ -2570,17 +2562,6 @@ DINOMEM_BODY=$(cat <<'DINOMEM_AGENTS_BODY'
     prefer: ripgrep (`rg`) when available (fast, respects .gitignore); fall back to a timeout-bounded scoped grep.
     override: need a raw recursive grep for a real reason -> call the real binary directly (`/usr/bin/grep`), bypassing any installed grep-guard.
     note: the optional grep-guard feature (features/grep-guard) enforces this at the shell level when installed; this rule holds regardless.
-  subagent_build_discipline:
-    scope: task delegated via sessions_spawn that WRITES/EDITS code (gate|hook|skill|tool|lib|installer|config)
-    spawn_side (orchestrator/parent):
-      - build/self-mod task -> spawn with lightContext:false (full AGENTS.md, rule below not truncated)
-      - read/summarize/research/data task -> lightContext:true (default; cheap)
-      - name required skills IN the brief text explicitly (don't rely on subagent attention)
-    worker_side (subagent):
-      - task writes/edits code -> MUST read skill build-quality BEFORE first line
-      - touches openclaw.json/config -> ALSO read openclaw-config-edit (never raw-edit; config patch/set only)
-      - touches files (mv/rm/overwrite) -> ALSO read safe-file-ops
-      - no commit/push/release unless brief explicitly grants it
 DINOMEM_AGENTS_BODY
 )
 BLOCK="$BEGIN
