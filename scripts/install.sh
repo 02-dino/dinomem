@@ -205,10 +205,18 @@ openclaw_running() {
   # Probe the TARGET instance, not the default: when a multi-instance selection set
   # OPENCLAW_STATE_DIR, honor it so we don't false-report "not running" against the
   # wrong gateway. Empty -> default instance (back-compat, single-agent hosts).
+  # Probe timeout: `openclaw status` renders a full status card and can take 45-50s
+  # on a busy multi-agent gateway that is perfectly HEALTHY. A hardcoded 10s here
+  # false-negatives a slow-but-up gateway -> cron/hooks silently SKIPPED -> the
+  # "INSTALL INCOMPLETE" trap (measured 48.9s on a 13-agent box, 2026-09-04).
+  # Honor DINOMEM_PROBE_TIMEOUT_S (default 45, matching the config-resolution probe
+  # at line ~473) so a slow healthy gateway is seen as running. Env-configurable,
+  # not another hardcode (this box has prior hardcoded-timeout scars).
+  local _pt="${DINOMEM_PROBE_TIMEOUT_S:-45}"
   if [ -n "${OPENCLAW_STATE_DIR:-}" ]; then
-    OPENCLAW_STATE_DIR="$OPENCLAW_STATE_DIR" timeout 10 openclaw status >/dev/null 2>&1
+    OPENCLAW_STATE_DIR="$OPENCLAW_STATE_DIR" timeout "$_pt" openclaw status >/dev/null 2>&1
   else
-    timeout 10 openclaw status >/dev/null 2>&1
+    timeout "$_pt" openclaw status >/dev/null 2>&1
   fi
 }
 # _agent_count + _maybe_restart (topology-aware auto-restart) live in the shared
