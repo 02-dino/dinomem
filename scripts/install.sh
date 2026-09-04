@@ -122,6 +122,13 @@ hr()   { printf '\033[1m== %s ==\033[0m\n' "$*"; }
 # lines never accumulate across re-runs.
 wire_managed_block() {
   local _file="$1" _begin="$2" _end="$3" _block="$4" _label="$5"
+  # P6 (2026-09-04): optional 6th arg = a legacy-section awk regex (e.g.
+  # '^## (dinomem|memory_recall)([ \t]|$)'). When set, an OLD UNMARKED section
+  # matching it is absorbed IN THE SAME atomic pipeline as the marker strip, so
+  # there is exactly ONE write to $_file per call (was: a separate pre-pass write
+  # + this write = two non-atomic writes with a death window that froze a
+  # half-written double-BEGIN when the batch driver was killed between them).
+  local _legacy_re="${6:-}"
   if [ "$DRY_RUN" = 1 ]; then
     if grep -qF "$_begin" "$_file" 2>/dev/null; then
       plan "refresh managed block in $_label (strip old BEGIN..END, write current)"
@@ -131,9 +138,17 @@ wire_managed_block() {
     return 0
   fi
   touch "$_file"
+  # P6 ATOMICITY: build the ENTIRE final file in ONE temp, then a SINGLE `mv` into
+  # place. A rename on the same filesystem is atomic, so a kill -9 at any point
+  # leaves EITHER the untouched original OR the complete new file — never a
+  # half-written orphan (the 2/1-marker corruption that ate the batch). Every
+  # write below targets $_tmp2; $_file is touched exactly once, by mv, at the end.
+  local _tmp2; _tmp2="$(mktemp)"
   # Fire the strip path if EITHER marker is present (orphan BEGIN-without-END or
-  # END-without-BEGIN both need cleaning, not just a complete span).
-  if grep -qF "$_begin" "$_file" 2>/dev/null || grep -qF "$_end" "$_file" 2>/dev/null; then
+  # END-without-BEGIN both need cleaning, not just a complete span) OR a legacy
+  # unmarked section is present and we were asked to absorb it.
+  if grep -qF "$_begin" "$_file" 2>/dev/null || grep -qF "$_end" "$_file" 2>/dev/null \
+     || { [ -n "$_legacy_re" ] && grep -qE "$_legacy_re" "$_file" 2>/dev/null; }; then
     local _tmp; _tmp="$(mktemp)"
     # Orphan-aware strip: BUFFER from a BEGIN until its END; on a real END discard
     # the whole buffered block. A second BEGIN while buffering => prior BEGIN was an
@@ -148,12 +163,34 @@ wire_managed_block() {
       {print}
       END{ if(buffering) for(i=1;i<=n;i++) print buf[i] }
     ' "$_file" | grep -vxF "$_begin" > "$_tmp"
-    awk 'NF{last=NR} {lines[NR]=$0} END{for(i=1;i<=last;i++) print lines[i]}' "$_tmp" > "$_file"
+    # P6: legacy-absorb folded IN. Only strips an UNMARKED old section (drop from
+    # its header to the next '#'/'##' header). Runs on the already-marker-stripped
+    # stream, and only when a legacy regex was passed — a marker-bounded block's
+    # own '## dinomem' first body line is inside BEGIN..END and already gone, so
+    # this cannot eat the fresh block.
+    if [ -n "$_legacy_re" ]; then
+      awk -v re="$_legacy_re" '
+        $0 ~ re { drop=1; next }
+        drop && /^#{1,2} / { drop=0 }
+        !drop { print }
+      ' "$_tmp" > "$_tmp2"
+    else
+      cp "$_tmp" "$_tmp2"
+    fi
     rm -f "$_tmp"
-    printf '\n%s\n' "$_block" >> "$_file"
+    # Trim trailing blank lines the strips leave, into a fresh temp, append block,
+    # then ONE atomic mv. (trim reads $_tmp2, writes $_tmp3; never touches $_file.)
+    local _tmp3; _tmp3="$(mktemp)"
+    awk 'NF{last=NR} {lines[NR]=$0} END{for(i=1;i<=last;i++) print lines[i]}' "$_tmp2" > "$_tmp3"
+    printf '\n%s\n' "$_block" >> "$_tmp3"
+    mv -f "$_tmp3" "$_file"
+    rm -f "$_tmp2"
     ok "$_label block refreshed (old block stripped, current block written)"
   else
-    printf '\n%s\n' "$_block" >> "$_file"
+    # Fresh wire: copy original + append block into temp, then ONE atomic mv.
+    cp "$_file" "$_tmp2" 2>/dev/null || : > "$_tmp2"
+    printf '\n%s\n' "$_block" >> "$_tmp2"
+    mv -f "$_tmp2" "$_file"
     ok "$_label wired"
   fi
 }
@@ -2635,22 +2672,14 @@ BLOCK="$BEGIN
 $DINOMEM_BODY
 $END"
 
-# Legacy-absorb pre-pass: if an OLD unmarked dinomem section exists (pre-marker
-# installs) AND no BEGIN marker yet, strip it so wire_managed_block doesn't leave
-# a duplicate unmarked copy above the fresh managed block. Marker-bounded blocks
-# are never touched here (this only runs when no BEGIN marker exists).
-if [ "$DRY_RUN" != 1 ] && ! grep -qF "$BEGIN" "$AGENTS" 2>/dev/null \
-   && grep -qE '^## (dinomem|memory_recall|rag_long_docs)([[:space:]]|$)' "$AGENTS" 2>/dev/null; then
-  _tmp_legacy="$(mktemp)"
-  awk '
-    /^## (dinomem|memory_recall|rag_long_docs)([ \t]|$)/ { drop=1; next }
-    drop && /^#{1,2} / { drop=0 }
-    !drop { print }
-  ' "$AGENTS" > "$_tmp_legacy"
-  awk 'NF{last=NR} {lines[NR]=$0} END{for(i=1;i<=last;i++) print lines[i]}' "$_tmp_legacy" > "$AGENTS"
-  rm -f "$_tmp_legacy"
-fi
-wire_managed_block "$AGENTS" "$BEGIN" "$END" "$BLOCK" "AGENTS.md"
+# P6 (2026-09-04): legacy-absorb is now folded INTO wire_managed_block as its 6th
+# arg, so the old-unmarked-section strip and the marker wire happen in ONE atomic
+# write (single mv), not two separate in-place writes with a death window between
+# them. The regex only strips a truly UNMARKED old section; a marker-bounded
+# block's '## dinomem' body line is inside BEGIN..END and stripped by the marker
+# pass first, so it can never eat the fresh block.
+wire_managed_block "$AGENTS" "$BEGIN" "$END" "$BLOCK" "AGENTS.md" \
+  '^## (dinomem|memory_recall|rag_long_docs)([ \t]|$)'
 if false; then  # DEAD: legacy wiring, superseded by wire_managed_block above; kept guarded then removed
   if [ "$FORCE" = 1 ]; then
     if [ "$DRY_RUN" = 1 ]; then
