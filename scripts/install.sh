@@ -1480,6 +1480,45 @@ def _dino_name_agent_match(j, name):
     return jaid == _DINO_AID
 # --dino-agent-match-helper--
 
+_DINO_DELIVER_CH = None
+def _dino_deliver_channel():
+    """Resolve an EXPLICIT delivery channel for announce-mode crons, once.
+    WHY: OpenClaw defaults an announce cron to channel 'last'. On a MULTI-channel
+    box 'last' is ambiguous -> the runtime refuses to deliver ('Channel is
+    required when multiple channels are configured'), silently breaking every
+    announce cron (Daily Note Review / Pending Note Reminder). Resolving one
+    concrete channel at install time makes these crons work on single-, multi-,
+    and 1:1 boxes alike. Fail-open to 'last' (the old behavior) so a single-
+    channel box never regresses. Override with DINOMEM_DELIVER_CHANNEL."""
+    global _DINO_DELIVER_CH
+    if _DINO_DELIVER_CH is not None:
+        return _DINO_DELIVER_CH
+    ov = (_os.environ.get('DINOMEM_DELIVER_CHANNEL','') or '').strip()
+    if ov:
+        _DINO_DELIVER_CH = ov; return _DINO_DELIVER_CH
+    ch = 'last'
+    try:
+        cr = subprocess.run(['openclaw','config','get','channels'],
+                            capture_output=True, text=True, timeout=_CLI_T)
+        if cr.returncode == 0 and cr.stdout.strip():
+            cfg = json.loads(cr.stdout)
+            usable = []
+            for name, c in (cfg or {}).items():
+                if not isinstance(c, dict):
+                    continue
+                accts = c.get('accounts', {}) or {}
+                acct_on = any((a or {}).get('enabled') for a in accts.values())
+                if c.get('enabled') or acct_on:
+                    usable.append(name)
+            if len(usable) == 1:
+                ch = usable[0]
+            elif len(usable) > 1:
+                ch = 'telegram' if 'telegram' in usable else sorted(usable)[0]
+    except Exception:
+        pass
+    _DINO_DELIVER_CH = ch
+    return _DINO_DELIVER_CH
+
 def _cron_add_argv(job):
     """Build a flag-based `openclaw cron add` argv from a job dict.
     OpenClaw 2026.6.6+ has no `cron add --json <blob>`; jobs are built from flags.
@@ -1547,6 +1586,7 @@ def _cron_add_argv(job):
         a += ['--no-deliver']
     elif dmode == 'announce':
         a += ['--announce']
+        a += ['--channel', _dino_deliver_channel()]
     if job.get('enabled') is False:
         a += ['--disabled']
     a += ['--json']
@@ -1874,6 +1914,45 @@ def _dino_name_agent_match(j, name):
     return jaid == _DINO_AID
 # --dino-agent-match-helper--
 
+_DINO_DELIVER_CH = None
+def _dino_deliver_channel():
+    """Resolve an EXPLICIT delivery channel for announce-mode crons, once.
+    WHY: OpenClaw defaults an announce cron to channel 'last'. On a MULTI-channel
+    box 'last' is ambiguous -> the runtime refuses to deliver ('Channel is
+    required when multiple channels are configured'), silently breaking every
+    announce cron (Daily Note Review / Pending Note Reminder). Resolving one
+    concrete channel at install time makes these crons work on single-, multi-,
+    and 1:1 boxes alike. Fail-open to 'last' (the old behavior) so a single-
+    channel box never regresses. Override with DINOMEM_DELIVER_CHANNEL."""
+    global _DINO_DELIVER_CH
+    if _DINO_DELIVER_CH is not None:
+        return _DINO_DELIVER_CH
+    ov = (_os.environ.get('DINOMEM_DELIVER_CHANNEL','') or '').strip()
+    if ov:
+        _DINO_DELIVER_CH = ov; return _DINO_DELIVER_CH
+    ch = 'last'
+    try:
+        cr = subprocess.run(['openclaw','config','get','channels'],
+                            capture_output=True, text=True, timeout=_CLI_T)
+        if cr.returncode == 0 and cr.stdout.strip():
+            cfg = json.loads(cr.stdout)
+            usable = []
+            for name, c in (cfg or {}).items():
+                if not isinstance(c, dict):
+                    continue
+                accts = c.get('accounts', {}) or {}
+                acct_on = any((a or {}).get('enabled') for a in accts.values())
+                if c.get('enabled') or acct_on:
+                    usable.append(name)
+            if len(usable) == 1:
+                ch = usable[0]
+            elif len(usable) > 1:
+                ch = 'telegram' if 'telegram' in usable else sorted(usable)[0]
+    except Exception:
+        pass
+    _DINO_DELIVER_CH = ch
+    return _DINO_DELIVER_CH
+
 def _cron_add_argv(job):
     """Build a flag-based `openclaw cron add` argv from a job dict.
     OpenClaw 2026.6.6+ has no `cron add --json <blob>`; jobs are built from flags.
@@ -1941,6 +2020,7 @@ def _cron_add_argv(job):
         a += ['--no-deliver']
     elif dmode == 'announce':
         a += ['--announce']
+        a += ['--channel', _dino_deliver_channel()]
     if job.get('enabled') is False:
         a += ['--disabled']
     a += ['--json']
