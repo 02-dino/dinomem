@@ -193,6 +193,22 @@ wire_managed_block() {
     mv -f "$_tmp2" "$_file"
     ok "$_label wired"
   fi
+  # P8 (2026-09-05): POST-WRITE MARKER INVARIANT (belt-and-suspenders). The strip
+  # awk above already collapses orphan/double-BEGIN cleanly (pinned by the 4-case
+  # test), and the single-mv makes each write atomic — but a marker count that is
+  # NOT exactly 1 BEGIN : 1 END after we wrote means SOMETHING upstream regressed
+  # (a stale double-BEGIN the strip didn't fire on because neither marker grepped,
+  # a body that itself contains the literal marker text, a future edit to the strip
+  # that breaks it). Rather than ship a silently-broken AGENTS.md that the batch
+  # driver then re-corrupts, FAIL LOUD right here so the regression is caught at
+  # install time, at the exact file, not weeks later as a mystery 2/1. Cheap grep,
+  # runs once per managed block per install.
+  local _nb _ne
+  _nb=$(grep -cxF "$_begin" "$_file" 2>/dev/null || echo 0)
+  _ne=$(grep -cxF "$_end" "$_file" 2>/dev/null || echo 0)
+  if [ "$_nb" != 1 ] || [ "$_ne" != 1 ]; then
+    fail "$_label marker integrity BROKEN after wire: BEGIN=$_nb END=$_ne (want 1/1). Refusing to leave a corrupt managed block. File: $_file"
+  fi
 }
 # openclaw_running: guarded 'is the gateway up?' probe. `openclaw status` can BLOCK
 # indefinitely when the gateway socket/lock is contended, and under `set -e` a bare
