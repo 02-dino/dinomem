@@ -34,6 +34,23 @@
 #   (min-interval guard in cron_gate.sh) ensures it retries within the hour.
 #   Only applies to heavy-* classes; light jobs are never load-deferred.
 #
+# GATE RETRY + STARVATION ESCAPE (2026-09-05): both resource gates (the load
+#   guard above AND check_resources.sh) used to bare-`exit 0` on a busy box, so a
+#   ONCE-DAILY heavy job (memory_review/memory_graph/docs_ingest) that lost the
+#   coin-flip lost a WHOLE DAY — and on a box whose load floors above the ratio it
+#   starved permanently (real incident: analyst memory_review 8 days dead). Fix is
+#   two-layer and PORTABLE (all thresholds relative-to-cores or time, self-scaling
+#   to any box — a 2-core Pi and a 32-core server behave the same):
+#     1. RETRY: on a gate skip, recheck up to DINOMEM_GATE_RETRIES times with
+#        DINOMEM_GATE_RETRY_WAIT_S between (default 3 x 120s = up to 6 min). Load is
+#        spiky, so a short wait usually catches a dip — cheap, no work lost.
+#     2. STARVATION ESCAPE: track last successful run per (agent,class,cmd) in a
+#        stamp file; if the job has been starved longer than
+#        DINOMEM_GATE_MAX_STARVE_H (default 20h, safely under a 24h daily cycle),
+#        FORCE the run regardless of load. Guarantees a daily job never loses a
+#        full day on ANY box, however loaded. Fail-open: no /proc, no stamp dir,
+#        unreadable load -> proceed (never silently lose work).
+#
 # FAIL-OPEN CONTRACT: this wrapper must NEVER silently lose work.
 #   - flock absent → log warning, run unlocked.
 #   - lock timeout → log warning, run unlocked (fail-open).
@@ -82,17 +99,56 @@ _load_defer() {
   awk -v l="$load1" -v c="$ceiling" 'BEGIN{exit (l > c ? 0 : 1)}'
 }
 
-if _load_defer; then
-  _log "DEFER: load too high for $CLASS (agent=$AGENT_ID, workspace=$WORKSPACE) — will retry next tick"
-  exit 0
-fi
-
-# ── Resource gate: skip if RAM/CPU tight, cron retries naturally next cycle ──
-if [ -f "$(dirname "$0")/check_resources.sh" ]; then
-  if ! bash "$(dirname "$0")/check_resources.sh" "${CLASS:-}" 2>&1; then
+# ── Gate retry + starvation escape (PORTABLE; see header) ────────────────────
+# One shared loop wraps BOTH gates (load guard + check_resources.sh) so neither
+# does a bare exit-0 skip. All thresholds are relative-to-cores or wall-clock, so
+# this behaves the same on a 2-core Pi and a 32-core server.
+GATE_RETRIES="${DINOMEM_GATE_RETRIES:-3}"
+GATE_RETRY_WAIT_S="${DINOMEM_GATE_RETRY_WAIT_S:-120}"
+GATE_MAX_STARVE_H="${DINOMEM_GATE_MAX_STARVE_H:-20}"
+# Per-(agent,class,command) last-success stamp, in LOCK_DIR (tmpfs w/ persistent
+# fallback — no new dir contract). Keyed by a cksum of agent+class+cmd so an
+# agent's three heavy jobs don't share one stamp.
+_gate_stamp() {
+  local key; key=$(printf '%s|%s|%s' "$AGENT_ID" "$CLASS" "$*" | cksum | tr -cd '0-9' | cut -c1-16)
+  printf '%s/gate-stamp-%s' "$LOCK_DIR" "$key"
+}
+# _starved: return 0 (escape) if this job has NOT succeeded within
+# GATE_MAX_STARVE_H. Fail-open: no stamp / unreadable last-success => escape.
+_starved() {
+  local stamp last now; stamp="$(_gate_stamp "$@")"
+  [ -f "$stamp" ] || return 0                # never ran / stamp gone -> escape
+  last=$(cat "$stamp" 2>/dev/null || echo 0)
+  now=$(date -u +%s 2>/dev/null || echo 0)
+  { [ "$last" -gt 0 ] 2>/dev/null; } || return 0   # bad stamp -> escape
+  { [ "$now"  -gt 0 ] 2>/dev/null; } || return 1   # no clock -> don't force on load
+  awk -v n="$now" -v l="$last" -v h="$GATE_MAX_STARVE_H" 'BEGIN{exit ((n-l) > h*3600 ? 0 : 1)}'
+}
+# _gates_pass: return 0 iff BOTH gates currently allow the run.
+_gates_pass() {
+  _load_defer && return 1
+  if [ -f "$(dirname "$0")/check_resources.sh" ]; then
+    bash "$(dirname "$0")/check_resources.sh" "${CLASS:-}" >/dev/null 2>&1 || return 1
+  fi
+  return 0
+}
+_gate_try=0
+while ! _gates_pass; do
+  if _starved "$@"; then
+    _log "FORCE: $CLASS starved > ${GATE_MAX_STARVE_H}h (agent=$AGENT_ID) — running despite load to avoid losing a full cycle"
+    break
+  fi
+  if [ "$_gate_try" -ge "$GATE_RETRIES" ]; then
+    _log "DEFER: gates busy after $GATE_RETRIES retries for $CLASS (agent=$AGENT_ID, workspace=$WORKSPACE) — retry next tick"
     exit 0
   fi
-fi
+  _gate_try=$((_gate_try+1))
+  _log "WAIT: gate busy for $CLASS (agent=$AGENT_ID), retry $_gate_try/$GATE_RETRIES in ${GATE_RETRY_WAIT_S}s"
+  sleep "$GATE_RETRY_WAIT_S"
+done
+# Gates cleared (passed or forced). Stamp success so the NEXT run can measure
+# starvation from here.
+date -u +%s > "$(_gate_stamp "$@")" 2>/dev/null || true
 
 # ── flock availability check ────────────────────────────────────────────────
 if ! command -v flock >/dev/null 2>&1; then

@@ -13,7 +13,14 @@
 #
 # Env overrides (optional):
 #   DINOMEM_MIN_FREE_PCT   — minimum free RAM % (default: 15)
-#   DINOMEM_MAX_LOAD_RATIO — max load_avg_1m / nproc (default: 0.8)
+#   DINOMEM_MAX_LOAD_RATIO — max load_avg_1m / nproc (default: 1.5)
+#     NOTE (2026-09-05): raised 0.8 -> 1.5 to MATCH the sibling load gate in
+#     dinomem_run.sh (DINOMEM_LOAD_CEIL, default 1.5). They used to disagree
+#     (0.8 here vs 1.5 there), so this stricter gate silently starved heavy
+#     daily jobs on any box whose load floors above 0.8x cores. 1.5x is still
+#     core-relative (self-scales to any core count). dinomem_run.sh's
+#     retry+starvation-escape wrapper is the real belt; this just stops the two
+#     gates from contradicting each other.
 #   DINOMEM_RESOURCE_DEBUG — set to 1 for verbose output
 #
 # Usage:
@@ -25,7 +32,7 @@ set -euo pipefail
 
 DEBUG="${DINOMEM_RESOURCE_DEBUG:-0}"
 MIN_FREE_PCT="${DINOMEM_MIN_FREE_PCT:-15}"
-MAX_LOAD_RATIO="${DINOMEM_MAX_LOAD_RATIO:-0.8}"
+MAX_LOAD_RATIO="${DINOMEM_MAX_LOAD_RATIO:-1.5}"
 HISTORY_DIR="/tmp/dinomem_resource_history"
 
 log() { [ "$DEBUG" = "1" ] && echo "[check_resources] $*" >&2 || true; }
