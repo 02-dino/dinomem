@@ -1,0 +1,36 @@
+{
+  "id": "dinomem-retrieval-log",
+  "name": "dinomem retrieval log (native recall)",
+  "description": "Captures NATIVE OpenClaw memory tools (memory_search / memory_get) into kb/retrieval_log/*.jsonl via an observation-only after_tool_call typed plugin hook. WHY: the dinomem retrieval_log was analyst-biased \u2014 only explicit python tools (hybrid_recall/session_search/...) logged, while other agents recall via NATIVE memory_search which was UNLOGGED, so recall metrics read as 0 for them. This plugin closes that gap so recall metrics are fair across all agents. It writes NOTHING itself: it shells out FIRE-AND-FORGET to procedures/_retrieval_log.py --record (the SAME writer the python tools use, single JSONL schema, source:\"native\"). Fully agent-agnostic: workspace is resolved from the hook runtime context / DINOMEM_WORKSPACE env, never a hardcoded id or path. Fail-OPEN in every branch \u2014 a logging miss must never slow or break the tool loop. Enable/disable via config.enabled or the DINOMEM_LOG_NATIVE_RECALL env.",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "enabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Master switch. false = no-op (never logs). Env DINOMEM_LOG_NATIVE_RECALL=0 also disables."
+      },
+      "agentFilter": {
+        "type": "string",
+        "default": "",
+        "description": "Only log sessions whose sessionKey includes this substring. Empty string = all agents (installer-agnostic default)."
+      },
+      "nativeTools": {
+        "type": "array",
+        "items": { "type": "string" },
+        "default": ["memory_search", "memory_get"],
+        "description": "Native OpenClaw memory tool names to capture. Default = the two base gateway memory tools; extend if a box exposes more native recall tools."
+      },
+      "workspace": {
+        "type": "string",
+        "default": "",
+        "description": "Explicit workspace root override. Empty = resolve dynamically (hook ctx cwd / DINOMEM_WORKSPACE / OPENCLAW_WORKSPACE / plugin dir walk-up). Set only if auto-resolution is wrong on an unusual layout."
+      },
+      "python": {
+        "type": "string",
+        "default": "python3",
+        "description": "Python interpreter used to invoke procedures/_retrieval_log.py --record."
+      }
+    }
+  }
+}

@@ -3109,6 +3109,98 @@ PYEOF
   fi
 fi
 
+# ── Install dinomem-retrieval-log plugin (after_tool_call native-recall logging) ──
+# The dinomem retrieval_log (kb/retrieval_log/*.jsonl) only captured the explicit
+# PYTHON retrieval tools (hybrid_recall/session_search/...) because THEY call
+# procedures/_retrieval_log.py from inside their own code. But most agents recall
+# via the NATIVE OpenClaw tools memory_search/memory_get, which never touched the
+# logger -> their recall metrics read as ~0, making cross-agent effectiveness
+# reports unfair. This observation-only after_tool_call plugin closes that gap: on
+# a native memory tool it shells FIRE-AND-FORGET to _retrieval_log.py --record
+# (the SAME writer, source="native") -> one JSONL schema, no fork. Agent-agnostic
+# (WS resolved dynamically, no hardcoded id/path); fail-open; DINOMEM_LOG_NATIVE_
+# RECALL=0 disables. Same global-extensions install pattern as recall-gate (a
+# workspace-relative plugin path dangles + crash-loops if the workspace moves).
+hr "Native-recall log plugin"
+RLPLUGIN_SRC="$SKILL_DIR/plugins/dinomem-retrieval-log"
+RLPLUGIN_DST="$OPENCLAW_DIR/extensions/dinomem-retrieval-log"
+if [ ! -d "$RLPLUGIN_SRC" ]; then
+  warn "plugin source $RLPLUGIN_SRC missing — skipping (native memory_search/get stay UNLOGGED)"
+else
+  mkdir -p "$RLPLUGIN_DST"
+  cp "$RLPLUGIN_SRC/openclaw.plugin.json" "$RLPLUGIN_SRC/package.json" "$RLPLUGIN_SRC/index.ts" "$RLPLUGIN_DST/"
+  ok "plugin files -> $RLPLUGIN_DST"
+  if [ ! -f "$OPENCLAW_JSON" ]; then
+    warn "openclaw.json not found — plugin copied but NOT wired. Add id 'dinomem-retrieval-log' to plugins.allow + its path to plugins.load.paths, then restart."
+  else
+    DINOMEM_DRY_RUN="$DRY_RUN" DINOMEM_OPENCLAW_JSON="$OPENCLAW_JSON" DINOMEM_PLUGIN_DST="$RLPLUGIN_DST" python3 - <<'PYEOF'
+import json, os
+path = os.environ["DINOMEM_OPENCLAW_JSON"]
+plugin_dst = os.environ["DINOMEM_PLUGIN_DST"]
+PID = "dinomem-retrieval-log"
+with open(path) as f:
+    cfg = json.load(f)
+changed = []
+plugins = cfg.setdefault("plugins", {})
+# 1) allowlist
+allow = plugins.get("allow")
+if not isinstance(allow, list):
+    allow = []
+    plugins["allow"] = allow
+if PID not in allow:
+    allow.append(PID)
+    changed.append(f"plugins.allow += {PID}")
+# 1b) bundledDiscovery — REQUIRED companion to plugins.allow on OpenClaw 2026.6.x+.
+if plugins.get("bundledDiscovery") not in ("compat", "allowlist"):
+    plugins["bundledDiscovery"] = "compat"
+    changed.append("plugins.bundledDiscovery -> compat")
+# 2) load.paths (dedupe stale copies of THIS plugin id, then add current dst)
+load = plugins.setdefault("load", {})
+if not isinstance(load, dict):
+    load = {}
+    plugins["load"] = load
+paths = load.get("paths")
+if not isinstance(paths, list):
+    paths = []
+    load["paths"] = paths
+stale_paths = [p for p in paths
+               if isinstance(p, str)
+               and p.rstrip("/").endswith("/" + PID)
+               and p != plugin_dst]
+for sp in stale_paths:
+    paths.remove(sp)
+    changed.append(f"plugins.load.paths -= {sp} (stale)")
+if plugin_dst not in paths:
+    paths.append(plugin_dst)
+    changed.append(f"plugins.load.paths += {plugin_dst}")
+# 3) enable -> plugins.entries.<PID>.enabled. agentFilter left as shipped default
+#    ("" = all agents) so every agent gets native-recall logging out of the box.
+entries = plugins.setdefault("entries", {})
+if not isinstance(entries, dict):
+    entries = {}
+    plugins["entries"] = entries
+entry = entries.get(PID)
+if not isinstance(entry, dict):
+    entry = {}
+    entries[PID] = entry
+if entry.get("enabled") is not True:
+    entry["enabled"] = True
+    changed.append(f"plugins.entries.{PID}.enabled -> true")
+if changed and os.environ.get("DINOMEM_DRY_RUN") == "1":
+    for c in changed:
+        print(f"  \033[36m[plan]\033[0m wire openclaw.json: {c}")
+elif not changed:
+    print("  \033[33m[skip]\033[0m dinomem-retrieval-log already wired in openclaw.json")
+else:
+    with open(path, "w") as f:
+        json.dump(cfg, f, indent=2)
+    for c in changed:
+        print(f"  \033[32m[ok]\033[0m   wired: {c}")
+    print("  \033[33m[warn]\033[0m Restart OpenClaw to load the plugin: openclaw gateway restart")
+PYEOF
+  fi
+fi
+
 # ── System tuning: reduce swap thrashing ──────────────────────────────────────
 hr "System tuning"
 if [ "$(uname)" = "Linux" ]; then
