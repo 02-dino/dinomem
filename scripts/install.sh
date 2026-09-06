@@ -22,6 +22,11 @@
 #                     (2) wiring the jobs via your own scheduler (systemd timers, etc.).
 #   --no-backup-cron  Skip weekly backup cron (if you have your own backup system)
 #   --no-smart-cache  Skip bundling the smart-cache-pro (compression-only) plugin
+#   --health-cron     Wire scripts/dinomem-health-watcher.sh into crontab (default:
+#                     OFF — opt-in). Per-agent gateway/DB/cron health report,
+#                     sent to Telegram if configured, else stdout/log. Safe on
+#                     single- or multi-agent hosts. See README "How do I know
+#                     it's working?" for wiring it manually instead.
 #   --no-git-snapshot Disable the git snapshot safety net (default: ON).
 #                     When on, an ISOLATED snapshot store (.dinomem-snap.git)
 #                     commits all non-ignored changes every 15 min
@@ -77,6 +82,13 @@ AUTO_RESTART=auto   # auto | always | never
 # Cron Gate lanes unregistered.
 REPAIR_CRON=0
 
+# --health-cron: wire the generalized dinomem-health-watcher.sh (per-agent
+# gateway/DB/cron health -> Telegram if configured, else stdout/log) into
+# crontab. Default OFF — the watcher is monitoring, not core dinomem loop, so
+# it's never auto-injected into a user's crontab without an explicit opt-in.
+# See README "How do I know it's working?" for wiring it manually instead.
+DO_HEALTH_CRON=0
+
 # smart-cache-pro (compression-only) — bundled token-discipline plugin. Overridable.
 SMART_CACHE_REPO="${SMART_CACHE_REPO:-https://github.com/02-dino/smart-cache-pro}"
 SMART_CACHE_BRANCH="${SMART_CACHE_BRANCH:-feat/compression-only-generalized}"
@@ -97,6 +109,7 @@ while [ $# -gt 0 ]; do
     --no-grep-guard)   DO_GREP_GUARD=0; shift ;;
     --restart)         AUTO_RESTART=always; shift ;;
     --no-restart)      AUTO_RESTART=never; shift ;;
+    --health-cron)     DO_HEALTH_CRON=1; shift ;;
     --force)      FORCE=1; shift ;;
     --dry-run)    DRY_RUN=1; shift ;;
     --agree)      shift ;;  # no-op: base has no license gate; neuron passes this through after the human accepted the neuron license. Accept+ignore so neuron auto-base install doesn't die on 'unknown arg'.
@@ -3414,6 +3427,35 @@ if [ -f "$_wdog_src" ]; then
   fi
 else
   warn "internal-watchdog.sh not found at $_wdog_src — skipping auto-install"
+fi
+
+# ── Health watcher cron (opt-in via --health-cron) ───────────────────────────
+# dinomem-health-watcher.sh itself is already copied to $WS/scripts/ by the
+# generic scripts/ auto-discovery loop above (like every other scripts/*.sh) —
+# this section ONLY wires the crontab entry, and only when explicitly asked.
+# Default OFF: it's a monitoring add-on, not part of dinomem's core loop, so it
+# must never land in a user's crontab without opt-in. Wire it manually anytime
+# (see README "How do I know it's working?") or re-run with --health-cron.
+hr "Health watcher"
+_hwatch="$WS/scripts/dinomem-health-watcher.sh"
+if [ "$DO_HEALTH_CRON" = 1 ]; then
+  if [ -f "$_hwatch" ]; then
+    _hwatch_cron_line="0 7 * * * bash $_hwatch >> $WS/logs/dinomem-health-watcher.log 2>&1"
+    if [ "$DRY_RUN" = 1 ]; then
+      plan "register cron: dinomem-health-watcher (daily 07:00, --smart notify)"
+    elif crontab -l 2>/dev/null | grep -qF "dinomem-health-watcher.sh"; then
+      ok "dinomem-health-watcher cron already present"
+    else
+      ( crontab -l 2>/dev/null; echo "$_hwatch_cron_line" ) | crontab - \
+        && ok "dinomem-health-watcher cron added (daily 07:00; smart notify — no spam)" \
+        || warn "crontab add failed — add manually: $_hwatch_cron_line"
+    fi
+  else
+    warn "dinomem-health-watcher.sh not found at $_hwatch — skipping cron wiring"
+  fi
+else
+  skip "health-watcher cron (opt-in — pass --health-cron to enable)"
+  echo "    Run on demand anytime:  bash $_hwatch --dry-run"
 fi
 
 # ── External watchdog reminder ────────────────────────────────────────────────

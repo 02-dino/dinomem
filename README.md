@@ -384,6 +384,36 @@ python3 ~/.openclaw/workspace-myagent/procedures/auto_session_reset.py
 
 After a session is archived and extracted, you'll see new files in `memory/` and entries in `MEMORY.md`.
 
+### Ongoing health monitoring (optional)
+
+The one-time checks above answer "did it install right?". `scripts/dinomem-health-watcher.sh` answers "is it *still* healthy?" — an ongoing per-agent report you can run on demand or wire into cron. It works on single- or multi-agent hosts, Linux or macOS, and degrades gracefully if you haven't installed the neuron upgrade:
+
+```bash
+# Run it once, see the report on stdout (no cron, no config needed):
+bash scripts/dinomem-health-watcher.sh --dry-run
+```
+
+It checks, per discovered agent (every `workspace-*`, or a plain `workspace`, carrying the dinomem `AGENTS.md` marker):
+- Gateway alive (cross-OS — prefers the `openclaw` CLI, falls back to systemd/launchctl/port probing)
+- SQLite DB readable
+- The three base cron jobs (`auto_session_reset`, `memory_cleanup`, `memory_review`) ran recently
+
+Plus VPS resource use, today's recall activity, and memory integrity (open `_note_` pile-up; contradiction detection if you have the neuron upgrade — skipped cleanly otherwise).
+
+**Delivery:** sends to Telegram if `openclaw.json` has a usable bot token *and* you've pinned a destination (`DINOMEM_WATCHER_CHAT_ID` + `DINOMEM_WATCHER_TOPIC_ID`, optionally `DINOMEM_WATCHER_ACCOUNT`) — otherwise it prints to stdout/log only. Never fails for lack of Telegram config.
+
+**Wiring it into cron:**
+```bash
+# At install time, opt in explicitly (default is OFF — this is monitoring, not core dinomem):
+bash scripts/install.sh --workspace ~/.openclaw/workspace-myagent --health-cron
+
+# Or wire it manually anytime (this is the daily 07:00 default; change the schedule
+# to any frequency you like — smart notify de-dupes regardless):
+( crontab -l 2>/dev/null; echo "0 7 * * * bash ~/.openclaw/workspace-myagent/scripts/dinomem-health-watcher.sh >> ~/.openclaw/workspace-myagent/logs/dinomem-health-watcher.log 2>&1" ) | crontab -
+```
+
+The `--smart` default (always on unless you pass `--always`) alerts once when a problem starts, stays quiet while it's unchanged, and sends one daily "all OK" heartbeat — so tightening the interval never turns into spam.
+
 ### Verify it actually works — on demand
 
 Curious whether the memory is real, correct, and reversible? These are the tools to reach for. Nothing here runs in the background you have to watch — you check when *you* want to:
