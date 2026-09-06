@@ -399,6 +399,11 @@ copy_engine_file() {
       print s
     }
   ' "$_src" > "$_ctmp" 2>/dev/null && mv "$_ctmp" "$_dst" || { rm -f "$_ctmp"; warn "copy failed: $_rel"; return 1; }
+  # mktemp lands 0600 and the atomic mv carries that mode in, so shell scripts would
+  # install WITHOUT the exec bit. Nothing invokes them via ./ today (cron_gate.sh runs
+  # them as `bash <script>`, which ignores +x), so this is hygiene not a live-bug fix —
+  # but shipping *.sh non-executable is a latent trap the moment anything does ./ them.
+  case "$_rel" in *.sh) chmod +x "$_dst" 2>/dev/null || true ;; esac
   if [ -f "$_dst" ]; then ok "$_rel"; fi
 }
 # copy_dir_upgradeable SRC DST LABEL — content-aware dir upsert (DRY; the dir-level
