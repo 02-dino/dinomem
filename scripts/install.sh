@@ -1416,8 +1416,13 @@ if [ "$DO_CRON" = 1 ]; then
 
   # auto_session_reset — every 15 min (orchestrates session archive + memory extraction)
   # Staggered: 4 fires/hour, shifted by the per-agent offset so agents interleave.
+  # RUNAWAY BACKSTOP: `timeout 840` (14min) self-bounds a hung run BELOW the 15min
+  # cadence, so a stalled fire (e.g. provider hang past the procedure's own 120s
+  # HTTP timeout) can never overlap the next fire and pile up. This is NOT the
+  # gateway 600s command-cron cap (crontab jobs have no such cap) — it's an
+  # overlap/runaway guard for the only sub-hourly job. SIGTERM lets python flush.
   RESET_MINS="${_S15},$((_S15+15)),$((_S15+30)),$((_S15+45))"
-  RESET_CRON="$RESET_MINS * * * * cd $WS && ${EMBED_ENV}${CHEAP_ENV}${OWNER_ENV}python3 procedures/auto_session_reset.py >> logs/auto_reset.log 2>&1"
+  RESET_CRON="$RESET_MINS * * * * cd $WS && ${EMBED_ENV}${CHEAP_ENV}${OWNER_ENV}timeout 840 python3 procedures/auto_session_reset.py >> logs/auto_reset.log 2>&1"
   upsert_cron "auto_session_reset.py" "dinomem: auto session reset + memory extraction" "$RESET_CRON" "auto_session_reset cron (every 15 min, staggered +${_S15}m)"
 
   # workspace_backup — weekly Sunday at 2:00 UTC (snapshot of memory + config files)
@@ -1432,13 +1437,21 @@ if [ "$DO_CRON" = 1 ]; then
   # MULTI-AGENT SERIALIZATION: heavy-llm class acquires a host-wide flock
   # (/run/dinomem-locks/heavy-llm.lock) so at most ONE agent's LLM job runs at
   # a time. Others queue (not skip) — no work is lost. See scripts/dinomem_run.sh.
-  CLEANUP_CRON="$_SMIN 5 * * * DINOMEM_AGENT_ID=$AGENT_ID bash $WS/scripts/dinomem_run.sh heavy-llm $WS ${EMBED_ENV}python3 procedures/memory_cleanup.py >> logs/memory_cleanup.log 2>&1"
+  # RUNAWAY BACKSTOP: `timeout 7200` (2h) wraps the WHOLE dinomem_run.sh invocation
+  # (flock wait + work). It sits ABOVE the 5400s flock wait (DINOMEM_LOCK_TIMEOUT_SECS)
+  # so a legitimately-queued job is never killed while waiting its turn — it only
+  # fires if the actual run hangs past the procedure's own 120s-per-call HTTP timeout
+  # for an implausibly long time. Daily cadence means no overlap risk; this is a
+  # pure infinite-hang guard so a stuck job can't hold the heavy-llm lock forever.
+  CLEANUP_CRON="$_SMIN 5 * * * DINOMEM_AGENT_ID=$AGENT_ID timeout 7200 bash $WS/scripts/dinomem_run.sh heavy-llm $WS ${EMBED_ENV}python3 procedures/memory_cleanup.py >> logs/memory_cleanup.log 2>&1"
   upsert_cron "memory_cleanup.py" "dinomem: daily memory deduplication" "$CLEANUP_CRON" "memory_cleanup cron (daily 05:${_SMIN} UTC, staggered)"
 
   # memory_review — daily at 5:30 UTC (batched, full cycle ~7 days)
   # base minute 30 + per-agent offset, kept inside the hour (30..59 -> wraps via %60 stays same hour band since _SMIN<60; clamp with %60 on sum for safety)
   _REVIEW_MIN=$(( (30 + _SMIN) % 60 ))
-  REVIEW_CRON="$_REVIEW_MIN 5 * * * DINOMEM_AGENT_ID=$AGENT_ID bash $WS/scripts/dinomem_run.sh heavy-llm $WS ${EMBED_ENV}${CHEAP_ENV}python3 procedures/memory_review.py >> logs/memory_review.log 2>&1"
+  # RUNAWAY BACKSTOP: `timeout 7200` — same rationale as memory_cleanup (above 5400s
+  # flock wait, pure infinite-hang guard on the heavy-llm lock; daily = no overlap).
+  REVIEW_CRON="$_REVIEW_MIN 5 * * * DINOMEM_AGENT_ID=$AGENT_ID timeout 7200 bash $WS/scripts/dinomem_run.sh heavy-llm $WS ${EMBED_ENV}${CHEAP_ENV}python3 procedures/memory_review.py >> logs/memory_review.log 2>&1"
   upsert_cron "memory_review.py" "dinomem: daily batched memory review (LLM)" "$REVIEW_CRON" "memory_review cron (daily 05:${_REVIEW_MIN} UTC, batched, staggered)"
 
   # cleanup_startup_daily — daily at 2:05 UTC. Prunes bare YYYY-MM-DD.md files
@@ -3469,6 +3482,35 @@ if [ -z "${DINOMEM_WATCHDOG_CONFIGURED:-}" ]; then
   warn "ACTION REQUIRED: deploy an external health monitor for full coverage."
   warn "Templates: $(realpath "$SKILL_DIR/docs/watchdog/" 2>/dev/null || echo '<dinomem-base-dir>/docs/watchdog/')/{cloudflare-worker-template.js,generic-cron-template.sh}"
   warn "After setup: add DINOMEM_WATCHDOG_CONFIGURED=1 to your gateway env to suppress this warning."
+fi
+
+# ── #4 install manifest ──────────────────────────────────────────────────────
+# WHY: make "did this finish / what version ran / what got registered?" answerable
+# without forensics. Written ONLY here, at the tail of a completed run, so its mere
+# existence means the installer reached the end. One file per agent (multi-agent
+# hosts don't clobber each other). Pure heredoc — no jq dependency.
+if [ "$DRY_RUN" != 1 ]; then
+  _MANIFEST_DIR="$HOME/.dinomem"
+  _MANIFEST="$_MANIFEST_DIR/install_manifest_${AGENT_ID}.json"
+  _BASE_VER="$(cat "$SKILL_DIR/VERSION" 2>/dev/null | tr -d '[:space:]')"; [ -n "$_BASE_VER" ] || _BASE_VER="unknown"
+  _NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)"
+  if mkdir -p "$_MANIFEST_DIR" 2>/dev/null; then
+    cat > "$_MANIFEST" <<MANIFEST_EOF
+{
+  "layer": "base",
+  "base_version": "$_BASE_VER",
+  "installed_at": "$_NOW",
+  "agent_id": "$AGENT_ID",
+  "workspace": "$WS",
+  "cron_registered": $( [ "$DO_CRON" = 1 ] && echo true || echo false ),
+  "backup_cron": $( [ "${DO_BACKUP_CRON:-0}" = 1 ] && echo true || echo false ),
+  "cron_surface": "system-crontab (list via: crontab -l | grep dinomem)"
+}
+MANIFEST_EOF
+    ok "install manifest: $_MANIFEST (base v$_BASE_VER)"
+  else
+    warn "could not write install manifest to $_MANIFEST_DIR (non-fatal)"
+  fi
 fi
 
 hr "done"
