@@ -504,6 +504,14 @@ MEMORY.md                       # Searchable index (auto-generated, do not edit)
 
 ## Cron schedule
 
+> **⚠️ Where these crons live (read this before concluding a cron is "missing").**
+> dinomem's recurring jobs are registered into the **system crontab** — list them with
+> `crontab -l | grep dinomem`. They do **NOT** appear in `openclaw cron list`, which reads
+> the *separate* Gateway SQLite store. That store holds only the zero-LLM **`Note Cron Gate`**
+> dispatcher. **Two different schedulers** — checking the wrong one makes a perfectly healthy
+> install look incomplete. To answer "is everything registered?" in one shot, run
+> `bash scripts/verify_install.sh --workspace <WS>` (checklist ending in `VERIFY_INSTALL: OK`).
+
 | Time | Script | What runs |
 |------|--------|-----------|
 | Every 15 min | `auto_session_reset.py` | Session archive + memory extraction |
