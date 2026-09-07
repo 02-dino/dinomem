@@ -368,7 +368,12 @@ format_age_friendly() {
 check_log_job() {
   local logfile="$1" max_hours="$2" label="$3"
   if [ ! -f "$logfile" ]; then
-    echo "WARN|${label}: never ran|missing"; return
+    # A log that has NEVER been created means this agent does not run this cron
+    # (crons are per-agent; not every agent runs memory_cleanup/memory_review).
+    # That is not a fault — only a log that EXISTED and then went stale/errored is.
+    # Report OK (skipped) instead of a permanent false "never ran" WARN.
+    # (Fresh-install grace is handled separately by the caller when it applies.)
+    echo "OK|${label}: (not run by this agent, skipped)|not_applicable"; return
   fi
   local max_min=$(( max_hours * 60 )) tail_chunk recent_chunk last_ts age_min age_from_log=-1
   tail_chunk="$(tail -n 40 "$logfile" 2>/dev/null || true)"
@@ -681,8 +686,11 @@ for agent in "${AGENTS[@]}"; do
   IFS='|' read -r db_sev db_msg <<< "$(check_db "${AGENT_DB[$agent]:-}")"
   sev="$(max_severity "$sev" "$db_sev")"
   [ "$db_sev" != "OK" ] && { problems+=("$db_msg"); record_problem_issue "${agent}:db:${db_sev}"; }
-  for job in "auto_session_reset|$ws/logs/auto_reset.log|2" \
-             "memory_cleanup|$ws/logs/memory_cleanup.log|30" \
+  # NOTE: auto_session_reset is NOT health-checked. It is USAGE-DRIVEN (soft run
+  # on compaction >2, hard >5) and does not run at all on a day the agent is idle.
+  # A stale/absent auto_reset log therefore means "agent wasn't used", not "cron
+  # broke" — flagging it is a pure false positive. Removed 2026-09-07.
+  for job in "memory_cleanup|$ws/logs/memory_cleanup.log|30" \
              "memory_review|$ws/logs/memory_review.log|30"; do
     IFS='|' read -r jkey jlog jhrs <<< "$job"
     IFS='|' read -r c_sev c_msg c_cls <<< "$(check_log_job "$jlog" "$jhrs" "$jkey")"
