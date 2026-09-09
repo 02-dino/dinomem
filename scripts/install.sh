@@ -2310,14 +2310,16 @@ if not isinstance(subagents.get("runTimeoutSeconds"), int) or subagents.get("run
     prev = subagents.get("runTimeoutSeconds")
     subagents["runTimeoutSeconds"] = TIMEOUT_FLOOR
     changed.append(f"agents.defaults.subagents.runTimeoutSeconds -> {TIMEOUT_FLOOR}s floor (was {prev}; sub-agent headroom)")
+# removed Sep 2026 - OpenClaw 2026.7.x schema no longer accepts subagents.lightContext
+# (per-turn payload.lightContext in cron jobs is still valid)
 # subagent lightContext default -> true (cheap/focused bootstrap for the common
 # read/summarize/research task). Build/self-mod spawns override per-call to false
 # (see subagent_build_discipline in AGENTS.md). NON-CLOBBER: only sets when unset
 # or currently false; a user who deliberately set true is unchanged (idempotent).
-if subagents.get("lightContext") is not True:
-    prev = subagents.get("lightContext")
-    subagents["lightContext"] = True
-    changed.append(f"agents.defaults.subagents.lightContext -> true (was {prev}; cheap default, build spawns override to false)")
+# if subagents.get("lightContext") is not True:
+#     prev = subagents.get("lightContext")
+#     subagents["lightContext"] = True
+#     changed.append(f"agents.defaults.subagents.lightContext -> true (was {prev}; cheap default, build spawns override to false)")
 
 # bootstrapMaxChars / bootstrapTotalMaxChars -> raise caps to fit what dinomem
 # injects, so the policy blocks are never silently truncated. Measured, not a
