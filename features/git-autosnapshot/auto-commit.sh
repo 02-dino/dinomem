@@ -123,7 +123,24 @@ g() { git --git-dir="$GIT_DIR" --work-tree="$REPO" "$@"; }
 # (busybox/mac), fall through to plain `g` so behavior is preserved.
 _NICE=""; command -v nice   >/dev/null 2>&1 && _NICE="nice -n 19"
 _IONICE=""; command -v ionice >/dev/null 2>&1 && _IONICE="ionice -c3"
-gnice() { $_NICE $_IONICE git --git-dir="$GIT_DIR" --work-tree="$REPO" "$@"; }
+# MEMORY CAP (why): nice/ionice throttle CPU+IO but NOT RAM. A default `gc
+# --aggressive` runs `repack --window=250 --no-reuse-delta`, which holds ~250
+# objects in core and recomputes every delta from scratch -> ~1.3GB RSS per
+# store. With one autosnapshot timer PER agent (~20 on this box), a handful
+# colliding on the same wall-clock minute = 5-6GB spike -> host OOM -> the
+# kernel kills the biggest proc (the gateway), NOT this niced repack (observed
+# 2026-09-09: repeated gateway OOM-kills during a multi-agent install). These
+# -c overrides bound EVERY git op run via gnice: windowMemory caps the delta
+# window to a byte budget (git evicts objects instead of growing RSS unbounded),
+# threads=1 stops N-core parallel packers from N-plying the footprint, and
+# window/depth trade a few % pack ratio for a flat, predictable memory profile.
+# Overridable via env for a beefy host. Fail-open: bad values just fall through.
+AUTOSNAP_PACK_WINDOW_MEM="${AUTOSNAP_PACK_WINDOW_MEM:-64m}"
+AUTOSNAP_PACK_THREADS="${AUTOSNAP_PACK_THREADS:-1}"
+AUTOSNAP_PACK_WINDOW="${AUTOSNAP_PACK_WINDOW:-32}"
+AUTOSNAP_PACK_DEPTH="${AUTOSNAP_PACK_DEPTH:-24}"
+_PACKMEM=( -c "pack.windowMemory=$AUTOSNAP_PACK_WINDOW_MEM" -c "pack.threads=$AUTOSNAP_PACK_THREADS" -c "pack.window=$AUTOSNAP_PACK_WINDOW" -c "pack.depth=$AUTOSNAP_PACK_DEPTH" )
+gnice() { $_NICE $_IONICE git "${_PACKMEM[@]}" --git-dir="$GIT_DIR" --work-tree="$REPO" "$@"; }
 # git-lfs prune resolves HEAD from the CWD, not from --git-dir/--work-tree flags,
 # so calling it via gnice() fails with "Git can't resolve ref HEAD" and leaks
 # orphaned LFS objects forever (observed: ~1GB of stale blobs never pruned despite
@@ -264,6 +281,34 @@ fi
 # Escalate by how full the filesystem holding the repo actually is.
 DISK_PCT=$(df --output=pcent "$REPO" 2>/dev/null | tail -1 | tr -dc '0-9')
 [ -z "$DISK_PCT" ] && DISK_PCT=0
+
+# -- GLOBAL HOUSEKEEPING LOCK (cross-store, box-wide) ------------------------
+# WHY: the per-store flock above only serializes ticks WITHIN one store. It does
+# NOT stop store A's repack colliding with store B's repack. With ~20 autosnap
+# timers on one host, several can hit their gc/repack on the same wall-clock
+# minute; even memory-capped (~150MB each) 20-in-parallel is a needless spike,
+# and pre-cap it was the 5x1.3GB OOM that killed the gateway (2026-09-09). A
+# SHARED non-blocking flock across ALL stores means at most ONE housekeeping
+# pass runs box-wide at a time; a store that can't grab it simply SKIPS
+# housekeeping this tick (the cheap snapshot/commit above already happened) and
+# retries next interval. The commit path is intentionally OUTSIDE this lock so
+# snapshots are never delayed by a busy gc elsewhere. Fail-open: no flock or
+# unwritable lock dir -> run housekeeping unguarded (old behavior).
+_GC_LOCK="${AUTOSNAP_GLOBAL_GC_LOCK:-${XDG_RUNTIME_DIR:-/run}/dinomem-autosnap-gc.lock}"
+_GC_LOCK_HELD=0
+if command -v flock >/dev/null 2>&1; then
+  if exec 8>"$_GC_LOCK" 2>/dev/null && flock -n 8; then
+    _GC_LOCK_HELD=1
+    trap 'flock -u 8 2>/dev/null || true; exec 8>&- 2>/dev/null || true' EXIT
+  else
+    # Another store is doing housekeeping right now -> skip ours this tick.
+    exec 8>&- 2>/dev/null || true
+    echo "$(date '+%F %T') SKIP housekeeping (global gc lock busy)" >> "$LOG" 2>/dev/null || true
+    DISK_PCT=-1   # sentinel: fall through to the no-op else-branch below
+  fi
+else
+  _GC_LOCK_HELD=1   # no flock available -> fail-open, run unguarded
+fi
 
 # All housekeeping git ops below run via `gnice` (idle CPU+IO) so they never
 # drive gateway-competing load. Aggressive gc is additionally cooldown-gated.
