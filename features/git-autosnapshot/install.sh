@@ -324,9 +324,34 @@ ENV_INCLUDE_SYSTEMD=""
 # cron: append as a quoted assignment so the shell keeps the globs as ONE value.
 ENV_INCLUDE_CRON=""
 [ -n "$INCLUDE_ONLY_ENV" ] && ENV_INCLUDE_CRON=" AUTOSNAP_INCLUDE_ONLY='$INCLUDE_ONLY_ENV'"
+# ── deterministic per-repo stagger ───────────────────────────────────────────
+# WHY: every timer used OnBootSec=5min + OnUnitActiveSec=Nmin with NO per-repo
+# phase offset, so all timers installed near the same moment (boot/install) end
+# up PHASE-LOCKED — their N-min cycles tick together. On a box with many
+# workspaces that means K timers fire in the same minute, K concurrent git
+# scans, load spikes (observed: load 21 with ~8 ticks in 6 min). RandomizedDelaySec
+# alone is only jitter (re-rolled each cycle, can still collide). The real fix is
+# a FIXED, UNIQUE offset per repo so ticks spread evenly across the window.
+#
+# Derive the offset DETERMINISTICALLY from REPO_TAG (stable hash) -> 0..(interval-1)
+# minutes + 0..59 seconds. Same repo => same offset forever (idempotent across
+# reinstalls); different repos => scattered across the whole window. We add it to
+# OnBootSec (so the initial fire is already phased) and keep a small
+# RandomizedDelaySec as a secondary de-clump. This needs no central coordinator —
+# each install self-assigns its slot from its own path.
+# Hash the repo tag to a stable integer, then map to a phase offset in SECONDS
+# across the FULL window (0..interval*60-1). Spreading in seconds (not whole
+# minutes) avoids minute-bucket clumping: even if two hashes share a minute they
+# land seconds apart. cksum is POSIX, stable, and dependency-free.
+_hash="$(printf '%s' "$REPO_TAG" | cksum | cut -d' ' -f1)"
+_window_s=$(( INTERVAL_MIN * 60 ))
+STAGGER_S=$(( _hash % _window_s ))               # 0..(interval*60-1) seconds
+STAGGER_MIN=$(( STAGGER_S / 60 ))
+STAGGER_SEC=$(( STAGGER_S % 60 ))
+BOOT_OFFSET_S=$(( 300 + STAGGER_S ))             # 5min base + phase offset
 if command -v systemctl >/dev/null 2>&1 && [ -d /etc/systemd/system ] && [ -w /etc/systemd/system ]; then
   if [ "$DRY_RUN" = 1 ]; then
-    plan "write /etc/systemd/system/${SVC}.{service,timer} + enable --now"
+    plan "write /etc/systemd/system/${SVC}.{service,timer} + enable --now (stagger offset ${STAGGER_MIN}m${STAGGER_SEC}s)"
   else
     cat > "/etc/systemd/system/${SVC}.service" <<EOF
 [Unit]
@@ -344,16 +369,25 @@ EOF
 Description=Run dinomem git auto-snapshot every ${INTERVAL_MIN} min (${REPO})
 
 [Timer]
-OnBootSec=5min
+# Deterministic per-repo phase offset (see stagger derivation above): keeps the
+# ${INTERVAL_MIN}min cadence but shifts THIS repo's tick to its own slot so many
+# workspaces don't fire simultaneously. RandomizedDelaySec is a secondary smear.
+OnBootSec=${BOOT_OFFSET_S}
 OnUnitActiveSec=${INTERVAL_MIN}min
+RandomizedDelaySec=45
 Persistent=true
 
 [Install]
 WantedBy=timers.target
 EOF
+    # Remove any stale hand-written stagger.conf drop-in from earlier band-aid
+    # attempts — the offset now lives in the unit itself, a leftover drop-in
+    # would just re-introduce conflicting OnUnitActiveSec lines.
+    rm -f "/etc/systemd/system/${SVC}.timer.d/stagger.conf" 2>/dev/null || true
+    rmdir "/etc/systemd/system/${SVC}.timer.d" 2>/dev/null || true
     systemctl daemon-reload
     systemctl enable --now "${SVC}.timer" >/dev/null 2>&1
-    ok "systemd timer active (${SVC}.timer, every ${INTERVAL_MIN}min)"
+    ok "systemd timer active (${SVC}.timer, every ${INTERVAL_MIN}min, +${STAGGER_MIN}m${STAGGER_SEC}s stagger)"
   fi
 else
   # cron fallback
