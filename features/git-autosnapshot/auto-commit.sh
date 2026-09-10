@@ -233,6 +233,20 @@ if [ -n "$(g status --porcelain 2>/dev/null | head -c1)" ]; then
   while IFS= read -r f; do size_gate "$f"; done \
     < <(g ls-files --modified 2>/dev/null)
 
+  # -- Self-heal: evict already-tracked paths that info/exclude NOW matches ---
+  # WHY: git ignore rules only stop UNtracked files from being added; a path
+  # already in the index keeps getting committed even after it's ignored. So
+  # when an exclude pattern is added AFTER a file was tracked (a store predating
+  # the pattern, or an upgrade that ships new ignores), that file leaks forever
+  # until someone hand-runs `git rm --cached`. This reconciles it every tick:
+  # `ls-files -i -c` is git's own authoritative "tracked AND ignored" query (no
+  # manual regex), and `rm --cached` drops them from the index while KEEPING the
+  # files on disk. Generalizes the one-off .dinomem-snap.git self-untrack the
+  # installer already does to "anything the exclude now matches". -z/xargs-0 is
+  # NUL-safe for paths with spaces/newlines. Fail-open: no matches -> no-op.
+  g ls-files -z -i -c --exclude-standard 2>/dev/null \
+    | xargs -0 --no-run-if-empty git --git-dir="$GIT_DIR" --work-tree="$REPO" rm --cached -q -- 2>/dev/null || true
+
   # -- Stage everything not ignored, minus oversized new files ---------------
   # WHY the _to timeout wrap: on a huge dirty tree these scans can stall for
   # minutes (observed hang in `ls-files` at pipe_write). A bounded timeout makes
