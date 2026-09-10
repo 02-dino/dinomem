@@ -12,6 +12,10 @@ agents/*/agent/*.sqlite
 agents/*/agent/*.sqlite-shm
 agents/*/agent/*.sqlite-wal
 agents/*/agent/*.sqlite-journal
+# Plain sqlite DBs anywhere (e.g. chroma.sqlite3 in vector stores). Previously
+# only the -shm/-wal/-journal sidecars were ignored, so the 250MB main DB leaked.
+*.sqlite
+*.sqlite3
 *.sqlite-shm
 *.sqlite-wal
 *.sqlite-journal
@@ -25,9 +29,14 @@ workspace-*/scripts/.*.last_run
 memory/cache/
 workspace-*/memory/cache/
 logs/
-# Vector DB / models / big runtime data (regenerable, huge)
-kb/vector_db/
-workspace-*/kb/vector_db/
+# Vector DB / models / big runtime data (regenerable, huge).
+# NOTE: neuron adds sibling stores kb/vector_db_sessions/ and kb/vector_db_docs/
+# — the old `vector_db/` glob does NOT match those (different dir name, not a
+# subdir). Use vector_db* to cover the whole family, present and future.
+kb/vector_db*/
+workspace-*/kb/vector_db*/
+kb/memory_neuron/
+workspace-*/kb/memory_neuron/
 models/
 workspace-*/models/
 # git-autosnapshot's own log

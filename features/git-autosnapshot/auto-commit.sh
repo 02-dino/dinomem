@@ -277,6 +277,30 @@ if [ -n "$(g status --porcelain 2>/dev/null | head -c1)" ]; then
   fi
 fi
 
+# -- STALE REBUILD-ORPHAN SWEEP ----------------------------------------------
+# WHY: rebuild-store.sh (a full store rewrite for a pathologically bloated
+# store — e.g. a leaked vector_db/sqlite history that gc alone can't shrink)
+# parks the OLD store as "$GIT_DIR.OLD-<timestamp>" and only deletes it after
+# verifying the fresh store committed cleanly. If that verify step never runs
+# (the process was SIGKILLed mid-rebuild — OOM/reboot/disk-full, exactly what
+# happened 2026-09-09: a manual rebuild died mid-swap and left a 34G orphan
+# that nothing ever swept, which is HALF of what filled the disk to 0 bytes),
+# the parked copy sits there forever silently eating disk. Every tick, sweep
+# any "$GIT_DIR".OLD-*/.old-* older than the threshold — self-healing
+# regardless of how the orphan was created (this script's own rebuild, an
+# ad-hoc manual one, or a future variant). Threshold gives a short human
+# window to notice/abort a fresh rebuild before it's auto-reclaimed.
+_ORPHAN_AGE_MIN="${AUTOSNAP_ORPHAN_AGE_MIN:-30}"
+for _orphan in "$GIT_DIR".OLD-* "$GIT_DIR".old-* "$GIT_DIR".new; do
+  [ -e "$_orphan" ] || continue
+  _o_age_min=$(( ( $(date +%s) - $(stat -c %Y "$_orphan" 2>/dev/null || echo 0) ) / 60 ))
+  if [ "$_o_age_min" -ge "$_ORPHAN_AGE_MIN" ]; then
+    _o_size=$(du -sh "$_orphan" 2>/dev/null | cut -f1)
+    rm -rf "$_orphan" 2>/dev/null || true
+    echo "$(date '+%F %T') SWEEP: removed stale rebuild orphan $_orphan (${_o_size}, age ${_o_age_min}min)" >> "$LOG" 2>/dev/null || true
+  fi
+done
+
 # ── DISK-AWARE housekeeping ──────────────────────────────────────────────────
 # Escalate by how full the filesystem holding the repo actually is.
 DISK_PCT=$(df --output=pcent "$REPO" 2>/dev/null | tail -1 | tr -dc '0-9')

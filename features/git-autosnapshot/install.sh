@@ -208,7 +208,7 @@ if [ "$DRY_RUN" = 1 ]; then
   plan "install auto-commit.sh + git-retention.sh -> $BIN_DIR/"
 else
   mkdir -p "$BIN_DIR"
-  for s in auto-commit.sh git-retention.sh dinomem-undo.sh; do
+  for s in auto-commit.sh git-retention.sh dinomem-undo.sh rebuild-store.sh; do
     if [ -f "$BIN_DIR/$s" ] && [ "$FORCE" = 0 ]; then
       skip "$s (exists, --force to overwrite)"
     else
