@@ -41,4 +41,34 @@ models/
 workspace-*/models/
 # git-autosnapshot's own log
 logs/git-autosnapshot.log
+# Generic dev-junk hygiene. WHY: the rules above only cover dinomem's OWN
+# derived data (vector DBs, sqlite, models). A workspace can also accrue
+# standard dev cruft — a Python venv, node_modules, __pycache__, .env secrets —
+# which is huge/churny/regenerable and must never enter snapshot history.
+# Without these, dropping a venv or running `npm install` in a snapshotted
+# workspace would leak exactly the way the vector DBs did.
+.venv/
+venv/
+env/
+**/.venv/
+**/venv/
+**/site-packages/
+node_modules/
+**/node_modules/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+**/*.egg-info/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+# Secrets — never snapshot credential files.
+.env
+*.env
+**/.env
+.env.local
+.env.*.local
 # <<< dinomem git-autosnapshot ignores <<<

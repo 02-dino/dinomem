@@ -199,23 +199,39 @@ if [ -n "$(g status --porcelain 2>/dev/null | head -c1)" ]; then
     done
     return 1
   }
+  # size_gate <relpath> -> append :(exclude) if oversized non-LFS non-allowlisted.
+  # WHY a fn: the guard now runs over TWO file sets (new + already-tracked-that-
+  # grew), so the size/LFS/allowlist decision must not be copy-pasted per set.
   EXCLUDES=()
-  while IFS= read -r f; do
-    [ -z "$f" ] && continue
+  size_gate() {
+    local f="$1" sz
+    [ -z "$f" ] && return
     sz=$(stat -c '%s' "$REPO/$f" 2>/dev/null || echo 0)
-    if [ "$sz" -gt $((MAX_MB*1024*1024)) ]; then
-      # LFS-aware: if this path is LFS-tracked, its bytes live OUTSIDE history,
-      # so size is irrelevant -> let it through. Only exclude oversized non-LFS
-      # blobs. `check-attr filter` returns 'lfs' when a gitattributes rule matches.
-      if g check-attr filter -- "$f" 2>/dev/null | grep -q ': filter: lfs$'; then
-        : # LFS-tracked oversized file -> keep (stored via LFS, snapshot stays tiny)
-      elif keep_large "$f"; then
-        : # user-allowlisted oversized non-LFS blob -> keep (opted in explicitly)
-      else
-        EXCLUDES+=(":(exclude)$f")
-      fi
+    [ "$sz" -gt $((MAX_MB*1024*1024)) ] || return
+    # LFS-aware: if this path is LFS-tracked, its bytes live OUTSIDE history,
+    # so size is irrelevant -> let it through. Only exclude oversized non-LFS
+    # blobs. `check-attr filter` returns 'lfs' when a gitattributes rule matches.
+    if g check-attr filter -- "$f" 2>/dev/null | grep -q ': filter: lfs$'; then
+      : # LFS-tracked oversized file -> keep (stored via LFS, snapshot stays tiny)
+    elif keep_large "$f"; then
+      : # user-allowlisted oversized non-LFS blob -> keep (opted in explicitly)
+    else
+      EXCLUDES+=(":(exclude)$f")
     fi
-  done < <(g ls-files --others --exclude-standard 2>/dev/null)
+  }
+  # (a) NEW untracked files.
+  while IFS= read -r f; do size_gate "$f"; done \
+    < <(g ls-files --others --exclude-standard 2>/dev/null)
+  # (b) ALREADY-TRACKED files that CHANGED this tick and have since grown past
+  # the limit. WHY: the original guard only checked --others, so a file tracked
+  # once while small (e.g. chroma.sqlite3) that later rewrites to 580MB every
+  # tick was NEVER re-excluded -> it kept getting committed and blew up .git.
+  # Gating on the modified set keeps the scan cheap (only dirty paths), and the
+  # same size/LFS/allowlist policy applies. An oversized grown file is dropped
+  # from THIS commit (stays on disk); ignore it permanently via info/exclude or
+  # allowlist it via .dinomem-keep-large if you truly want it versioned.
+  while IFS= read -r f; do size_gate "$f"; done \
+    < <(g ls-files --modified 2>/dev/null)
 
   # -- Stage everything not ignored, minus oversized new files ---------------
   # WHY the _to timeout wrap: on a huge dirty tree these scans can stall for
