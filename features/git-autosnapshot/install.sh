@@ -41,6 +41,12 @@ ALL_WORKSPACES=0
 # so its `git add` stays small and cannot lump the whole box into one snapshot.
 # Empty = snapshot everything (original behavior).
 INCLUDE_ONLY=()
+# --config-snapshot <src:dst> (repeatable): capture a SECRET-MASKED copy of an
+# OpenClaw config each tick. src = live config (often out-of-tree, e.g. a
+# sibling instance's openclaw.json); dst = repo-relative path the snapshot store
+# tracks. Redaction via config-redact.sh keeps structure/keys, masks secret
+# values, so config undo-history is captured without versioning live credentials.
+CONFIG_SNAPSHOT=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -55,6 +61,7 @@ while [ $# -gt 0 ]; do
     --uninstall)      UNINSTALL=1; shift ;;
     --all-workspaces) ALL_WORKSPACES=1; shift ;;
     --include-only) INCLUDE_ONLY+=("$2"); shift 2 ;;
+    --config-snapshot) CONFIG_SNAPSHOT+=("$2"); shift 2 ;;
     -h|--help)      grep -E '^#( |$)' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
@@ -208,7 +215,7 @@ if [ "$DRY_RUN" = 1 ]; then
   plan "install auto-commit.sh + git-retention.sh -> $BIN_DIR/"
 else
   mkdir -p "$BIN_DIR"
-  for s in auto-commit.sh git-retention.sh dinomem-undo.sh rebuild-store.sh; do
+  for s in auto-commit.sh git-retention.sh dinomem-undo.sh rebuild-store.sh config-redact.sh; do
     if [ -f "$BIN_DIR/$s" ] && [ "$FORCE" = 0 ]; then
       skip "$s (exists, --force to overwrite)"
     else
@@ -299,6 +306,17 @@ fi
 # (observed: scoped root store fell back to whole-repo, tracking (root) not
 # agents/+shared/). systemd Environment= and cron get it as its OWN quoted var.
 ENVLINE="AUTOSNAP_REPO=$REPO AUTOSNAP_GIT_DIR=$GIT_DIR AUTOSNAP_MAX_MB=$MAX_MB AUTOSNAP_RETAIN_DAYS=$RETAIN_DAYS AUTOSNAP_BRANCH=$BRANCH"
+# --config-snapshot pairs -> a single space-joined AUTOSNAP_CONFIG_SNAPSHOT env
+# value (auto-commit.sh splits on whitespace into src:dst pairs). Empty when
+# unset, so default behavior (no config snapshotting) is unchanged.
+CONFIG_SNAPSHOT_ENV=""
+if [ "${#CONFIG_SNAPSHOT[@]}" -gt 0 ]; then
+  CONFIG_SNAPSHOT_ENV="${CONFIG_SNAPSHOT[*]}"
+fi
+ENV_CFG_SYSTEMD=""
+[ -n "$CONFIG_SNAPSHOT_ENV" ] && ENV_CFG_SYSTEMD=$'\n'"Environment=\"AUTOSNAP_CONFIG_SNAPSHOT=$CONFIG_SNAPSHOT_ENV\""
+ENV_CFG_CRON=""
+[ -n "$CONFIG_SNAPSHOT_ENV" ] && ENV_CFG_CRON=" AUTOSNAP_CONFIG_SNAPSHOT='$CONFIG_SNAPSHOT_ENV'"
 # systemd: separate quoted Environment= line (a single Environment= can't safely
 # hold a space-containing value inline among other bare KEY=VAL pairs).
 ENV_INCLUDE_SYSTEMD=""
@@ -317,7 +335,7 @@ After=network.target
 
 [Service]
 Type=oneshot
-Environment=${ENVLINE}${ENV_INCLUDE_SYSTEMD}
+Environment=${ENVLINE}${ENV_INCLUDE_SYSTEMD}${ENV_CFG_SYSTEMD}
 ExecStart=${BIN_DIR}/auto-commit.sh
 Nice=10
 EOF
@@ -339,7 +357,7 @@ EOF
   fi
 else
   # cron fallback
-  CRON_LINE="*/${INTERVAL_MIN} * * * * ${ENVLINE}${ENV_INCLUDE_CRON} ${BIN_DIR}/auto-commit.sh >> ${REPO}/logs/git-autosnapshot.log 2>&1  # git-autosnapshot ${REPO}"
+  CRON_LINE="*/${INTERVAL_MIN} * * * * ${ENVLINE}${ENV_INCLUDE_CRON}${ENV_CFG_CRON} ${BIN_DIR}/auto-commit.sh >> ${REPO}/logs/git-autosnapshot.log 2>&1  # git-autosnapshot ${REPO}"
   if [ "$DRY_RUN" = 1 ]; then
     plan "register cron: $CRON_LINE"
   elif ! command -v crontab >/dev/null 2>&1; then

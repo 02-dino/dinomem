@@ -58,6 +58,40 @@ data/keep-*.jsonl
 - Absent file = nothing allowlisted = default safe behavior.
 - This is for **non-LFS** blobs only; media/archives/pdf are already handled by LFS and never need an entry.
 
+## Snapshotting config (secret-masked)
+
+`openclaw.json` is the highest-value file to keep undo-history on — one bad comma
+crash-loops the gateway — but it's dense with live secrets (`apiKey`, `botToken`,
+gateway auth token, `env` creds). Committing it raw every tick would turn the
+local snapshot store into a time-machine of every key you've ever held.
+
+Use `--config-snapshot <src>:<dst>` (repeatable) to capture a **secret-masked**
+copy instead. Each tick, `config-redact.sh` reads the live config and writes a
+structure-preserving copy to `<dst>` (repo-relative) with secret *values* masked
+(`"***]"`) — keys, routes, models, tuning knobs stay intact so diffs remain
+meaningful, but no credential ever enters git.
+
+```bash
+bash features/git-autosnapshot/install.sh --repo ~/.openclaw \
+  --config-snapshot "$HOME/.openclaw/openclaw.json:configs/main.openclaw.json" \
+  --config-snapshot "$HOME/.openclaw-sales/openclaw.json:configs/sales.openclaw.json"
+```
+
+- **src** = the live config (may live outside the repo — e.g. a sibling
+  instance's `openclaw.json`).
+- **dst** = a repo-relative path the snapshot store tracks (created if missing).
+- Masking is by **key name** (case-insensitive substring: `apikey`/`token`/
+  `secret`/`password`/`credential`/…), recursive, arrays included. Numeric
+  tuning knobs that merely contain "token" (`maxTokens`, `keepRecentTokens`, …)
+  are explicitly **not** masked, so their history stays useful.
+- **Fail-open + fail-safe:** invalid/half-written src is skipped (never
+  overwrites a good redacted snapshot); a missing redactor or `jq`-less host
+  just skips config snapshotting; identical redacted output isn't rewritten
+  (no phantom churn on a static config).
+- **Restore** is structural only — you recover the config *shape/values* minus
+  secrets. Re-inject secrets from your keystore, or keep the raw config in a
+  separate secured backup if you need byte-exact restore.
+
 ## Honest limits
 
 - **Local-only = no durability.** Snapshots protect against *mistakes*, not disk failure. If the disk dies, history dies with it. For durability, add a remote you push to (GitHub / self-hosted) — that also offloads lfs binaries off the local disk.

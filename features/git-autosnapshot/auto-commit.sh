@@ -37,6 +37,17 @@ MAX_MB="${AUTOSNAP_MAX_MB:-10}"
 INCLUDE_ONLY_PS=()
 for _ip in ${AUTOSNAP_INCLUDE_ONLY:-}; do INCLUDE_ONLY_PS+=("$_ip"); done
 RETAIN_DAYS="${AUTOSNAP_RETAIN_DAYS:-30}"
+# AUTOSNAP_CONFIG_SNAPSHOT (optional, whitespace-separated src:dst pairs): before
+# each snapshot, write a SECRET-MASKED copy of an OpenClaw config so its undo
+# history is captured WITHOUT versioning live credentials. src is the real
+# (often out-of-tree) config; dst is a path INSIDE $REPO that the snapshot then
+# tracks. WHY masked: openclaw.json is the highest-value file to keep history on
+# (one bad comma crash-loops the gateway) but is dense with apiKey/botToken/auth
+# secrets; committing it raw every tick turns the local store into a key
+# time-machine. See config-redact.sh. Empty = disabled (default, back-compat).
+CONFIG_SNAPSHOT_PAIRS=()
+for _cp in ${AUTOSNAP_CONFIG_SNAPSHOT:-}; do CONFIG_SNAPSHOT_PAIRS+=("$_cp"); done
+_REDACT_SH="$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/config-redact.sh"
 [ -z "$REPO" ] && { echo "auto-commit: AUTOSNAP_REPO not set" >&2; exit 2; }
 
 # Isolated snapshot git-dir (NOT the user's $REPO/.git).
@@ -172,6 +183,27 @@ mkdir -p "$REPO/logs" 2>/dev/null || true
 # FIRST; when the tree is clean, skip ALL the expensive work (ls-files scan,
 # add -A over the whole tree, commit). This makes an idle tick genuinely cheap
 # and prevents redundant snapshots. Housekeeping below stays gated too.
+# -- Config snapshot (secret-masked) BEFORE the dirty probe so a config change
+# shows up as tree churn this same tick. Each pair is src:dst; src is the live
+# config, dst is written (redacted) inside $REPO for tracking. Fail-open: a
+# missing redactor / invalid src / jq-less host just skips (never blocks a
+# snapshot). Only rewrites dst when the redacted content actually changed, so a
+# static config doesn't manufacture churn every tick.
+for _pair in "${CONFIG_SNAPSHOT_PAIRS[@]:-}"; do
+  [ -z "$_pair" ] && continue
+  _src="${_pair%%:*}"; _dst="${_pair#*:}"
+  [ -n "$_src" ] && [ -n "$_dst" ] && [ "$_src" != "$_dst" ] || continue
+  [ -f "$_src" ] && [ -x "$_REDACT_SH" ] || continue
+  case "$_dst" in /*) : ;; *) _dst="$REPO/$_dst" ;; esac  # dst relative to REPO
+  mkdir -p "$(dirname "$_dst")" 2>/dev/null || true
+  _new="$(mktemp "${_dst}.new.XXXXXX" 2>/dev/null)" || continue
+  if "$_REDACT_SH" "$_src" "$_new" 2>/dev/null; then
+    if [ ! -f "$_dst" ] || ! cmp -s "$_new" "$_dst"; then mv -f "$_new" "$_dst"; else rm -f "$_new"; fi
+  else
+    rm -f "$_new"
+  fi
+done
+
 if [ -n "$(g status --porcelain 2>/dev/null | head -c1)" ]; then
 
   # -- Size guard: exclude oversized NEW files from this run (stay on disk) ---
