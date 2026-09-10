@@ -39,6 +39,28 @@ kb/memory_neuron/
 workspace-*/kb/memory_neuron/
 models/
 workspace-*/models/
+# Neuron code-structure graph: kb/code_graph/graph.db is a ~700MB derived,
+# rebuildable index (AST/graph store) that rewrites on refresh — same churny/
+# huge class as the vector DBs. The vector_db* glob does NOT match it (different
+# dir), so it needs its own rule. Missing this was a real leak vector.
+kb/code_graph/
+workspace-*/kb/code_graph/
+# Quarantined corrupt vector-DB dirs dinomem itself renames aside on a failed
+# rebuild (kb/.vector_db_sessions.corrupt-<ts>/). Derived, huge, never useful.
+kb/.vector_db*.corrupt-*/
+workspace-*/kb/.vector_db*.corrupt-*/
+# Rotated memory archive dinomem writes when it ages out daily notes.
+.memory_archive/
+workspace-*/.memory_archive/
+# OpenClaw runtime dirs (dinomem runs inside OpenClaw, so these are always
+# present + always churny/regenerable on a dinomem host): staged inbound media,
+# per-run cache, and transient runtime state.
+cache/
+workspace-*/cache/
+runtime/
+workspace-*/runtime/
+media/inbound/
+workspace-*/media/inbound/
 # git-autosnapshot's own log
 logs/git-autosnapshot.log
 # Generic dev-junk hygiene. WHY: the rules above only cover dinomem's OWN
@@ -71,4 +93,16 @@ __pycache__/
 **/.env
 .env.local
 .env.*.local
+# Convention-junk on a dinomem/OpenClaw host: local backup dirs and loose *.db
+# dumps. NOTE (tradeoff): these are broader than dinomem's own artifacts — if
+# YOU deliberately keep a `backups/` dir or a `data/*.db` you want versioned,
+# allowlist it via `.dinomem-keep-large` or remove these lines from this store's
+# info/exclude. Default-ignored here because on a standard box they're
+# regenerable junk, and silently bloating .git is the worse failure.
+backup/
+backups/
+workspace-*/backup/
+workspace-*/backups/
+data/*.db
+workspace-*/data/*.db
 # <<< dinomem git-autosnapshot ignores <<<
