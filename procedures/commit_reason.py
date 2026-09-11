@@ -25,15 +25,19 @@ GOTCHAS (why it's built exactly this way)
     False — the caller ignores the return.
   * Single line, bounded. Newlines are stripped and the subject is truncated to
     SUBJECT_MAX so the git-log title stays a real title (full text lives in the diff).
-  * Last-writer-wins by design. If two meaningful writes land inside one 15-min
-    tick, the later reason overwrites — acceptable: both diffs are still captured;
-    only the human-facing subject reflects the last why. (Multi-reason batching was
-    considered and rejected as over-engineering for a cosmetic line.)
+  * APPEND / multi-reason by design. dinomem's git store is a WHOLE-WORKSPACE
+    changelog (memory writes AND self-config / skill / hook / cron mutations), so
+    two meaningful writes landing inside one 15-min tick is common. Each drop()
+    APPENDS a line; the reader (auto-commit.sh) uses line 1 as the commit SUBJECT
+    and lines 2+ as the commit BODY — so both whys survive, not just the last.
+    Bounded (REASON_MAX_LINES) so a runaway loop can't grow the hint unboundedly;
+    the file is still consume-once (cleared after the tick reads it).
 """
 import os
 from pathlib import Path
 
 SUBJECT_MAX = 72  # git-title discipline; detail beyond this stays in the diff
+REASON_MAX_LINES = 20  # cap accumulated reasons per tick (runaway-loop guard)
 
 # Resolve $REPO the same way auto-commit.sh does: AUTOSNAP_REPO wins, else the
 # dinomem workspace (sed-substituted at install), else a self-locate fallback.
@@ -60,9 +64,11 @@ def clean_subject(text: str) -> str:
 
 
 def drop(reason: str) -> bool:
-    """Hand the auto-snapshot writer a semantic subject for the next tick.
+    """APPEND a semantic reason line for the next auto-snapshot tick.
 
-    Returns True if the hint was written, False on any failure or empty reason.
+    Multiple drops in one tick accumulate: line 1 becomes the commit subject,
+    lines 2+ the commit body (see module docstring). Bounded by REASON_MAX_LINES.
+    Returns True if the line was written, False on any failure or empty reason.
     Callers IGNORE the return (fail-open): a failed hint just means the next
     commit uses its structural subject.
     """
@@ -72,7 +78,20 @@ def drop(reason: str) -> bool:
             return False
         p = _hint_path()
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(subject + "\n", encoding="utf-8")
+        # De-dupe + cap: read existing lines, drop if identical already present,
+        # and never exceed REASON_MAX_LINES (keep the earliest lines = subject stable).
+        existing = []
+        try:
+            if p.exists():
+                existing = [ln for ln in p.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        except Exception:
+            existing = []  # unreadable hint -> start clean, still fail-open
+        if subject in existing:
+            return True  # already recorded this exact why this tick
+        if len(existing) >= REASON_MAX_LINES:
+            return True  # cap reached: keep the accumulated whys, ignore extra
+        existing.append(subject)
+        p.write_text("\n".join(existing) + "\n", encoding="utf-8")
         return True
     except Exception:
         return False  # cosmetic hint: never propagate

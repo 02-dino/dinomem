@@ -530,6 +530,7 @@ def review():
             save_tracker(tracker)
             if graduate:
                 files_frozen += 1
+                _drop_reason("memory", f"graduate {filepath.name} (all-valid @ {applicable_bucket}d)")
                 all_changes.append(f"FROZEN: {filepath.name} (age {age}d, all [valid] @ {applicable_bucket}d — graduated, immortal)")
             else:
                 all_changes.append(f"REVIEWED: {filepath.name} (age {age}d)")

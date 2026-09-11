@@ -84,6 +84,20 @@ def _run(argv):
     except Exception as e:  # noqa: BLE001
         return 1, "", str(e)
 
+def _drop_reason(verb, detail):
+    """Fail-open semantic-commit hint (see procedures/commit_reason.py). Cosmetic."""
+    try:
+        import sys as _sys
+        from pathlib import Path as _P
+        _sys.path.insert(0, str(_P(__file__).resolve().parent.parent / "procedures"))
+        from commit_reason import drop  # type: ignore
+    except Exception:
+        return
+    try:
+        drop(f"{verb}: {detail}")
+    except Exception:
+        pass
+
 
 def _workspace_dir():
     return (
@@ -182,6 +196,7 @@ def cmd_scaffold(args):
     note = None
     if not enabled:
         note = f"scaffolded but enable failed ({err or out}); run: openclaw hooks enable {name}"
+    _drop_reason("hook", f"scaffold {name} for {event}")
     _ok(
         f"hook '{name}' scaffolded for {event}" + (" + enabled" if enabled else ""),
         path=f"hooks/{name}",
@@ -221,6 +236,7 @@ def cmd_remove(args):
         shutil.rmtree(d)
     except Exception as e:  # noqa: BLE001
         _fail(f"remove failed: {e}")
+    _drop_reason("hook", f"remove {name}")
     _ok(f"hook '{name}' disabled + removed")
 
 

@@ -1545,6 +1545,7 @@ Prefer `merge` over `update` when the existing item is still TRUE and the new it
                     lines[line_idx] = ''
                     md_file.write_text('\n'.join(lines), encoding='utf-8')
                     log(f"   ♻️  Contradiction check: blanked stale line in {md_file.name} ({verdict})")
+                    _drop_reason("memory", f"supersede line in {md_file.name} ({verdict})")
             kept_new.append(new_item)
         else:
             kept_new.append(new_item)

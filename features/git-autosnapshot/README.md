@@ -19,10 +19,16 @@ Every N minutes it commits all non-ignored changes (edits **and** brand-new file
 
 - **History retention** — old `auto-snapshot` commits collapse into a baseline when disk is tight, so 15-min snapshots (~35k/year) can't balloon `.git`. **Only `auto-snapshot` commits are ever collapsed** — your hand-written commits are permanent at any age. A backup ref is taken before any rewrite; a failed rewrite auto-restores.
 - **Scale config** — enables `core.fsmonitor`, `core.untrackedcache`, `feature.manyFiles` so staging stays sub-second into six-figure file counts.
-- **Two-tier commit subjects** — for a memory system the *why* of a change is as important as the change, so `git log --oneline` reads as a why-changelog instead of noise:
-  - **Semantic** (Tier 1) — when a **meaningful** memory write happens (a pattern graduates/demotes, a fact is superseded, a done-note resolves, a cross-head dedup-merge), the caller hands the already-computed reason to the snapshot writer, producing subjects like `promote: graduate "…" (3 reinforce, conf 0.82)`, `supersede: dino.location old → new`, `resolve: note <slug> done_when met @<sha>`, `dedup-merge: <peer> ← world-fact`.
+- **Two-tier commit subjects** — dinomem's git store is a **whole-workspace** changelog (memory writes *and* self-config / skill / hook / cron mutations), so the *why* of a change matters as much as the change. `git log --oneline` reads as a why-changelog instead of noise:
+  - **Semantic** (Tier 1) — when a **meaningful** mutation happens, the caller hands the already-computed reason to the snapshot writer. Wired callers and the subjects they produce:
+    - memory (`procedures/extract_memory.py`, `procedures/memory_review.py`): `memory: supersede <file> (update)`, `memory: merge detail into <file>`, `memory: graduate <file> (all-valid @ 90d)`
+    - config (`tools/config_tool.py`): `config: patch <section> in AGENTS.md`, `config: append to TOOLS.md`, `config: rewrite IDENTITY.md`
+    - skill (`tools/skill_tool.py`): `skill: scaffold <slug> (<name>)`, `skill: remove <slug>`
+    - hook (`tools/hook_tool.py`): `hook: scaffold <name> for <event>`, `hook: remove <name>`
+    - cron (`tools/cron_tool.py`): `cron: add <name> (tier=T2, cron)`, `cron: remove <name>`
+  - **Multi-reason body** — two meaningful writes in one 15-min tick is common on a whole-workspace store, so each caller **appends** a line (de-duped, capped at `REASON_MAX_LINES`). The reader uses line 1 as the commit **subject** and lines 2+ as the commit **body** — so both whys survive, not just the last.
   - **Structural** (Tier 2) — a blind timer tick genuinely has no *why*, so it keeps the machine-scannable fallback `auto-snapshot <ts> · +A ~M -D · <topdir> (N file(s))`.
-  - **Zero new cost:** the reason is an f-string over values the caller already held — no LLM, no model call per tick. The mechanism is a fail-open reason-hint file (`.dinomem-commit-reason`) that the writer reads-then-clears; if it's absent/stale, the structural subject is used. Callers stay entirely git-free (one writer).
+  - **Zero new cost, fail-open:** the reason is an f-string over values the caller already held — no LLM, no model call per tick. The mechanism is a reason-hint file (`.dinomem-commit-reason`) written by `procedures/commit_reason.py` (`drop()`; an optional thin `scripts/lib/commit_reason.sh` wrapper execs it for shell callers) that the writer reads-then-clears; if it's absent/stale, the structural subject is used. A hint is cosmetic — its write path swallows every error so it can never block/slow/crash the mutation it decorates. Callers stay entirely git-free (one writer).
 
 ## Install
 

@@ -128,6 +128,20 @@ def _run(argv):
     except Exception as e:  # noqa: BLE001
         return 1, "", str(e)
 
+def _drop_reason(verb, detail):
+    """Fail-open semantic-commit hint (see procedures/commit_reason.py). Cosmetic."""
+    try:
+        import sys as _sys
+        from pathlib import Path as _P
+        _sys.path.insert(0, str(_P(__file__).resolve().parent.parent / "procedures"))
+        from commit_reason import drop  # type: ignore
+    except Exception:
+        return
+    try:
+        drop(f"{verb}: {detail}")
+    except Exception:
+        pass
+
 
 def _extract_json(text):
     # CLI may prepend config warnings to stdout; grab the first JSON value.
@@ -311,6 +325,7 @@ def cmd_add(args):
     if message and not args.get("agent"):
         notes.append("agentTurn job has no --agent; on multi-agent installs it runs as the default agent — pass --agent <id> to target a specific agent")
     note = "; ".join(notes) if notes else None
+    _drop_reason("cron", f"add {name} (tier={tier}, {kind})")
     _ok(f"cron job '{name}' created (tier={tier}, schedule={kind})", cli=out, note=note)
 
 
@@ -332,6 +347,7 @@ def cmd_remove(args):
     rc, out, err = _run(["openclaw", "cron", "rm", job_id])
     if rc != 0:
         _fail(f"cron rm failed: {err or out}")
+    _drop_reason("cron", f"remove {name}")
     _ok(f"cron job '{name}' removed")
 
 

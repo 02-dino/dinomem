@@ -133,6 +133,25 @@ REMEDIATION_LADDER = (
 )
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+def _drop_reason(verb, detail):
+    """Fail-open semantic-commit hint. A successful config mutation knows its WHY
+    as data -> hand it to the auto-snapshot via commit_reason.drop(). Cosmetic:
+    an ImportError or any failure is swallowed so the mutation never pays for it."""
+    try:
+        from procedures.commit_reason import drop
+    except Exception:
+        try:
+            import sys as _sys
+            _sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "procedures"))
+            from commit_reason import drop  # type: ignore
+        except Exception:
+            return
+    try:
+        drop(f"{verb}: {detail}")
+    except Exception:
+        pass
+
+
 def backup(path):
     if BACKUP_SCRIPT.exists():
         subprocess.run([str(BACKUP_SCRIPT), str(path)], capture_output=True)
@@ -266,6 +285,7 @@ def append_to(filename, content):
     result = {"ok": True, "file": filename, "action": "append"}
     if size_warnings:
         result["warnings"] = size_warnings
+    _drop_reason("config", f"append to {filename}")
     return result
 
 def patch_section(filename, section_key, content):
@@ -297,6 +317,7 @@ def patch_section(filename, section_key, content):
     result = {"ok": True, "file": filename, "action": "patch", "section": section_key}
     if size_warnings:
         result["warnings"] = size_warnings
+    _drop_reason("config", f"patch {section_key} in {filename}")
     return result
 
 def remove_section(filename, section_key):
@@ -324,6 +345,7 @@ def remove_section(filename, section_key):
     # Also remove trailing blank line if present
     new_lines = lines[:start] + lines[end:]
     path.write_text("".join(new_lines), encoding="utf-8")
+    _drop_reason("config", f"remove {section_key} from {filename}")
     return {"ok": True, "file": filename, "action": "remove", "section": section_key}
 
 def write_file(filename, content):
@@ -339,6 +361,7 @@ def write_file(filename, content):
     path = WORKSPACE / filename
     backup(path)
     path.write_text(content.strip() + "\n", encoding="utf-8")
+    _drop_reason("config", f"rewrite {filename}")
     return {"ok": True, "file": filename, "action": "write"}
 
 # ── CLI ───────────────────────────────────────────────────────────────────────

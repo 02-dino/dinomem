@@ -63,6 +63,22 @@ def _backup(path):
 def _valid(text):
     return "\x00" not in text and len(text) <= 50_000
 
+def _drop_reason(verb, detail):
+    """Fail-open semantic-commit hint (see procedures/commit_reason.py). Cosmetic."""
+    try:
+        from procedures.commit_reason import drop
+    except Exception:
+        try:
+            import sys as _sys
+            _sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "procedures"))
+            from commit_reason import drop  # type: ignore
+        except Exception:
+            return
+    try:
+        drop(f"{verb}: {detail}")
+    except Exception:
+        pass
+
 def _skill_dir(slug):
     return SKILLS_DIR / slug
 
@@ -94,6 +110,7 @@ def scaffold(slug, name, desc, body, trigger=None, confirmed=False):
 
     # Apply natively (best-effort; scaffolding on disk already makes it discoverable).
     applied, apply_msg = _install(d)
+    _drop_reason("skill", f"scaffold {slug} ({name})")
     return {"ok": True, "slug": slug, "path": str(skill_md), "action": "scaffold",
             "trigger_written": trigger_written, "installed": applied, "apply": apply_msg}
 
@@ -169,6 +186,7 @@ def remove(slug, confirmed=False):
         if new != txt:
             _backup(AGENTS_FILE)
             AGENTS_FILE.write_text(new + "\n", encoding="utf-8")
+    _drop_reason("skill", f"remove {slug}")
     return {"ok": True, "slug": slug, "action": "remove"}
 
 def main():

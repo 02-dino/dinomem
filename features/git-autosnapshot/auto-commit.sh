@@ -297,16 +297,23 @@ if [ -n "$(g status --porcelain 2>/dev/null | head -c1)" ]; then
     STAMP="$(date '+%Y-%m-%d %H:%M:%S %Z')"
     N="$(g diff --cached --name-only | wc -l | tr -d ' ')"
 
-    # -- TIER 1: SEMANTIC subject from a meaningful-write hint (zero LLM) -------
-    # A caller that KNEW why it wrote (promotion/supersede/resolve/dedup) dropped
-    # the WHY into $REASON_HINT. Use it as the subject when present + fresh, then
-    # CLEAR it so a later blind tick doesn't reuse a stale why. The reason is a
-    # string the caller already held -> no new cost, no model, no git in callers.
-    SUBJ=""
+    # -- TIER 1: SEMANTIC subject+body from meaningful-write hint(s) (zero LLM) -
+    # Callers that KNEW why they wrote (memory promote/supersede/dedup, or a
+    # config/skill/hook/cron mutation) APPENDED their WHY to $REASON_HINT (one
+    # line each, via procedures/commit_reason.py drop()). This is a WHOLE-
+    # WORKSPACE changelog, so several whys can accumulate in one 15-min tick:
+    # line 1 -> commit SUBJECT, lines 2+ -> commit BODY. Read when present+fresh,
+    # then CLEAR (consume-once) so a later blind tick doesn't reuse a stale why.
+    # Zero cost: the reasons are strings callers already held; no model, no git
+    # in callers.
+    SUBJ=""; BODY=""
     if [ -s "$REASON_HINT" ]; then
       _hint_age=$(( $(date +%s) - $(stat -c %Y "$REASON_HINT" 2>/dev/null || echo 0) ))
       if [ "$_hint_age" -ge 0 ] && [ "$_hint_age" -le "$REASON_MAX_AGE_S" ]; then
         SUBJ="$(head -1 "$REASON_HINT" | tr -d '\r' | cut -c1-72)"
+        # Lines 2+ (if any) become the commit body — this is where the commit
+        # body, previously always empty, finally carries the extra whys.
+        BODY="$(tail -n +2 "$REASON_HINT" | tr -d '\r' | sed '/^[[:space:]]*$/d')"
       fi
       rm -f "$REASON_HINT" 2>/dev/null || true   # consume-once, even if stale
     fi
@@ -333,9 +340,18 @@ if [ -n "$(g status --porcelain 2>/dev/null | head -c1)" ]; then
       SUBJ="auto-snapshot ${STAMP} · +${ADDED} ~${MODED} -${DELED} · ${TOPDIR} (${N} file(s))"
     fi
 
-    g commit --quiet -m "$SUBJ" 2>/dev/null \
-      || g commit --quiet -m "auto-snapshot ${STAMP} (${N} file(s))" 2>/dev/null \
-      || true
+    # Commit: subject always; a second -m adds the body ONLY when Tier-1 gave us
+    # extra reason lines (a structural tick has no body). Fallbacks stay simple.
+    if [ -n "$BODY" ]; then
+      g commit --quiet -m "$SUBJ" -m "$BODY" 2>/dev/null \
+        || g commit --quiet -m "$SUBJ" 2>/dev/null \
+        || g commit --quiet -m "auto-snapshot ${STAMP} (${N} file(s))" 2>/dev/null \
+        || true
+    else
+      g commit --quiet -m "$SUBJ" 2>/dev/null \
+        || g commit --quiet -m "auto-snapshot ${STAMP} (${N} file(s))" 2>/dev/null \
+        || true
+    fi
   fi
 fi
 
