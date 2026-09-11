@@ -489,6 +489,16 @@ for a in agents:
             if not r.get("n_results"): empty += 1
     if n == 0: idle.append(a); continue
     g_total += n; rows.append((a, n, empty, per))
+# TIME GATE: the health cron typically runs early (07:00 local), when almost
+# nobody has recalled yet, so "0× today / 0 active" is expected noise, not a
+# signal. Before EARLY_HOUR (LOCAL wall-clock, default 12), when NO agent has
+# recalled, collapse the section to one quiet line instead of listing every
+# idle agent as if it were a fault. After that hour the full per-agent
+# breakdown returns, so a genuinely low-recall day still surfaces. Uses local
+# time (not the UTC 'today' above) so "morning" means morning in the box's zone.
+EARLY_HOUR = int(os.environ.get("DINOMEM_RECALL_EARLY_HOUR", "12"))
+if not rows and datetime.datetime.now().hour < EARLY_HOUR:
+    print(f"🧠 Recall today ({today}) — early hours, no activity yet (normal)"); raise SystemExit
 if not rows and not idle:
     print("🧠 Recall today — (no data)"); raise SystemExit
 rows.sort(key=lambda r: r[1], reverse=True)
