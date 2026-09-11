@@ -199,6 +199,13 @@ except Exception:
         or "ninerouter/cc/claude-haiku-4-5-20251001"
     )
 
+# LLM per-call timeout. The cheap-model call is ~40s idle, but under host
+# load (many agents' heavy crons contending) it balloons: measured 70-91s at
+# loadavg ~21 on a 6-core box. A 120s cap then trips en masse -> hundreds of
+# "LLM call failed" per run + a review that burns hours doing nothing. 300s
+# gives headroom without letting a truly-hung call run forever. Env-tunable.
+_LLM_TIMEOUT = float(os.environ.get("DINOMEM_REVIEW_LLM_TIMEOUT", "300"))
+
 def call_llm(prompt, max_tokens=4000):
     """Call LLM via OpenClaw gateway (cheap no-reasoning model)."""
     try:
@@ -213,7 +220,7 @@ def call_llm(prompt, max_tokens=4000):
             ],
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=_LLM_TIMEOUT,
         )
         if result.returncode == 0:
             output = json.loads(result.stdout)
@@ -431,7 +438,18 @@ def review():
     if tei_active:
         print(f"Pre-filter: {len(priority_files)} priority (similar neighbors), {len(isolated_files)} isolated")
     else:
-        print("Pre-filter: TEI unavailable, reviewing all files")
+        # TEI down -> no prefilter -> we'd review the WHOLE batch (up to BATCH_MAX,
+        # 150) with no similarity narrowing. Combined with slow under-load LLM
+        # calls that is exactly the multi-hour run that hogs the heavy-llm lock
+        # and starves every other agent. Degrade gracefully: cap this run to a
+        # small slice so it still makes progress (cursor advances next tick) but
+        # can't balloon. Env-tunable; the full batch resumes once TEI is back.
+        _degraded_cap = int(os.environ.get("DINOMEM_REVIEW_NOTEI_CAP", "25"))
+        if len(priority_files) > _degraded_cap:
+            print(f"Pre-filter: TEI unavailable, degraded run capped to {_degraded_cap}/{len(priority_files)} files (resumes next tick)")
+            priority_files = priority_files[:_degraded_cap]
+        else:
+            print(f"Pre-filter: TEI unavailable, reviewing {len(priority_files)} files (under cap)")
 
     # Review priority files first (conflict/redundancy candidates), then isolated
     ordered_files = priority_files + isolated_files
