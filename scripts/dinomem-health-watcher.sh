@@ -264,6 +264,60 @@ within_alert_cooldown() {
   [ "$(( $1 - LAST_ALERT_TS ))" -lt "$ALERT_COOLDOWN_SEC" ]
 }
 
+# Returns 0 when the current problem set is a STRICT SUBSET of the previous one
+# (i.e. some issues resolved, no new ones appeared). Used by decide() to avoid
+# flap-alerting on partial recovery — the remaining issues were already alerted.
+is_improvement_only() {
+  local last_sig="$1" curr_sig="$2"
+  local last_count curr_count
+  [ -z "$last_sig" ] && return 1
+  [ -z "$curr_sig" ] && return 1
+  [ "$last_sig" = "$curr_sig" ] && return 1
+
+  last_count="$(printf '%s' "$last_sig" | tr '|' '\n' | grep -c . || true)"
+  curr_count="$(printf '%s' "$curr_sig" | tr '|' '\n' | grep -c . || true)"
+  [ "$curr_count" -ge "$last_count" ] && return 1
+
+  local issue
+  while IFS= read -r issue; do
+    [ -z "$issue" ] && continue
+    if ! printf '|%s|' "$last_sig" | grep -q "|${issue}|"; then
+      return 1   # new issue not in previous set → not a pure improvement
+    fi
+  done < <(printf '%s' "$curr_sig" | tr '|' '\n')
+
+  return 0
+}
+
+# Returns 0 when any issue in the current signature is NEW or escalated in
+# severity compared to the previous signature. Used by decide() to break
+# through the alert cooldown when things get worse (don't wait 6h to re-alert).
+severity_worsened() {
+  local last_sig="$1" curr_sig="$2"
+  local issue
+  while IFS= read -r issue; do
+    [ -z "$issue" ] && continue
+    # Issue already existed identically → no change
+    if printf '|%s|' "$last_sig" | grep -q "|${issue}|"; then
+      continue
+    fi
+    # Extract base (agent:check) to compare severity levels
+    local base="${issue%:ERROR:*}"
+    base="${base%:WARN:*}"
+    if printf '|%s|' "$last_sig" | grep -qE "\|${base}:(ERROR|WARN)"; then
+      local last_rank curr_rank
+      last_rank="$(severity_rank "$(printf '|%s|' "$last_sig" | grep -oE "${base}:(ERROR|WARN)[^|]*" | head -1 | sed 's/.*:\(ERROR\|WARN\).*/\1/')")"
+      curr_rank="$(severity_rank "$(echo "$issue" | sed 's/.*:\(ERROR\|WARN\).*/\1/')")"
+      if [ "$curr_rank" -gt "$last_rank" ]; then
+        return 0   # severity escalated
+      fi
+    else
+      return 0     # entirely new issue
+    fi
+  done < <(printf '%s' "$curr_sig" | tr '|' '\n')
+  return 1
+}
+
 # ── Port probe (portable: ss → lsof → nc) ─────────────────────────────
 # Linux usually has ss; macOS has lsof; nc is the last resort. Returns 0 if
 # something is listening on the port.
@@ -655,15 +709,26 @@ deliver() {
 
 # ── Notify decision ────────────────────────────────────────────
 decide() {
-  local report_hash="$1" now_ts today
+  local report_hash="$1" problem_signature="$2" now_ts today
   read_notify_state
   today="$(date +%Y-%m-%d)"; now_ts="$(date +%s)"
   if [ "$FORCE" = true ] || [ "$NOTIFY_MODE" = "always" ]; then
     has_problems && echo "send|problem" || echo "send|ok"; return
   fi
   if has_problems; then
+    # Exact same fingerprint → skip (no change at all)
     if [ "$report_hash" = "$LAST_ALERT_HASH" ] && [ -n "$LAST_ALERT_HASH" ]; then
       within_alert_cooldown "$now_ts" && { echo "skip|unchanged"; return; }
+    fi
+    # Partial recovery (fewer issues, no new ones) → skip flap alert
+    if is_improvement_only "$LAST_PROBLEM_SIGNATURE" "$problem_signature"; then
+      echo "skip|partial_recovery"; return
+    fi
+    # Within cooldown but severity didn't worsen → skip (wait for cooldown)
+    if within_alert_cooldown "$now_ts"; then
+      if ! severity_worsened "$LAST_PROBLEM_SIGNATURE" "$problem_signature"; then
+        echo "skip|cooldown"; return
+      fi
     fi
     echo "send|problem"; return
   fi
@@ -720,7 +785,7 @@ done
 
 problem_signature="$(build_problem_signature)"
 report_hash="$(hash_signature "$problem_signature")"
-IFS='|' read -r action kind <<< "$(decide "$report_hash")"
+IFS='|' read -r action kind <<< "$(decide "$report_hash" "$problem_signature")"
 
 if [ "$action" = "skip" ]; then
   log "Skipping notify: ${kind} (hash=${report_hash:0:12})" >>"$LOG_FILE"
