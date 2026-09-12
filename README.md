@@ -396,11 +396,11 @@ bash scripts/dinomem-health-watcher.sh --dry-run
 It checks, per discovered agent (every `workspace-*`, or a plain `workspace`, carrying the dinomem `AGENTS.md` marker):
 - Gateway alive (cross-OS — prefers the `openclaw` CLI, falls back to systemd/launchctl/port probing)
 - SQLite DB readable
-- The three base cron jobs (`auto_session_reset`, `memory_cleanup`, `memory_review`) ran recently
+- The base cron jobs (`memory_cleanup`, `memory_review`) ran recently (staleness window: 30h). `auto_session_reset` is intentionally NOT checked here — it's usage-driven (fires on compaction, not a fixed schedule), so it can go a full idle day with no run and that's not a problem.
 
 Plus VPS resource use, today's recall activity, and memory integrity (open `_note_` pile-up; contradiction detection if you have the neuron upgrade — skipped cleanly otherwise).
 
-**Delivery:** sends to Telegram if `openclaw.json` has a usable bot token *and* you've pinned a destination (`DINOMEM_WATCHER_CHAT_ID` + `DINOMEM_WATCHER_TOPIC_ID`, optionally `DINOMEM_WATCHER_ACCOUNT`) — otherwise it prints to stdout/log only. Never fails for lack of Telegram config.
+**Delivery:** sends to Telegram if `openclaw.json` has a usable bot token *and* you've pinned a destination (`DINOMEM_WATCHER_TELEGRAM_CHAT_ID` + `DINOMEM_WATCHER_TELEGRAM_TOPIC_ID`, optionally `DINOMEM_WATCHER_TELEGRAM_ACCOUNT`) — otherwise it prints to stdout/log only. Never fails for lack of Telegram config.
 
 **Wiring it into cron:**
 ```bash
@@ -412,7 +412,7 @@ bash scripts/install.sh --workspace ~/.openclaw/workspace-myagent --health-cron
 ( crontab -l 2>/dev/null; echo "0 7 * * * bash ~/.openclaw/workspace-myagent/scripts/dinomem-health-watcher.sh >> ~/.openclaw/workspace-myagent/logs/dinomem-health-watcher.log 2>&1" ) | crontab -
 ```
 
-The `--smart` default (always on unless you pass `--always`) alerts once when a problem starts, stays quiet while it's unchanged, and sends one daily "all OK" heartbeat — so tightening the interval never turns into spam.
+The `--smart` default (always on unless you pass `--always`) alerts once when a problem starts, then re-sends at most every ~6h while it's unchanged (instead of on every run), and sends one daily "all OK" heartbeat — so tightening the interval never turns into spam.
 
 ### Verify it actually works — on demand
 
@@ -420,7 +420,10 @@ Curious whether the memory is real, correct, and reversible? These are the tools
 
 ```bash
 # WHAT CHANGED + UNDO IT — every add/update/delete is stamped with a restore_ref
-# (a git HEAD sha), so any memory change is byte-exact reversible.
+# (a git HEAD sha), so any memory change is byte-exact reversible — as long as
+# the base's git_history helper is present and git succeeds (fail-open to null
+# otherwise). Bare run prints summary counts; add --show <run_id> to see the
+# restore_ref itself.
 python3 procedures/_memory_diff.py             # audit log of recent memory changes
 # each entry carries a restore_ref you can git-restore to undo that exact change
 

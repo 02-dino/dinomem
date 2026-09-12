@@ -79,6 +79,15 @@ AGENT_ID="${DINOMEM_AGENT_ID:-unknown}"
 _log() { echo "[dinomem_run] $*" >&2; }
 
 # ── light class: pass through without locking ────────────────────────────────
+# gateway-heavy-embed-quiet (fix-gateway-heavy-embed-quiet.sh)
+_GW_QUIET_LIB="/root/.openclaw/scripts/gateway-heavy-embed-quiet.sh"
+[ -r "$_GW_QUIET_LIB" ] && source "$_GW_QUIET_LIB"
+if [ "$CLASS" = "heavy-embed" ] && declare -F gateway_heavy_embed_quiet_active >/dev/null 2>&1 && gateway_heavy_embed_quiet_active; then
+  _rem=$(gateway_heavy_embed_quiet_remaining 2>/dev/null || echo 0)
+  _log "DEFER: heavy-embed quiet window after gateway restart (${_rem}s left, agent=$AGENT_ID)"
+  exit 0
+fi
+
 if [ "$CLASS" = "light" ]; then
   (cd "$WORKSPACE" && exec "$@")
   exit $?
