@@ -5,15 +5,18 @@ description: List and restore dinomem workspace backups (memory, notes, config s
 
 # Backup & restore (dinomem)
 
-dinomem keeps TWO independent backup layers. Check BOTH before ever telling the
-user "there is no backup":
+dinomem keeps TWO independent recovery layers. Check BOTH before ever telling
+the user "there is no backup":
 
-1. **git-autosnapshot** (`.dinomem-snap.git`) — a byte-exact, timestamped git
-   mirror of the whole workspace (thousands of files), committed frequently by
-   cron. Look here FIRST: most complete + most exact, and it holds files the
-   periodic snapshot may not.
-2. **workspace snapshots** (`procedures/workspace_backup.py`) — periodic
-   full-workspace copies (keep-N), the friendly list/restore side.
+1. **workspace snapshots** (`procedures/workspace_backup.py`) — periodic
+   full-workspace copies (keep-N). This is the PRIMARY, authoritative recovery
+   path — the friendly list/restore side, purpose-built for disaster recovery.
+2. **git-autosnapshot** (`.dinomem-snap.git`) — a curated-scope, agent-sliced
+   git **changelog** (memory/config/skills/procedures text, not the whole
+   workspace), committed frequently by cron. This is a changelog first,
+   recovery second: use it for *cheap, recent* rollback of a tracked text/config
+   file, or to see *when and why* something changed — not as the primary
+   disaster-recovery source (see `features/git-autosnapshot/README.md`).
 
 ## When to use
 
@@ -22,15 +25,16 @@ user "there is no backup":
 
 ## Recovery source order (try in THIS order — do not stop early)
 
-1. **git-autosnapshot** `.dinomem-snap.git` (byte-exact, most complete) — see below.
-2. **workspace snapshots** via `workspace_backup.py --list/--restore`.
+1. **workspace snapshots** via `workspace_backup.py --list/--restore` (primary — see below).
+2. **git-autosnapshot** `.dinomem-snap.git` (secondary — cheap recent recovery + changelog for the curated text/config surface it tracks; not full-workspace).
 3. **workspace git** (if the workspace itself is a repo): `git log`, `git show`.
 4. **memory diffs** under `memory/.diffs/` (per-file change history).
 
-> Blunder to avoid: concluding "no backup anywhere" after checking only the
-> `backups/` folder. `.dinomem-snap.git` is separate and usually has the file.
+> Blunder to avoid: concluding "no backup anywhere" after checking only
+> `workspace_backup.py --list`. `.dinomem-snap.git` is separate, covers a
+> narrower curated scope, but may hold a more recent version of a tracked file.
 
-## git-autosnapshot (recovery source #1)
+## git-autosnapshot (recovery source #2 — changelog + cheap recent recovery)
 
 List snapshots/commits:
 ```bash
