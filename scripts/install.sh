@@ -3407,26 +3407,42 @@ if [ "$(uname)" = "Linux" ]; then
 fi
 
 # ── Gateway resilience: auto-restart openclaw on crash/OOM ───────────────────
-if [ "$(uname)" = "Linux" ] && command -v systemctl >/dev/null 2>&1; then
+# WHY timeout on every systemctl call: on a loaded/cgroup-throttled box, a bare
+# `systemctl` invocation can take 9s+ per call (measured live on this fleet —
+# not a fluke), and this step originally ran them with NO timeout inside a
+# while-loop. That hung an install indefinitely (observed: 25+ min stall on
+# the 'ads' agent, killed mid-write and left AGENTS.md with an orphan
+# BEGIN:dinomem marker). Bound every call so a slow/wedged systemctl degrades
+# to "skip this step", never to "hang the whole installer".
+_SYSTEMCTL_TO=10
+if [ "$(uname)" = "Linux" ] && command -v systemctl >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1; then
   _patched=0
-  while IFS= read -r _unit; do
-    _frag=$(systemctl show "$_unit" -p FragmentPath 2>/dev/null | cut -d= -f2)
-    [ -z "$_frag" ] || [ ! -f "$_frag" ] && continue
-    if grep -q "^Restart=" "$_frag"; then
-      sed -i 's/^Restart=.*/Restart=on-failure/' "$_frag" && _patched=$((_patched+1))
-    else
-      # inject after [Service] section header
-      sed -i '/^\[Service\]/a Restart=on-failure' "$_frag" && _patched=$((_patched+1))
-    fi
-    # ensure RestartSec is set
-    grep -q "^RestartSec=" "$_frag" || sed -i '/^Restart=on-failure/a RestartSec=5s' "$_frag"
-  done < <(systemctl list-unit-files --type=service --plain --no-legend 2>/dev/null | grep "^openclaw" | grep -v "autosnapshot\|autocommit" | awk '{print $1}')
-  if [ "$_patched" -gt 0 ]; then
-    systemctl daemon-reload 2>/dev/null || true
-    ok "Restart=on-failure applied to $_patched openclaw unit(s) — daemon-reload done"
+  _unit_list=$(timeout "$_SYSTEMCTL_TO" systemctl list-unit-files --type=service --plain --no-legend 2>/dev/null | grep "^openclaw" | grep -v "autosnapshot\|autocommit" | awk '{print $1}')
+  if [ -z "$_unit_list" ]; then
+    warn "systemctl list-unit-files timed out/empty (>${_SYSTEMCTL_TO}s) — skipping Restart=on-failure patch, not hanging on it"
   else
-    ok "No openclaw units found to patch (may not be running as systemd service)"
+    while IFS= read -r _unit; do
+      [ -z "$_unit" ] && continue
+      _frag=$(timeout "$_SYSTEMCTL_TO" systemctl show "$_unit" -p FragmentPath 2>/dev/null | cut -d= -f2)
+      [ -z "$_frag" ] || [ ! -f "$_frag" ] && continue
+      if grep -q "^Restart=" "$_frag"; then
+        sed -i 's/^Restart=.*/Restart=on-failure/' "$_frag" && _patched=$((_patched+1))
+      else
+        # inject after [Service] section header
+        sed -i '/^\[Service\]/a Restart=on-failure' "$_frag" && _patched=$((_patched+1))
+      fi
+      # ensure RestartSec is set
+      grep -q "^RestartSec=" "$_frag" || sed -i '/^Restart=on-failure/a RestartSec=5s' "$_frag"
+    done <<< "$_unit_list"
+    if [ "$_patched" -gt 0 ]; then
+      timeout "$_SYSTEMCTL_TO" systemctl daemon-reload 2>/dev/null || warn "systemctl daemon-reload timed out — units patched on disk but not reloaded; run 'systemctl daemon-reload' manually"
+      ok "Restart=on-failure applied to $_patched openclaw unit(s)"
+    else
+      ok "No openclaw units found to patch (may not be running as systemd service)"
+    fi
   fi
+elif [ "$(uname)" = "Linux" ] && command -v systemctl >/dev/null 2>&1; then
+  warn "'timeout' binary not found — skipping Restart=on-failure patch (systemctl calls unbounded, avoiding a possible hang)"
 fi
 
 # ── Internal watchdog: auto-install ──────────────────────────────────────────
