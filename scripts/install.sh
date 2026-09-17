@@ -2838,55 +2838,22 @@ $END"
 # them. The regex only strips a truly UNMARKED old section; a marker-bounded
 # block's '## dinomem' body line is inside BEGIN..END and stripped by the marker
 # pass first, so it can never eat the fresh block.
+# P9 (2026-09-17): the old FORCE/DRY_RUN/legacy-absorb branches below this call
+# used to be live code guarded only by `if false; then ... fi` around the FORCE
+# arm — NOT the whole block. Every non-dry-run install therefore fell into the
+# trailing `else` unconditionally, AFTER wire_managed_block above had already
+# written a clean 1-BEGIN/1-END block. That else re-grepped for the legacy
+# '^## dinomem' header — which ALWAYS matches, because the fresh block's own
+# body starts with that line — stripped from it to EOF (eating the just-written
+# END marker, since it's an HTML comment, not a '#'/'##' header the awk
+# recognizes), then appended $BLOCK again. Net effect: orphaned old BEGIN +
+# fresh BEGIN + fresh END = the 2-BEGIN/1-END corruption this comment was
+# supposed to prevent. wire_managed_block's arg 6 already folds legacy-absorb
+# in atomically (see its call above) so this whole secondary pass is not just
+# dead weight, it's a live double-write bug. Removed entirely; DO NOT re-add
+# any code here without an accompanying explicit call.
 wire_managed_block "$AGENTS" "$BEGIN" "$END" "$BLOCK" "AGENTS.md" \
   '^## (dinomem|memory_recall|rag_long_docs)([ \t]|$)'
-if false; then  # DEAD: legacy wiring, superseded by wire_managed_block above; kept guarded then removed
-  if [ "$FORCE" = 1 ]; then
-    if [ "$DRY_RUN" = 1 ]; then
-      plan "refresh dinomem managed block in AGENTS.md (strip old BEGIN..END, write current)"
-    else
-      _tmp_agents="$(mktemp)"
-      awk -v b="$BEGIN" -v e="$END" '
-        index($0,b){skip=1}
-        !skip{print}
-        index($0,e){skip=0}
-      ' "$AGENTS" > "$_tmp_agents"
-      awk 'NF{last=NR} {lines[NR]=$0} END{for(i=1;i<=last;i++) print lines[i]}' "$_tmp_agents" > "$AGENTS"
-      rm -f "$_tmp_agents"
-      printf '\n%s\n' "$BLOCK" >> "$AGENTS"
-      ok "AGENTS.md block refreshed (old block stripped, current block written)"
-    fi
-  else
-    skip "AGENTS.md already wired (re-run with --force to refresh the managed block)"
-  fi
-elif [ "$DRY_RUN" = 1 ]; then
-  plan "append dinomem managed block to AGENTS.md"
-else
-  # No modern marker present. A PRE-MARKER install may still have left an
-  # UNMARKED legacy dinomem section (## dinomem / ## memory_recall /
-  # ## rag_long_docs) written directly into AGENTS.md. Appending the fresh
-  # marked block without removing it leaves a stale duplicate (the old
-  # warn-only path). Absorb it: strip any such unmarked top-level section
-  # (from its '## <header>' line up to the next '## '/'# ' header or EOF),
-  # then append the current marked block. Marker-bounded blocks are never
-  # touched here (this branch only runs when no BEGIN marker exists).
-  if grep -qE '^## (dinomem|memory_recall|rag_long_docs)([[:space:]]|$)' "$AGENTS" 2>/dev/null; then
-    _tmp_legacy="$(mktemp)"
-    awk '
-      /^## (dinomem|memory_recall|rag_long_docs)([ \t]|$)/ { drop=1; next }
-      drop && /^#{1,2} / { drop=0 }
-      !drop { print }
-    ' "$AGENTS" > "$_tmp_legacy"
-    # Trim trailing blank lines the removal may leave.
-    awk 'NF{last=NR} {lines[NR]=$0} END{for(i=1;i<=last;i++) print lines[i]}' "$_tmp_legacy" > "$AGENTS"
-    rm -f "$_tmp_legacy"
-    printf '\n%s\n' "$BLOCK" >> "$AGENTS"
-    ok "AGENTS.md wired (absorbed unmarked legacy dinomem section into managed block)"
-  else
-    printf '\n%s\n' "$BLOCK" >> "$AGENTS"
-    ok "AGENTS.md wired"
-  fi
-fi
 
 # ── 6b) Wire TOOLS.md ────────────────────────────────────────────────────────
 hr "TOOLS.md"
