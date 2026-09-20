@@ -1806,7 +1806,7 @@ GATE_NAME = "Note Cron Gate"
 
 def _gate_env(gate_id):
     try:
-        g = subprocess.run(['openclaw', 'cron', 'get', gate_id, '--json'], capture_output=True, text=True, timeout=_CLI_T)
+        g = subprocess.run(['openclaw', 'cron', 'get', gate_id], capture_output=True, text=True, timeout=_CLI_T)
         if g.returncode == 0:
             return (json.loads(g.stdout).get('payload', {}) or {}).get('env', {}) or {}
     except Exception:
@@ -1871,7 +1871,7 @@ else:
         kind_ok = False
         if gid:
             try:
-                g = subprocess.run(['openclaw', 'cron', 'get', gid, '--json'], capture_output=True, text=True, timeout=_CLI_T)
+                g = subprocess.run(['openclaw', 'cron', 'get', gid], capture_output=True, text=True, timeout=_CLI_T)
                 if g.returncode == 0:
                     kind_ok = (json.loads(g.stdout).get('payload', {}) or {}).get('kind') == 'command'
             except Exception:
