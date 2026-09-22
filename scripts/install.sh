@@ -1173,6 +1173,17 @@ if [ "$DO_DOCKER" = 1 ]; then
       warn "  semantic recall, install Docker (https://docs.docker.com/engine/install/) + re-run."
     fi
   fi
+  # _TEI_OWNED: set to 1 ONLY when THIS install actually copies/starts a TEI
+  # stack into $WS. TEI is a single shared :8080 service across all agents on
+  # a box — when we're just reusing an existing healthy instance (or skipping
+  # due to port conflict), $WS/docker-compose.tei.yml is NEVER created here, so
+  # a later @reboot cron pointed at it would reference a file that doesn't
+  # exist. Bug this fixes: every agent's install.sh run used to unconditionally
+  # register its own "docker compose -f $WS/docker-compose.tei.yml up -d"
+  # @reboot line regardless of whether that file was ever copied to $WS —
+  # non-owning agents ended up with dead/duplicate reboot cron lines racing for
+  # port 8080 with nothing to actually run.
+  _TEI_OWNED=0
   if ! command -v docker >/dev/null 2>&1; then :
   elif [ "${TEI_REUSE:-0}" = 1 ] || tei_healthy; then
     ok "Existing healthy TEI already answering on :8080 (/health 200) — reusing it, not starting a new container."
@@ -1180,6 +1191,7 @@ if [ "$DO_DOCKER" = 1 ]; then
     warn "Port 8080 in use by a non-TEI process — TEI not started. Check: lsof -i :8080"
     warn "Use --no-docker to skip TEI, or free port 8080 and re-run."
   else
+    _TEI_OWNED=1
     # Detect Compose plugin; fallback to docker run
     if docker compose version >/dev/null 2>&1; then
       run "copy docker-compose.tei.yml -> $WS/" cp "$SKILL_DIR/docker/docker-compose.tei.yml" "$WS/docker-compose.tei.yml"
@@ -2136,7 +2148,13 @@ upsert_selfsched(job, "pending_note_reminder")
 PYEOF
   fi
 
-  if [ "$DO_DOCKER" = 1 ] && command -v docker >/dev/null 2>&1; then
+  # Only the agent that actually OWNS a TEI stack in its own $WS (started/copied
+  # it this run, per _TEI_OWNED above) registers the @reboot cron for it. An
+  # agent that merely reused someone else's healthy TEI, or skipped due to a
+  # port conflict, never had $WS/docker-compose.tei.yml created — registering
+  # a reboot cron pointed at that nonexistent file just leaves a dead/duplicate
+  # line racing other agents' TEI crons for port 8080 on every reboot.
+  if [ "$DO_DOCKER" = 1 ] && [ "${_TEI_OWNED:-0}" = 1 ] && command -v docker >/dev/null 2>&1; then
     if docker compose version >/dev/null 2>&1; then
     TEI_CRON="@reboot sleep 30 && docker compose -f $WS/docker-compose.tei.yml up -d >> /tmp/tei-startup.log 2>&1"
   else
