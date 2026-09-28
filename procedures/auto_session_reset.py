@@ -63,7 +63,10 @@ def run_script(script_name):
         result = subprocess.run(
             [sys.executable, str(script_path)],
             cwd=str(workspace),
-            timeout=300
+            timeout=600  # widened 300->600 2026-09-28: session_ingest.py was flaking
+                         # against the local TEI embed endpoint on a growing chroma
+                         # DB, getting cut off mid-prune every time (fleet-wide fix
+                         # across all workspace-* deployments on this box)
         )
         if result.returncode == 0:
             log(f"✅ {script_name} completed successfully")
