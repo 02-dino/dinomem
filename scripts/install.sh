@@ -547,6 +547,20 @@ if command -v select_openclaw_instance >/dev/null 2>&1 && [ -z "${DINOMEM_INSTAN
       [ "${AGENT_ID_EXPLICIT:-0}" = 1 ] || AGENT_ID="${DINOMEM_SEL_AGENT_ID:-$AGENT_ID}"
       [ -n "${DINOMEM_SEL_CONFIG:-}" ] && export OPENCLAW_CONFIG="$DINOMEM_SEL_CONFIG"
       [ -n "${DINOMEM_SEL_STATE_DIR:-}" ] && export OPENCLAW_STATE_DIR="$DINOMEM_SEL_STATE_DIR"
+      # CRON ROUTING (2026-09-29) — WHY this exists:
+      # OPENCLAW_CONFIG does NOT route the `openclaw` CLI. Measured on a 9-gateway
+      # box: the CLI resolves its gateway from OPENCLAW_GATEWAY_PORT FIRST, then
+      # OPENCLAW_CONFIG_PATH; OPENCLAW_CONFIG is ignored for routing. A
+      # gateway-spawned shell exports OPENCLAW_GATEWAY_PORT, so every
+      # `openclaw cron add` below landed on THAT gateway no matter what
+      # --instance said -> the job registered under a FOREIGN gateway whose
+      # agents.defaults.models allowlist rejects its payload_model at
+      # cron-preflight (dies ~119ms, never reaches the LLM). The dedup sweep
+      # can't see it either: `cron list` is gateway-scoped by construction.
+      # GOTCHA: unsetting the port is required — setting CONFIG_PATH alone loses
+      # to an inherited OPENCLAW_GATEWAY_PORT.
+      [ -n "${DINOMEM_SEL_CONFIG:-}" ] && export OPENCLAW_CONFIG_PATH="$DINOMEM_SEL_CONFIG"
+      unset OPENCLAW_GATEWAY_PORT
       ok "Target OpenClaw instance: $AGENT_ID (config: ${DINOMEM_SEL_CONFIG:-default}${DINOMEM_SEL_PORT:+, port $DINOMEM_SEL_PORT})"
       ;;
     default) : ;;
