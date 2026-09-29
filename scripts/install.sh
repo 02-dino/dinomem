@@ -1576,6 +1576,51 @@ def _dino_deliver_channel():
     _DINO_DELIVER_CH = ch
     return _DINO_DELIVER_CH
 
+
+_DINO_DELIVER_TO = ()
+def _dino_deliver_to(ch):
+    """Resolve an EXPLICIT delivery target (chatId/group) for announce crons, once.
+    WHY: '--announce --channel X' alone is NOT deliverable. Telegram/WhatsApp refuse
+    a send with no destination ('Delivering to Telegram requires target <chatId>'),
+    so an announce cron installed without a target RUNS fine and then dies at the
+    delivery step -- invisible to the user, 'error' in the run log. OpenClaw exposes
+    no per-agent default chat, so mine THIS gateway's own cron table for a
+    destination that already delivers on the same channel (prefer the same agent).
+    Fail-open to no target (old behavior) so a box that never had one never
+    regresses. Override with DINOMEM_DELIVER_TO."""
+    global _DINO_DELIVER_TO
+    if _DINO_DELIVER_TO != ():
+        return _DINO_DELIVER_TO
+    _DINO_DELIVER_TO = (None, None, None)
+    ov = (_os.environ.get('DINOMEM_DELIVER_TO','') or '').strip()
+    if ov:
+        _DINO_DELIVER_TO = (ov, None, None)
+        return _DINO_DELIVER_TO
+    try:
+        lr = subprocess.run(['openclaw','cron','list','--all','--json'],
+                            capture_output=True, text=True, timeout=_CLI_T)
+        if lr.returncode == 0 and lr.stdout.strip():
+            data = json.loads(lr.stdout)
+            jl = data if isinstance(data, list) else (data.get('jobs') if isinstance(data.get('jobs'), list) else (data.get('jobs') or {}).get('jobs', []))
+            aid = (_os.environ.get('DINOMEM_AGENT_ID','') or '').strip()
+            best = None
+            for j in (jl or []):
+                d = (j or {}).get('delivery') or {}
+                to = (d.get('to') or '').strip()
+                if not to or to == 'none' or d.get('channel') != ch:
+                    continue
+                cand = (to, d.get('threadId'), d.get('accountId'))
+                if aid and j.get('agentId') == aid:
+                    best = cand
+                    break
+                if best is None:
+                    best = cand
+            if best:
+                _DINO_DELIVER_TO = best
+    except Exception:
+        pass
+    return _DINO_DELIVER_TO
+
 def _cron_add_argv(job):
     """Build a flag-based `openclaw cron add` argv from a job dict.
     OpenClaw 2026.6.6+ has no `cron add --json <blob>`; jobs are built from flags.
@@ -1643,7 +1688,15 @@ def _cron_add_argv(job):
         a += ['--no-deliver']
     elif dmode == 'announce':
         a += ['--announce']
-        a += ['--channel', _dino_deliver_channel()]
+        _dch = _dino_deliver_channel()
+        a += ['--channel', _dch]
+        _dto, _dthread, _dacct = _dino_deliver_to(_dch)
+        if _dto:
+            a += ['--to', _dto]
+            if _dthread:
+                a += ['--thread-id', str(_dthread)]
+            if _dacct:
+                a += ['--account', _dacct]
     if job.get('enabled') is False:
         a += ['--disabled']
     a += ['--json']
@@ -2010,6 +2063,51 @@ def _dino_deliver_channel():
     _DINO_DELIVER_CH = ch
     return _DINO_DELIVER_CH
 
+
+_DINO_DELIVER_TO = ()
+def _dino_deliver_to(ch):
+    """Resolve an EXPLICIT delivery target (chatId/group) for announce crons, once.
+    WHY: '--announce --channel X' alone is NOT deliverable. Telegram/WhatsApp refuse
+    a send with no destination ('Delivering to Telegram requires target <chatId>'),
+    so an announce cron installed without a target RUNS fine and then dies at the
+    delivery step -- invisible to the user, 'error' in the run log. OpenClaw exposes
+    no per-agent default chat, so mine THIS gateway's own cron table for a
+    destination that already delivers on the same channel (prefer the same agent).
+    Fail-open to no target (old behavior) so a box that never had one never
+    regresses. Override with DINOMEM_DELIVER_TO."""
+    global _DINO_DELIVER_TO
+    if _DINO_DELIVER_TO != ():
+        return _DINO_DELIVER_TO
+    _DINO_DELIVER_TO = (None, None, None)
+    ov = (_os.environ.get('DINOMEM_DELIVER_TO','') or '').strip()
+    if ov:
+        _DINO_DELIVER_TO = (ov, None, None)
+        return _DINO_DELIVER_TO
+    try:
+        lr = subprocess.run(['openclaw','cron','list','--all','--json'],
+                            capture_output=True, text=True, timeout=_CLI_T)
+        if lr.returncode == 0 and lr.stdout.strip():
+            data = json.loads(lr.stdout)
+            jl = data if isinstance(data, list) else (data.get('jobs') if isinstance(data.get('jobs'), list) else (data.get('jobs') or {}).get('jobs', []))
+            aid = (_os.environ.get('DINOMEM_AGENT_ID','') or '').strip()
+            best = None
+            for j in (jl or []):
+                d = (j or {}).get('delivery') or {}
+                to = (d.get('to') or '').strip()
+                if not to or to == 'none' or d.get('channel') != ch:
+                    continue
+                cand = (to, d.get('threadId'), d.get('accountId'))
+                if aid and j.get('agentId') == aid:
+                    best = cand
+                    break
+                if best is None:
+                    best = cand
+            if best:
+                _DINO_DELIVER_TO = best
+    except Exception:
+        pass
+    return _DINO_DELIVER_TO
+
 def _cron_add_argv(job):
     """Build a flag-based `openclaw cron add` argv from a job dict.
     OpenClaw 2026.6.6+ has no `cron add --json <blob>`; jobs are built from flags.
@@ -2077,7 +2175,15 @@ def _cron_add_argv(job):
         a += ['--no-deliver']
     elif dmode == 'announce':
         a += ['--announce']
-        a += ['--channel', _dino_deliver_channel()]
+        _dch = _dino_deliver_channel()
+        a += ['--channel', _dch]
+        _dto, _dthread, _dacct = _dino_deliver_to(_dch)
+        if _dto:
+            a += ['--to', _dto]
+            if _dthread:
+                a += ['--thread-id', str(_dthread)]
+            if _dacct:
+                a += ['--account', _dacct]
     if job.get('enabled') is False:
         a += ['--disabled']
     a += ['--json']
