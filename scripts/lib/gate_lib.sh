@@ -182,6 +182,26 @@ guard_composite() {
   fi
 
   # (A) content changed since last real run? (never-run -> fires)
+  # (0) SAME-CYCLE RE-ENTRY. In the gate+worker pattern ONE dispatch cycle calls
+  # this check TWICE: the gate fires and STAMPS, then the worker it just woke
+  # re-runs the very same check as its own Step 0 self-veto. The second call saw
+  # "content unchanged AND floor not elapsed" and suppressed -> the worker stopped
+  # before doing any work, every cycle, silently (observed on Project Advancer:
+  # gate stamped 23:45:06Z, worker woke 23:45:59Z, self-vetoed exit 1).
+  # A re-entry inside this window with an IDENTICAL body hash is the SAME cycle, so
+  # answer fire WITHOUT re-stamping (cadence unchanged). Gate cadence (>=15min)
+  # sits far outside the window, so the anti-spam economics stay intact.
+  # ONE-SHOT: consumed once per stamp (marker keyed to this stamp's last_run,
+  # kept in a sidecar so unpatched readers of the state file are unaffected).
+  # Bounds the cost at <=1 extra fire per real fire on ANY gate cadence, so a
+  # faster gate (*/2, */5) on someone else's install keeps its anti-spam floor.
+  if [ "$last_run" -gt 0 ] && [ -n "$last_hash" ] && [ "$agg_hash" = "$last_hash" ] \
+     && [ "$(( now_epoch - last_run ))" -lt "${REFIRE_CYCLE_GRACE_SECS:-300}" ] \
+     && [ "$(cat "${state_file}.reentry" 2>/dev/null)" != "$last_run" ]; then
+    printf '%s' "$last_run" > "${state_file}.reentry" 2>/dev/null || true
+    return 0
+  fi
+
   local changed=1
   if [ "$last_run" -gt 0 ] && [ -n "$last_hash" ]; then
     [ "$agg_hash" != "$last_hash" ] && changed=0

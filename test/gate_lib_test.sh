@@ -103,10 +103,18 @@ scn_state_b="$TEST3/stateB"   # refire_should_fire
 # Step 1: fresh (no state) -> both fire.
 guard_composite "$scn_state_a" 3600 "$TEST3/input"/*.md; a1=$?
 refire_should_fire    "$scn_state_b" 3600 "$TEST3/input"/*.md; b1=$?
-# Step 2: unchanged, within floor -> both suppress.
+# Step 2: IMMEDIATE re-entry, unchanged content -> both FIRE (same-cycle grace).
+# CONTRACT CHANGE: this used to expect suppress. In the gate+worker pattern ONE
+# dispatch cycle calls the guard TWICE -- the gate fires and STAMPS, then the
+# worker it just woke re-runs the same check as its own Step 0 self-veto. Expecting
+# suppress here meant the worker killed itself before doing any work, every cycle,
+# silently (observed on Project Advancer: gate stamped 23:45:06Z, worker woke
+# 23:45:59Z, self-vetoed exit 1). The grace is ONE-SHOT per stamp, so the cost is
+# bounded at <=1 extra fire per real fire -- step 3 below is what proves the bound.
 guard_composite "$scn_state_a" 3600 "$TEST3/input"/*.md; a2=$?
 refire_should_fire    "$scn_state_b" 3600 "$TEST3/input"/*.md; b2=$?
-# Step 3: claim-line-only refresh -> both suppress (the v1 loop fix).
+# Step 3: claim-line-only refresh -> both suppress (the v1 loop fix AND proof the
+# same-cycle grace from step 2 was CONSUMED, not granted again).
 printf 'type: task\nstatus: done\nclaimed_at: now\nbody\n' > "$TEST3/input/n.md"
 guard_composite "$scn_state_a" 3600 "$TEST3/input"/*.md; a3=$?
 refire_should_fire    "$scn_state_b" 3600 "$TEST3/input"/*.md; b3=$?
@@ -129,11 +137,35 @@ for i in 1 2 3 4 5; do
     printf '  step %s mismatch: composite=%s refire=%s\n' "$i" "${!a}" "${!b}"
   fi
 done
-# also assert the semantic sequence itself (fresh=0, unchanged=1, claim=1, change=0).
-if [ "$a1" -eq 0 ] && [ "$a2" -eq 1 ] && [ "$a3" -eq 1 ] && [ "$a4" -eq 0 ] && [ "$a5" -eq 0 ] && [ "$mismatch" -eq 0 ]; then
+# also assert the semantic sequence itself:
+#   fresh=0 (fire), same-cycle re-entry=0 (fire, grace), re-entry again=1 (grace
+#   consumed -> suppress), real change=0 (fire), floor lapsed=0 (fire).
+if [ "$a1" -eq 0 ] && [ "$a2" -eq 0 ] && [ "$a3" -eq 1 ] && [ "$a4" -eq 0 ] && [ "$a5" -eq 0 ] && [ "$mismatch" -eq 0 ]; then
   _pb
 else
-  _fb; printf '  composite seq=(%s %s %s %s %s) want=(0 1 1 0 0); mismatches=%s\n' "$a1" "$a2" "$a3" "$a4" "$a5" "$mismatch"
+  _fb; printf '  composite seq=(%s %s %s %s %s) want=(0 0 1 0 0); mismatches=%s\n' "$a1" "$a2" "$a3" "$a4" "$a5" "$mismatch"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+echo "=== Test 3b: same-cycle grace is ONE-SHOT (anti-spam floor on fast gates) ==="
+begin "T3b one-shot grace bound"
+# WHY: the first cut of the grace granted a fire to EVERY re-entry inside the
+# window. On a */15 gate that is invisible, but dinomem ships to other installs --
+# an operator running a faster gate (*/2, */5) would have gotten a fire on EVERY
+# tick instead of suppression, silently breaking their anti-spam floor. This test
+# pins the bound: N immediate calls on unchanged content => exactly 2 fires
+# (the real one + ONE grace), never more.
+TEST3B="$MKT/t3b"; mkdir -p "$TEST3B/input"
+printf 'type: project\nstatus: in_progress\nbody\n' > "$TEST3B/input/n.md"
+st3b="$TEST3B/state"
+fires=0
+for _ in 1 2 3 4 5 6; do
+  if guard_composite "$st3b" 3600 "$TEST3B/input"/*.md; then fires=$((fires+1)); fi
+done
+if [ "$fires" -eq 2 ]; then
+  _pb
+else
+  _fb; printf '  6 immediate calls produced %s fires; want exactly 2 (1 real + 1 one-shot grace)\n' "$fires"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
