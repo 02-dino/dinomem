@@ -368,6 +368,42 @@ That's it. The installer handles Docker, cron, config patches, and AGENTS.md wir
 
 ---
 
+## Security: TEI is bound to localhost only
+
+The embedding server is published as `127.0.0.1:8080:80`, **not** `8080:80`.
+That single difference decides whether a fresh install is exposed to the
+internet.
+
+**Do not "simplify" it back to `8080:80`.** A bare host port makes Docker bind
+`0.0.0.0`, and a host firewall will *not* save you:
+
+```
+# What a bare "8080:80" produces — reachable from the internet:
+-A DOCKER ! -i br-xxxx -p tcp --dport 8080 -j DNAT --to-destination 172.x.x.x:80
+```
+
+Docker publishes ports through the **nat/DOCKER** chain, which the kernel
+traverses *before* **filter/INPUT**. `ufw` rules live in INPUT, so a published
+container port bypasses ufw entirely — even with `DEFAULT_INPUT_POLICY=DROP`
+and no allow rule for 8080. Adding a ufw rule for it is theatre.
+
+Why it matters: TEI has **no authentication**. Anyone who can reach the port can
+spend your CPU on embeddings and read `/info` (model id, batch limits).
+
+Nothing is lost by binding to loopback: dinomem talks to TEI over
+`http://localhost:8080`, and container-to-container traffic uses the compose
+bridge network, not published host ports.
+
+If you genuinely need remote access, put it behind a reverse proxy with
+auth/TLS — do not republish the raw port.
+
+Verify on your own box:
+
+```bash
+ss -ltn | grep -E ':(8080|8081)'       # expect 127.0.0.1:8080, NOT 0.0.0.0:8080
+curl -s localhost:8080/health          # expect {"status":"ok"} — still works
+```
+
 ## How do I know it's working?
 
 ```bash
@@ -590,7 +626,7 @@ dinomem is designed for a default OpenClaw setup. If your agent is already custo
 |----------------|-------------|-------------|
 | Custom `session.reset` config | install.sh warns and keeps your existing value | Nothing — your config is preserved |
 | Custom `memorySearch.provider` | install.sh warns and skips TEI wiring | Wire TEI manually after install |
-| Port 8080 in use | install.sh warns, copies docker-compose but does not start TEI | Change port in `docker-compose.tei.yml` or use `--no-docker` |
+| Port 8080 in use | install.sh warns, copies docker-compose but does not start TEI | Change the port in `docker-compose.tei.yml` — keep the `127.0.0.1:` prefix (see [Security](#security-tei-is-bound-to-localhost-only)) — or use `--no-docker` |
 | Existing `kb/vector_db/` | install.sh warns — dinomem will write to this path | Back up first, or use a separate workspace |
 | Existing `memory_recall` in AGENTS.md | install.sh warns — block will be appended | Remove duplicate manually after install |
 | Existing backup system | Weekly backup cron may be redundant | Use `--no-backup-cron` to skip |

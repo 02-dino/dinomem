@@ -7,7 +7,7 @@ services:
     container_name: tei-rerank
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.6
     ports:
-      - "8081:80"
+      - "127.0.0.1:8081:80"   # loopback-only: see SECURITY note in README
     volumes:
       - /root/.cache/huggingface:/root/.cache/huggingface
     environment:

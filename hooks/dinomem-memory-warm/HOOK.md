@@ -27,31 +27,43 @@ discarded.
 
 On `gateway:startup`:
 
-1. Resolves the agent list to warm from `DINOMEM_WARM_AGENTS` (comma-separated agent ids).
-   If unset, does nothing (opt-in — no accidental host-wide warming).
-2. For each agent id, fire-and-forget launches
-   `openclaw memory search "warmup" --agent <id>` detached, output to
-   `<workspace>/logs/memory_warm.log` (or ignored if unwritable).
-3. Returns immediately. Never blocks the gateway startup path.
+1. **Local per-agent index warm** (mandatory): For every agent in the running gateway's own
+   `cfg.agents.list`, fire-and-forget launches `openclaw memory search "warmup" --agent <id>`
+   detached, output to `<workspace>/logs/memory_warm.log` (or ignored if unwritable).
+   Each launch is independent; one agent's failure never affects another. The query string is a
+   fixed dummy (`"warmup"`) — results are never read.
 
-Each launch is independent; one agent's failure never affects another. The query string is a
-fixed dummy (`"warmup"`) — results are never read.
+2. **Shared TEI embedding warm** (mandatory): Once per gateway process, fire a direct HTTP POST
+   to the resolved TEI `/embeddings` endpoint with a dummy input. This is more efficient on
+   multi-agent gateways (N agents + 1 TEI probe, not N × (N+1)), and harmless on setups where
+   multiple gateways share one TEI instance.
+
+3. Returns immediately. Never blocks the gateway startup path.
 
 ## Scope / configuration
 
-Warming is **opt-in** via env, so a multi-agent host only warms what you choose (each warmed
-agent pays one cold search at boot):
+### Mandatory by default
+
+Warming is **mandatory by default**: every agent in the running gateway's config gets warmed
+automatically, no env var opt-in required. The hook resolves agents and TEI config from
+the gateway's own running config.
+
+### Optional power-user overrides
+
+For advanced setups or non-standard embedding URLs, two env vars can override the config-based
+resolution:
 
 ```bash
-# warm only the heavy-corpus agent (recommended default for most installs):
-DINOMEM_WARM_AGENTS=analyst
+# Override TEI URL (e.g., a remote embeddings server instead of localhost:8080):
+DINOMEM_TEI_URL=https://embeddings.example.com/v1
 
-# or several:
-DINOMEM_WARM_AGENTS=analyst,sales
+# Override TEI model id:
+DINOMEM_TEI_MODEL=sentence-transformers/all-MiniLM-L6-v2
 ```
 
-Set it in the gateway's systemd env (`~/.openclaw/gateway.systemd.env`) or the agent env so
-the hook process inherits it. Unset = hook is a no-op.
+Both must be set together to take effect; if either is unset, the hook falls back to the
+config-based resolution. These are NOT required for normal operation — omit them unless you
+have a specific non-standard deployment.
 
 ## Requirements
 

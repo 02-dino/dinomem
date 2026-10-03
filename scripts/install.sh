@@ -1222,7 +1222,7 @@ if [ "$DO_DOCKER" = 1 ]; then
         skip "TEI container already running (tei-embed)"
       else
         run "docker run tei-embed (TEI embed server on :8080)" docker run -d --name tei-embed --restart unless-stopped \
-          -p 8080:80 \
+          -p 127.0.0.1:8080:80 \
           ghcr.io/huggingface/text-embeddings-inference:cpu-1.6 \
           --model-id intfloat/multilingual-e5-small --auto-truncate
         [ "$DRY_RUN" = 1 ] || ok "TEI container started on port 8080 (docker run)"
