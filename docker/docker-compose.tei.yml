@@ -11,12 +11,30 @@ services:
       # Multilingual default (EN/ID + majors). Swap this + --model-id below to change models.
       - MODEL_ID=intfloat/multilingual-e5-small
       - HUGGINGFACE_HUB_CACHE=/root/.cache/huggingface/hub
+      # Cap the internal thread pool. Unset, TEI uses every core and pinned a
+      # whole VPS at ~400% CPU (load 15-26), starving the gateway event loop.
+      - RAYON_NUM_THREADS=2
     command:
       - --model-id
       - intfloat/multilingual-e5-small
       - --port
       - "80"
       - --auto-truncate
+      # QUEUE DEPTH, not a rate limit: past this, callers get HTTP 429 instead
+      # of a queue slot. It MUST exceed the number of agents/cron lanes that can
+      # embed at once, or interactive memory_search gets rejected and surfaces as
+      # "memory_search timed out". Real incident 2026-10-04: 11 cron lanes
+      # against a depth of 3 -> TEI logged `no permits available` and recall died.
+      - --max-concurrent-requests
+      - "8"
+    # Resource ceilings are DEFAULTS ON PURPOSE: a fresh install used to ship
+    # with none, so the first heavy ingest could saturate the host. Raise them
+    # on a bigger box; do not delete them.
+    cpus: 2.5
+    # e5-small sits near 1GiB steady-state; 2048m is headroom for the deeper
+    # queue above. Too low + deep queue = OOM-kill mid-embed.
+    mem_limit: 2048m
+    pids_limit: 64
     # GPU support (uncomment if you have nvidia-docker):
     # image: ghcr.io/huggingface/text-embeddings-inference:1.6
     # deploy:

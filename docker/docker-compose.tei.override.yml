@@ -11,7 +11,7 @@ services:
       - "80"
       - --auto-truncate
       - --max-concurrent-requests
-      - "3"
+      - "8"
     cpus: 2.5
-    mem_limit: 1024m
+    mem_limit: 2048m
     pids_limit: 64

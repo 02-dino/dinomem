@@ -17,6 +17,7 @@ Logs:
   - Memory extraction: logs/extract_memory.log (detailed)
 """
 
+import shutil
 import subprocess
 import sys
 import os
@@ -51,6 +52,66 @@ def log(message):
 # 3 on a lock-skip so we don't log a misleading "✅ completed" when nothing ran.
 SKIP_EXIT_CODE = 3
 
+# ── Cross-agent serialization for embedding-heavy stages ─────────────────────
+# WHY (real incident 2026-10-04): every workspace runs this orchestrator on its
+# OWN cron lane — 11 lanes on the box where this was found. session_ingest.py
+# embeds through the shared local TEI container, and TEI's
+# --max-concurrent-requests is a QUEUE DEPTH: past it callers get HTTP 429, not
+# a queue slot. 11 lanes against a depth of 3 made interactive memory_search
+# return 429 and surface to the user as "memory_search timed out", while TEI
+# logged `no permits available`. Raising the depth alone only moves the cliff.
+#
+# Fix: take the SAME box-wide `heavy-embed` flock that scripts/dinomem_run.sh
+# already uses for its heavy classes, so at most one agent embeds at a time no
+# matter how many lanes fire.
+#
+# `--conflict-exit-code 3` is deliberate: it maps onto SKIP_EXIT_CODE above, so
+# a lane that loses the race logs an honest "SKIPPED" and self-heals next tick
+# instead of being misreported as a failure. The wrapped script's own exit code
+# passes through untouched (verified on util-linux 2.42: a wrapped `exit 7`
+# still returns 7, and a held lock returns 3).
+#
+# FAIL-OPEN by design: no flock binary, or no writable lock dir, and the stage
+# runs unserialized exactly as before. A lock must never become an outage.
+HEAVY_EMBED_STAGES = {"session_ingest.py"}
+LOCK_WAIT_SECS = int(os.environ.get("DINOMEM_EMBED_LOCK_WAIT_SECS", "600"))
+
+
+def _embed_lock_dir():
+    """Prefer the tmpfs dir dinomem_run.sh uses; fall back to a persistent one."""
+    for cand in (Path("/run/dinomem-locks"), Path.home() / ".dinomem" / "locks"):
+        try:
+            cand.mkdir(parents=True, exist_ok=True)
+            if os.access(cand, os.W_OK):
+                return cand
+        except Exception:
+            continue
+    return None
+
+
+def _wrap_heavy_embed(cmd, script_name):
+    """Prefix cmd with flock on the shared heavy-embed lock when possible.
+
+    Returns (cmd, serialized). Any setup failure returns the command unchanged —
+    never block a stage because the lock could not be taken.
+    """
+    if script_name not in HEAVY_EMBED_STAGES:
+        return cmd, False
+    if not shutil.which("flock"):
+        log(f"⚠️  flock not found — running {script_name} unserialized "
+            f"(install util-linux to serialize embed load across agents)")
+        return cmd, False
+    lock_dir = _embed_lock_dir()
+    if lock_dir is None:
+        log(f"⚠️  no writable lock dir — running {script_name} unserialized")
+        return cmd, False
+    return ([
+        "flock",
+        "--timeout", str(LOCK_WAIT_SECS),
+        "--conflict-exit-code", str(SKIP_EXIT_CODE),
+        str(lock_dir / "heavy-embed.lock"),
+    ] + cmd, True)
+
 
 def run_script(script_name):
     """Run a subprocess script. Returns True on success, False on failure, and the
@@ -58,12 +119,20 @@ def run_script(script_name):
     concurrent instance — not a real failure, but NOT a real success either)."""
     workspace = Path(__file__).parent.parent
     script_path = workspace / "procedures" / script_name
-    log(f"🔄 Running {script_name}...")
+    cmd, serialized = _wrap_heavy_embed(
+        [sys.executable, str(script_path)], script_name
+    )
+    log(f"🔄 Running {script_name}..."
+        + (" (serialized on heavy-embed lock)" if serialized else ""))
     try:
         result = subprocess.run(
-            [sys.executable, str(script_path)],
+            cmd,
             cwd=str(workspace),
-            timeout=600  # widened 300->600 2026-09-28: session_ingest.py was flaking
+            # 600s covers the WORK. When serialized, add the bounded flock wait
+            # so queueing behind a peer cannot eat the work budget and look like
+            # a hang; flock itself gives up at LOCK_WAIT_SECS and exits 3.
+            timeout=600 + (LOCK_WAIT_SECS if serialized else 0)
+                         # widened 300->600 2026-09-28: session_ingest.py was flaking
                          # against the local TEI embed endpoint on a growing chroma
                          # DB, getting cut off mid-prune every time (fleet-wide fix
                          # across all workspace-* deployments on this box)
