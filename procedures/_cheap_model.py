@@ -20,18 +20,37 @@ The installer WARNS if this resolves empty so the user knows to set a cheap mode
 Reasoning tasks stay on agents.defaults.model.primary; that is NOT this module's
 job. This only resolves the cheap (non-reasoning) tier.
 
-Portable: reads the current user's ~/.openclaw/openclaw.json (or $OPENCLAW_CONFIG).
-No machine-specific paths.
+Portable: reads the current user's ~/.openclaw/openclaw.json, or the config the
+gateway is actually running (see _config_path). No machine-specific paths.
 """
 import json
 import os
 from pathlib import Path
 
 
+# Config-path env vars, in precedence order.
+#
+# BUG FIXED 2026-10-04: this only read OPENCLAW_CONFIG, which is NOT what
+# OpenClaw sets. The real variable is OPENCLAW_CONFIG_PATH (21 references in
+# the official docs; OPENCLAW_CONFIG appears zero times). On any multi-instance
+# host every gateway runs with
+#     OPENCLAW_CONFIG_PATH=/root/.openclaw-<name>/openclaw.json
+# so this function fell through to ~/.openclaw/openclaw.json — the WRONG
+# instance — and the compaction anchor there is usually unset. Result:
+# cheap_model() returned "" and every dinomem LLM call (extraction, review,
+# dedup, translation, OCR, buyer release notes) silently degraded to the
+# caller's default. Silent because "" is a legitimate value by design.
+#
+# OPENCLAW_CONFIG is kept as a fallback so anyone who set it by hand (following
+# the old docstring) does not break on upgrade.
+_CONFIG_ENV_VARS = ("OPENCLAW_CONFIG_PATH", "OPENCLAW_CONFIG")
+
+
 def _config_path() -> str:
-    env = os.environ.get("OPENCLAW_CONFIG", "").strip()
-    if env:
-        return env
+    for var in _CONFIG_ENV_VARS:
+        env = os.environ.get(var, "").strip()
+        if env:
+            return env
     return str(Path.home() / ".openclaw" / "openclaw.json")
 
 
