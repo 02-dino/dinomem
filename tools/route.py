@@ -308,13 +308,34 @@ SCHEMA = {
     },
 }
 
+def _workspace_dir():
+    """Resolve THIS agent's workspace without assuming a single-agent layout.
+
+    WHY: the old fallback was a hardcoded ~/.openclaw/workspace, which does not
+    exist on a multi-agent box (workspace-analyst, workspace-ads, ...). Result:
+    `route.py verify root --file AGENTS.md` returned "cannot read" for every
+    agent, so the mechanized post-condition of a routed write silently stopped
+    working exactly where it matters. route.py ships at <workspace>/tools/route.py,
+    so __file__ pins the correct workspace with zero config; env still wins so
+    the benchmark harnesses (drive_base/drive_neuron set OPENCLAW_WORKSPACE) can
+    retarget a lab dir.
+    """
+    import os
+    env = os.environ.get("OPENCLAW_WORKSPACE") or os.environ.get("DINOMEM_WORKSPACE")
+    if env:
+        return os.path.expanduser(env)
+    here = os.path.dirname(os.path.abspath(__file__))   # <workspace>/tools
+    cand = os.path.dirname(here)                        # <workspace>
+    return cand if os.path.isdir(os.path.join(cand, "tools")) else os.getcwd()
+
+
 def _verify(surface, needle, target_file=None):
     """Mechanized 'did the routed write actually land' check (test-don't-assume).
     Returns (ok: bool, detail: str). No writes; read-only probes. Fail-closed:
     an unknown surface or a probe error returns ok=False (never a false PASS).
     """
     import os, subprocess
-    ws = os.environ.get("OPENCLAW_WORKSPACE", os.path.expanduser("~/.openclaw/workspace"))
+    ws = _workspace_dir()
     surface = (surface or "").strip().lower()
 
     def _run(cmd):
