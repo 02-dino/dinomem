@@ -237,9 +237,35 @@ def _forbidden_target_error(filename, content=""):
             "the markers is a legitimate hand-edit — omit the markers from your content.")}
     return None
 
+def _normalize(content):
+    """Trim surrounding blank lines + trailing whitespace WITHOUT touching the
+    indentation of the FIRST content line.
+
+    WHY THIS EXISTS: every write path used `content.strip()`, which eats the
+    leading spaces of the first line. Appending an indented block like
+
+        "\n  signals_search:\n    path: tools/..."
+
+    therefore landed `signals_search:` at column 0 and silently de-nested it
+    from its parent key — the file still looked plausible but no longer parsed
+    as intended. Measured twice in TOOLS.md (signals_search, then
+    sparsity_search) and hand-patched both times before the cause was traced
+    here, so the hand-patch was never durable.
+
+    CONTRACT: right-hand behaviour is unchanged from .strip() (trailing
+    newlines/spaces go). Interior lines are passed through byte-for-byte —
+    deliberately NOT per-line rstrip'd, because two trailing spaces are a hard
+    line break in Markdown and these files are Markdown.
+    """
+    lines = (content or "").replace("\r\n", "\n").split("\n")
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    return "\n".join(lines).rstrip()
+
+
 def _is_duplicate(content, existing):
     """Exact-match only guard — semantic dedup/conflict handled by LLM pre-write review."""
-    return content.strip() in existing, "exact" 
+    return _normalize(content) in existing, "exact" 
 
 def _find_section(lines, section_key):
     """Find start/end line index of a top-level section by key."""
@@ -281,7 +307,7 @@ def append_to(filename, content):
 
     backup(path)
     sep = "\n" if existing and not existing.endswith("\n\n") else ""
-    path.write_text(existing + sep + content.strip() + "\n", encoding="utf-8")
+    path.write_text(existing + sep + _normalize(content) + "\n", encoding="utf-8")
     result = {"ok": True, "file": filename, "action": "append"}
     if size_warnings:
         result["warnings"] = size_warnings
@@ -313,7 +339,7 @@ def patch_section(filename, section_key, content):
 
     size_warnings = check_size(filename, content)
     backup(path)
-    path.write_text("".join(lines[:start] + [content.strip() + "\n"] + lines[end:]), encoding="utf-8")
+    path.write_text("".join(lines[:start] + [_normalize(content) + "\n"] + lines[end:]), encoding="utf-8")
     result = {"ok": True, "file": filename, "action": "patch", "section": section_key}
     if size_warnings:
         result["warnings"] = size_warnings
@@ -360,7 +386,7 @@ def write_file(filename, content):
 
     path = WORKSPACE / filename
     backup(path)
-    path.write_text(content.strip() + "\n", encoding="utf-8")
+    path.write_text(_normalize(content) + "\n", encoding="utf-8")
     _drop_reason("config", f"rewrite {filename}")
     return {"ok": True, "file": filename, "action": "write"}
 
