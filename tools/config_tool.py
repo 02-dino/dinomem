@@ -311,18 +311,38 @@ def _find_section(lines, section_key):
     return start, end
 
 # ── Operations ────────────────────────────────────────────────────────────────
+def _guard(filename, content=None):
+    """THE pre-write gate for every mutating op. -> error dict, or None to proceed.
+
+    WHY ONE FUNCTION: this is a SAFETY check (allow-list + the auto-managed-file
+    block that stops writes to MEMORY.md/USER.md), and it was copy-pasted into
+    four ops. A safety check duplicated N times fails the same way the
+    `.strip()` bug did (a05bf23): one logic, four sites, wrong in all four, and
+    adding a FIFTH check later means silently missing a site — which here would
+    mean writing to a cron-generated file and losing data with no error.
+
+    content=None means "this op takes no content" (remove_section). That is the
+    op's real shape, not a flag: no content -> nothing to validate, and the
+    auto-managed check runs against an empty body.
+    """
+    if filename not in ALLOWED_FILES:
+        return {"ok": False, "error": f"Not allowed: {filename}. Allowed: {sorted(ALLOWED_FILES)}"}
+    forbidden = _forbidden_target_error(filename, "" if content is None else content)
+    if forbidden:
+        return forbidden
+    if content is not None and not validate(content):
+        return {"ok": False, "error": "Content failed validation (null bytes or too large)"}
+    return None
+
+
 def append_to(filename, content):
     """
     Append a block to a root config file.
     Skips on exact duplicate. Semantic dedup/conflict/grouping handled by LLM pre-write review.
     """
-    if filename not in ALLOWED_FILES:
-        return {"ok": False, "error": f"Not allowed: {filename}. Allowed: {sorted(ALLOWED_FILES)}"}
-    _forbidden = _forbidden_target_error(filename, content)
-    if _forbidden:
-        return _forbidden
-    if not validate(content):
-        return {"ok": False, "error": "Content failed validation (null bytes or too large)"}
+    blocked = _guard(filename, content)
+    if blocked:
+        return blocked
 
     path = WORKSPACE / filename
     existing = path.read_text(encoding="utf-8") if path.exists() else ""
@@ -347,13 +367,9 @@ def patch_section(filename, section_key, content):
     Replace an existing section (by key) or append if not found.
     Handles both YAML key format and ## heading format.
     """
-    if filename not in ALLOWED_FILES:
-        return {"ok": False, "error": f"Not allowed: {filename}"}
-    _forbidden = _forbidden_target_error(filename, content)
-    if _forbidden:
-        return _forbidden
-    if not validate(content):
-        return {"ok": False, "error": "Content failed validation"}
+    blocked = _guard(filename, content)
+    if blocked:
+        return blocked
 
     path = WORKSPACE / filename
     if not path.exists():
@@ -379,11 +395,9 @@ def remove_section(filename, section_key):
     Remove a section by key from a root config file.
     Handles both YAML key format and ## heading format.
     """
-    if filename not in ALLOWED_FILES:
-        return {"ok": False, "error": f"Not allowed: {filename}"}
-    _forbidden = _forbidden_target_error(filename, "")
-    if _forbidden:
-        return _forbidden
+    blocked = _guard(filename)          # no content: nothing to validate
+    if blocked:
+        return blocked
 
     path = WORKSPACE / filename
     if not path.exists():
@@ -404,13 +418,9 @@ def remove_section(filename, section_key):
 
 def write_file(filename, content):
     """Full overwrite. Use only for IDENTITY.md or when explicitly replacing entire file."""
-    if filename not in ALLOWED_FILES:
-        return {"ok": False, "error": f"Not allowed: {filename}"}
-    _forbidden = _forbidden_target_error(filename, content)
-    if _forbidden:
-        return _forbidden
-    if not validate(content):
-        return {"ok": False, "error": "Content failed validation"}
+    blocked = _guard(filename, content)
+    if blocked:
+        return blocked
 
     path = WORKSPACE / filename
     backup(path)
