@@ -170,6 +170,25 @@ selected leaf tool. Keeping it write-free avoids duplicating any leaf-tool logic
   - body     -> the SKILL.md itself -> loaded on-demand only -> zero cost until read
   Keep the trigger to a single line; never inline the skill body into a root file.
 
+## MEMORY SPECIAL CASE (why it needs NO per-item trigger)
+  Asked often, because the skill case above invites it: "does a _pin_/_note_ also
+  need a when_to_use line in AGENTS.md?" NO — and adding one is the mistake.
+  - A skill needs a trigger because nothing else tells the agent the body exists.
+  - Memory needs none: RETRIEVAL IS the gate. memory_search/memory_get find a pin
+    by MEANING, so a pin is reachable without ever being announced always-on.
+  Per-item triggers would scale linearly (20 pins -> 20 always-on lines) and
+  destroy the exact property that makes memory free. That is root wearing a
+  memory costume.
+  WHAT AGENTS.md DOES need (once, not per item): a generic RECALL DOOR saying
+  "recall before answering/acting" plus the memory-pinning trigger for the WRITE
+  path. dinomem ships both in its managed AGENTS.md block (memory_index,
+  recall_first constraints, memory_tools, skills.memory_pin). Verify those exist;
+  do NOT add a line per pin.
+  COROLLARY (the asymmetry that bites): retrieval-gated also means a RULE parked
+  in a _pin_ is never loaded, so the behavior silently never happens. Facts are
+  safe to leave unannounced; rules are not. That is why discriminator 3 sends
+  only records here, and 5-8 keep the governing content.
+
 ## OUTPUT CONTRACT (what the LLM does with this)
   Pick exactly ONE surface. If two discriminators fire (e.g. a scheduled task that also
   needs procedural steps), the TRIGGER wins for placement (cron/hook), and the steps go in

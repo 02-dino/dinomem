@@ -51,6 +51,11 @@ into one file.
 After writing, prove it landed:
 `tools/route.py verify memory "<a unique phrase you wrote>"` — exit 0 = present.
 
+> `route.py` ships with **dinomem base**, which the neuron installer always
+> installs first — so it is normally present. If it is genuinely missing
+> (a `--no-auto-base` install on a box without base), skip the two commands
+> above and apply the table by hand; the gate is the *question*, not the tool.
+
 ## Two kinds
 
 ### 1. Permanent facts → `_pin_`
