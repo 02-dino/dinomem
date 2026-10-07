@@ -10,7 +10,7 @@ for a specific task class — not always-on. Never hand-edit `openclaw.json`.
 
 ## Route first
 
-Run `tools/route.py classify` and confirm the arbiter selected **skill** (discriminator 3).
+Run `tools/route.py classify` and confirm the arbiter selected **skill** (discriminator 4).
 If it runs on a schedule -> cron-config. If it reacts to a gateway event -> hook-config.
 If it is an always-true rule/identity/preference -> self-config (root file).
 

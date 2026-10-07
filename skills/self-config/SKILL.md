@@ -11,9 +11,29 @@ using `tools/config_tool.py`.
 
 ## Route first
 
-Run `tools/route.py classify` and confirm the arbiter selected **root** (discriminators 4-7).
+Run `tools/route.py classify` and confirm the arbiter selected **root** (discriminators 5-8).
 A schedule -> cron-config; a gateway event -> hook-config; on-demand procedure -> skill-config.
 Root files load EVERY turn — AGENTS.md is the LAST resort. Only unconditional, always-on config lands here.
+
+### Is it actually a FACT? -> memory, not root
+
+Before writing any root file, answer the arbiter's discriminator **3** question:
+
+> Does this **RECORD** something (a fact, a decision already taken, a person's
+> detail, an outcome, a todo), or does it **GOVERN** every future turn (a rule,
+> an SOP, a tool spec, a persona trait)?
+
+- **Records** -> this is the **memory** surface. Stop here and read the
+  `memory-pinning` skill: write `memory/_pin_<slug>.md` (permanent fact) or
+  `memory/_note_<slug>.md` (transient todo), after the dedup gate.
+- **Governs** -> continue below; root is correct.
+- **Both** -> **split it.** The rule goes to root, the fact goes to memory.
+  Never funnel both into one file.
+
+Why this matters: a fact on a root file pays always-on context tokens forever
+for something only ever needed on demand. And `USER.md`'s managed block is a
+*forbidden* write target — biographical facts belong in the memory source that
+`compile_user.py` reads, not in a root file you edit by hand.
 
 ## When to use
 

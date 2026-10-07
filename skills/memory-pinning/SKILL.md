@@ -19,6 +19,38 @@ skill of the same name.
 
 If it's a fleeting/ambiguous personal detail, **ask before pinning**.
 
+## ⚠️ Surface gate — run BEFORE you write (not after)
+
+"This is a new fact" is the reflex that lands you here, but memory is only ONE
+of five durable surfaces. Answer this first:
+
+> Does this **RECORD** something, or **GOVERN** every future turn?
+
+| Your content | Surface | Where |
+| ------------ | ------- | ----- |
+| A fact, a decision already taken, a person's detail, an outcome, a todo | **memory** ✅ | continue in this skill |
+| A routing rule, an SOP, a "when to use X" policy | root | `self-config` skill → AGENTS.md |
+| A tool spec / how-to-invoke | root | `self-config` skill → TOOLS.md |
+| A persona trait / tone rule | root | `self-config` skill → SOUL.md / IDENTITY.md |
+| A repeatable procedure needed only sometimes | skill | `skill-config` skill |
+| Something time-triggered | cron | `cron-config` skill |
+| Something event-triggered | hook | `hook-config` skill |
+
+**If the row isn't "memory", stop — do NOT write a `_pin_`/`_note_`.** Hand off
+to the skill named in that row.
+
+**Unsure?** `tools/route.py classify` is the arbiter. Memory is discriminator
+**3** (`durable_fact_or_history_or_todo`); its `memory_vs_root_fork` block
+states both sides of this exact question. A `_pin_` is NOT a cheaper way to
+make a rule durable — memory is retrieval-gated, so a rule parked here is
+never loaded and the behaviour silently never happens.
+
+**Both?** **Split it:** the rule to root, the fact to memory. Never funnel both
+into one file.
+
+After writing, prove it landed:
+`tools/route.py verify memory "<a unique phrase you wrote>"` — exit 0 = present.
+
 ## Two kinds
 
 ### 1. Permanent facts → `_pin_`

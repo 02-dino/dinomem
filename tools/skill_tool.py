@@ -13,7 +13,7 @@ Usage (CLI):
 
 ## ROUTING MAP (when a request belongs to SKILL, not another surface)
 A skill = procedural knowledge / a multi-step method the agent reads ON-DEMAND when a
-specific task class appears. Not always-on. Route here (from route.py discriminator 3) when:
+specific task class appears. Not always-on. Route here (from route.py discriminator 4) when:
   workflow | checklist | how_to | domain_procedure | method_only_needed_sometimes -> skill
 NOT a skill:
   runs on a schedule            -> cron_tool.py
