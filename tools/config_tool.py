@@ -267,17 +267,45 @@ def _is_duplicate(content, existing):
     """Exact-match only guard — semantic dedup/conflict handled by LLM pre-write review."""
     return _normalize(content) in existing, "exact" 
 
+def _is_section_boundary(line):
+    """Does this line START a new top-level section?
+
+    WHY IT IS NOT JUST "alpha-or-## AND has a colon": a Markdown heading like
+    `## github_release` carries NO colon, so the old colon requirement skipped
+    it and the sweep ran on to the next column-0 `key:` line — swallowing every
+    heading in between. Measured 2026-10-07 on a live AGENTS.md: `remove` was
+    asked for ONE section and deleted EIGHT (187 lines/17 sections -> 155/9).
+    A heading is a boundary on its own; a colon is only needed for the bare
+    `key:` style (TOOLS.md), where an indented child line must NOT count.
+    """
+    if not line:
+        return False
+    if line.startswith("## "):          # markdown heading, colon irrelevant
+        return True
+    return line[0].isalpha() and ":" in line   # column-0 `key:` (never indented)
+
+
 def _find_section(lines, section_key):
-    """Find start/end line index of a top-level section by key."""
+    """Find start/end line index of a top-level section by key.
+
+    section_key is accepted WITH or WITHOUT a leading `## `. WHY: callers
+    naturally pass the heading as it appears in the file (`## github_push`),
+    which used to be searched as `## ## github_push`, match nothing, and make
+    patch_section silently fall through to append_to — producing a DUPLICATE
+    section instead of a patch (measured 2026-10-07).
+    """
+    key = (section_key or "").strip()
+    if key.startswith("#"):
+        key = key.lstrip("#").strip()
     start = next(
-        (i for i, l in enumerate(lines) if l.startswith(f"{section_key}:") or l.startswith(f"## {section_key}")),
+        (i for i, l in enumerate(lines)
+         if l.startswith(f"{key}:") or l.startswith(f"## {key}")),
         None
     )
     if start is None:
         return None, None
     end = next(
-        (i for i in range(start + 1, len(lines))
-         if lines[i] and (lines[i][0].isalpha() or lines[i].startswith("##")) and ":" in lines[i]),
+        (i for i in range(start + 1, len(lines)) if _is_section_boundary(lines[i])),
         len(lines)
     )
     return start, end
