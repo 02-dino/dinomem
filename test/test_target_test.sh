@@ -26,8 +26,8 @@ _run "$REPO/scripts/verify.sh";                    _ck "exact stem match"   "TES
 _run "$REPO/scripts/diagnose.sh";                  _ck "second exact match"  "TEST_TARGET: bash test/diagnose_test.sh" 0
 _run "$REPO/scripts/lib/gate_lib.sh";              _ck "lib exact match"     "TEST_TARGET: bash test/gate_lib_test.sh" 0
 _run "$REPO/test/verify_test.sh";                  _ck "direct test passthru" "TEST_TARGET: bash test/verify_test.sh" 0
-_run "$REPO/hooks/context-inject/handler.ts";      _ck "hook no test yet"    "TEST_TARGET: NONE" 1
-_run "$REPO/hooks/context-inject/HOOK.md";         _ck "hook doc no test yet" "TEST_TARGET: NONE" 1
+_run "$REPO/hooks/dinomem-open-notes/handler.ts";  _ck "hook no test yet"    "TEST_TARGET: NONE" 1
+_run "$REPO/hooks/dinomem-open-notes/HOOK.md";     _ck "hook doc no test yet" "TEST_TARGET: NONE" 1
 _run "$REPO/scripts/install.sh";                   _ck "no deeper test"      "TEST_TARGET: NONE" 1
 _run "$REPO/does-not-exist.py";                    _ck "missing file"        "TEST_TARGET: NONE" 1
 
