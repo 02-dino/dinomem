@@ -234,11 +234,31 @@ if [ "$DRY_RUN" = 1 ]; then
   plan "install auto-commit.sh + git-retention.sh -> $BIN_DIR/"
 else
   mkdir -p "$BIN_DIR"
+  # ── CONTENT-COMPARED, NOT MERE-PRESENCE (fixed 2026-10-08) ────────────────
+  #
+  # This used to skip any script that already existed unless --force. Same
+  # write-once bug as the ignore block below: these are dinomem-OWNED scripts,
+  # not user-authored files, so "it exists" is not a reason to keep a stale
+  # copy. Every shipped bugfix silently failed to deploy on upgrade.
+  #
+  # MEASURED 2026-10-08: the live copies had drifted into three versions
+  # (12194 / 17138 / 26484 bytes) and a plain `install.sh` run reported
+  # "[skip] auto-commit.sh (exists)" -- so the LFS-exemption removal did NOT
+  # reach the running script, while the attribute/ignore half DID. A
+  # half-applied migration, exactly the failure this project set out to fix.
+  #
+  # Now: identical content -> skip (idempotent, no churn). Different content ->
+  # overwrite. --force is still honoured and still forces, it is just no longer
+  # REQUIRED to ship a fix.
   for s in auto-commit.sh git-retention.sh dinomem-undo.sh rebuild-store.sh config-redact.sh; do
-    if [ -f "$BIN_DIR/$s" ] && [ "$FORCE" = 0 ]; then
-      skip "$s (exists, --force to overwrite)"
+    if [ -f "$BIN_DIR/$s" ] && [ "$FORCE" = 0 ] && cmp -s "$SELF_DIR/$s" "$BIN_DIR/$s"; then
+      skip "$s (already current)"
     else
-      cp "$SELF_DIR/$s" "$BIN_DIR/$s" && chmod +x "$BIN_DIR/$s" && ok "$s"
+      if [ -f "$BIN_DIR/$s" ] && [ "$FORCE" = 0 ]; then
+        cp "$SELF_DIR/$s" "$BIN_DIR/$s" && chmod +x "$BIN_DIR/$s" && ok "$s (updated — live copy was stale)"
+      else
+        cp "$SELF_DIR/$s" "$BIN_DIR/$s" && chmod +x "$BIN_DIR/$s" && ok "$s"
+      fi
     fi
   done
 fi
