@@ -71,7 +71,41 @@ git --git-dir="$GIT_DIR" config core.bare false 2>/dev/null || true
 [ -f "$OLD/info/exclude" ] && { mkdir -p "$GIT_DIR/info"; cp "$OLD/info/exclude" "$GIT_DIR/info/exclude"; }
 [ -f "$OLD/info/attributes" ] && cp "$OLD/info/attributes" "$GIT_DIR/info/attributes"
 
+# ── SELF-PROTECTION: never commit the store we just parked ──────────────────
+#
+# $OLD lives INSIDE $REPO (it is "$GIT_DIR.OLD-<ts>"), so `git add -A` below
+# will happily swallow it -- including its entire lfs/objects archive -- unless
+# it is ignored. The carried-over exclude above is NOT enough: a store written
+# before 2026-10-08 only ignores `.dinomem-snap.git` / `.dinomem-snap.git/`,
+# and neither pattern matches the `.OLD-` SIBLING (the backup/backups
+# prefix trap again).
+#
+# MEASURED on workspace-sosmed (2026-10-08): rebuild correctly produced a
+# 1-commit baseline with zero lfs objects, then re-committed the parked store
+# as ordinary blobs -- 197M -> 186M instead of ~3M, and 182M of dead LFS data
+# became REACHABLE git objects in the fresh history (strictly worse than
+# before: prunable files turned into permanent history). All 12 largest objects
+# in the new pack were `.dinomem-snap.git.OLD-*/lfs/objects/*`.
+#
+# Appended unconditionally to the NEW store's exclude so the guarantee does not
+# depend on the old store's rules, and the exact parked dir is pinned by name.
+mkdir -p "$GIT_DIR/info"
+{
+  echo "# rebuild-store.sh: never track a parked/orphaned snapshot store"
+  echo ".dinomem-snap.git.*"
+  echo "$(basename "$OLD")/"
+} >> "$GIT_DIR/info/exclude"
+
 git --git-dir="$GIT_DIR" --work-tree="$REPO" add -A
+
+# Belt-and-braces: assert the parked store did NOT make it into the index.
+# A silent re-leak here is expensive and hard to notice (it only shows up later
+# as an inexplicably large "fresh" store), so fail loudly instead.
+if git --git-dir="$GIT_DIR" --work-tree="$REPO" diff --cached --name-only \
+     | grep -q '^\.dinomem-snap\.git\.'; then
+  echo "rebuild-store: ABORT — parked store leaked into the index; old store kept at $OLD" >&2
+  exit 1
+fi
 git --git-dir="$GIT_DIR" --work-tree="$REPO" \
   -c user.name=dinomem -c user.email=dinomem@local \
   commit -q -m "rebuild: fresh baseline (old history dropped, see $OLD)"

@@ -4,6 +4,20 @@
 # MUST be ignored or every tick sees git internals as churn and self-commits.
 .dinomem-snap.git/
 .dinomem-snap.git
+# ...AND the rebuild/orphan siblings. SIBLING-PREFIX TRAP (fixed 2026-10-08):
+# the two patterns above do NOT match `.dinomem-snap.git.OLD-<ts>`, which is
+# exactly where rebuild-store.sh parks the previous store -- inside the
+# work-tree. MEASURED on workspace-sosmed: the rebuild dropped 144 commits to a
+# clean 1-commit baseline with 0 lfs objects, and then `git add -A` committed
+# the ENTIRE parked old store back in as ordinary blobs. Result: 197M -> 186M
+# instead of ~3M, with 182M of dead LFS objects now welded into the FRESH
+# history (worse than before -- they used to be prunable files, now they are
+# reachable git objects). The 12 largest objects in the new pack were all
+# `.dinomem-snap.git.OLD-*/lfs/objects/*`.
+# Same class as the backup/backups near-miss. Match the siblings explicitly.
+.dinomem-snap.git.*
+.dinomem-snap.git.OLD-*/
+.dinomem-snap.git.old-*/
 # Runtime state that churns constantly and is never useful in git history.
 # Agent runtime state (auto-generated)
 agents/*/agent/models.json
