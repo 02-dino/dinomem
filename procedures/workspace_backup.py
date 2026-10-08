@@ -46,6 +46,21 @@ KEEP = 3
 
 INCLUDE = [
     "memory",
+    # .dinomem-snap.git: the git-autosnapshot store = the UNDO/CHANGELOG history
+    # for everything else in this list. Added 2026-10-08.
+    #
+    # WHY IT BELONGS HERE SPECIFICALLY: this tool's whole payload is memory/ plus
+    # the root config files, and the snap store is exactly their change history.
+    # Restoring memory/ without it gives you the files back but silently loses
+    # every "what changed when / revert this" answer predating the restore.
+    # Rebuild does NOT recover it — rebuild-store.sh commits a single fresh
+    # baseline and drops all prior history by design, so the history has no
+    # second source anywhere.
+    #
+    # Cost: ~16 MB per snapshot x KEEP=3. Was only safe to add after dinomem
+    # v1.20.0 (commit ebaec02) made the store changelog-only; before that it
+    # carried a git-lfs media archive and the analyst store was 11.33 GB.
+    ".dinomem-snap.git",
     "MEMORY.md",
     "AGENTS.md",
     "SOUL.md",
@@ -59,6 +74,19 @@ INCLUDE = [
 
 OPENCLAW_JSON = WORKSPACE.parent / "openclaw.json"
 
+# ── SKIP rules, applied via tarfile's filter= hook ───────────────────────────
+# THESE WERE DEAD CODE until 2026-10-08: SKIP_PATTERNS was declared and never
+# referenced anywhere in this file (grep showed exactly one hit, the definition
+# itself). create_snapshot() called tar.add() with no filter, so every byte
+# under an INCLUDE entry was archived regardless of this list.
+#
+# Measured consequence: memory/ is 17.4 MB and 15 MB of that is memory/cache/tee
+# (1,787 elided-tool-output log files). ~86% of this "lightweight" snapshot was
+# throwaway cache.
+#
+# Entries are matched EITHER as an anchored path prefix (kb/vector_db) OR as a
+# bare directory name at any depth (__pycache__). Both shapes were already
+# mixed into the original list, so both are honoured.
 SKIP_PATTERNS = [
     "kb/vector_db",
     "kb/vector_db_docs",
@@ -67,7 +95,46 @@ SKIP_PATTERNS = [
     "__pycache__",
     ".backups",
     ".git",
+    # memory/cache/: regenerable tool-output cache, 15 MB of the 17.4 MB total.
+    # memory/cache/tee holds smart-cache-pro's elided stdout dumps.
+    "memory/cache",
 ]
+
+# ── Paths no SKIP rule may touch ─────────────────────────────────────────────
+# CRITICAL, and the reason wiring SKIP_PATTERNS up was not a one-liner: a git
+# dir contains subdirs literally named `logs`, `hooks` and `info`. SKIP_PATTERNS
+# already carries "logs" as a bare-name rule, so switching the filter on while
+# adding the store would have deleted .dinomem-snap.git/logs/HEAD from every
+# snapshot — that file IS the reflog, i.e. the HEAD-pointer history the entire
+# undo feature reads. The backup would have looked complete and quietly shipped
+# a store with no undo trail.
+# ".git" is also in SKIP_PATTERNS; ".dinomem-snap.git" merely ENDS with .git so
+# it escapes today's exact-name matching, but that is luck, not design. Both
+# hazards are neutralised here explicitly.
+PROTECT_PREFIXES = [
+    ".dinomem-snap.git",
+]
+
+
+def _skip(rel: str) -> bool:
+    """True if `rel` (workspace-relative, slash-separated) must not be archived."""
+    if not rel or rel == ".":
+        return False
+    for prot in PROTECT_PREFIXES:
+        if rel == prot or rel.startswith(prot + "/"):
+            return False
+    parts = rel.split("/")
+    for i, seg in enumerate(parts):
+        prefix = "/".join(parts[: i + 1])
+        for pat in SKIP_PATTERNS:
+            if seg == pat or prefix == pat or prefix.startswith(pat + "/"):
+                return True
+    return False
+
+
+def _tar_filter(tarinfo):
+    """tarfile filter= hook. arcname is already workspace-relative here."""
+    return None if _skip(tarinfo.name) else tarinfo
 
 def log(msg): print(f"[workspace_backup] {msg}")
 
@@ -88,12 +155,12 @@ def create_snapshot():
         for item in INCLUDE:
             path = WORKSPACE / item
             if path.exists():
-                tar.add(path, arcname=item)
+                tar.add(path, arcname=item, filter=_tar_filter)
                 log(f"  + {item}")
         # exports/ — live state snapshots
         exports_path = WORKSPACE / "exports"
         if exports_path.exists():
-            tar.add(exports_path, arcname="exports")
+            tar.add(exports_path, arcname="exports", filter=_tar_filter)
             log(f"  + exports/")
         if OPENCLAW_JSON.exists():
             tar.add(OPENCLAW_JSON, arcname="openclaw.json")
