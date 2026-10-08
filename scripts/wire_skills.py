@@ -6,11 +6,14 @@ This script is run by install.sh after skills are copied into the workspace.
 It makes the installed skills actually usable by the target agent by adding the
 shipped skill IDs to the agent's agents.list[].skills allowlist.
 
-If the target agent has no explicit skills allowlist, it inherits defaults; in
-that case we fall back to mutating agents.defaults.skills.
-
 Multi-agent safe: only the best matching agent is touched. Other agents'
 allowlists are left unchanged.
+
+It REFUSES to create agents.defaults.skills out of nothing. An absent defaults
+allowlist means every inheriting agent is unrestricted, so writing one would
+revoke every skill this package does not ship -- for every one of those agents.
+Granting must never revoke. Merging into a defaults allowlist that ALREADY
+exists stays allowed, because that is additive.
 
 Writes via openclaw config patch --replace-path so it never touches read-only
 meta fields like lastTouchedVersion.
@@ -45,8 +48,16 @@ def find_target_agent(agents_list, agent_id, ws):
     target = next((a for a in agents_list if a.get("id") == agent_id), None)
     if target is not None:
         return target
-    ws_str = str(ws)
-    target = next((a for a in agents_list if a.get("workspace") and ws_str == Path(a["workspace"]).resolve()), None)
+    # Path == Path. (Was str == Path: always False, so this whole tier was dead
+    # and every real-but-unlisted agent fell through to the defaults branch.)
+    target = next(
+        (
+            a for a in agents_list
+            if a.get("workspace")
+            and Path(a["workspace"]).expanduser().resolve() == ws
+        ),
+        None,
+    )
     if target is not None:
         return target
     needle = agent_id.lower()
@@ -65,6 +76,12 @@ def main():
     parser.add_argument("--agent-id", required=True, help="OpenClaw agent ID")
     parser.add_argument("--skills-dir", required=True, help="Repo skills/ directory")
     parser.add_argument("--dry-run", action="store_true", help="Print patch, do not apply")
+    parser.add_argument(
+        "--allow-defaults-create",
+        action="store_true",
+        help="Permit CREATING agents.defaults.skills when no agent matched. Off by "
+             "default: it revokes every unshipped skill for all inheriting agents.",
+    )
     args = parser.parse_args()
 
     ws = Path(args.workspace).resolve()
@@ -102,6 +119,24 @@ def main():
     else:
         defaults = cfg.get("agents", {}).get("defaults", {})
         current = list(defaults.get("skills", []))
+        # No agent matched. Creating a defaults allowlist where none existed turns
+        # "all skills visible" into "only these N" for every inheriting agent -- a
+        # mass silent revoke, caused by an install whose job was to GRANT. Refuse.
+        if not current and not args.allow_defaults_create:
+            print(
+                f"ERROR: agent '{args.agent_id}' not found in agents.list, and "
+                f"agents.defaults.skills is unset (= all skills allowed).\n"
+                f"  Refusing to create a defaults allowlist: it would revoke every "
+                f"skill not shipped here, for EVERY agent inheriting defaults.\n"
+                f"  Fix one of:\n"
+                f"    - register the agent in agents.list (matched by id or workspace), or\n"
+                f"    - pass the real --agent-id, or\n"
+                f"    - re-run with --allow-defaults-create if a global allowlist is "
+                f"genuinely intended.\n"
+                f"  Shipped skills left unwired: {', '.join(shipped)}",
+                file=sys.stderr,
+            )
+            sys.exit(2)
         new = sorted(set(current) | set(shipped))
         if new == current:
             print(f"agents.defaults allowlist already up-to-date ({len(current)} skills)")

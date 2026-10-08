@@ -978,7 +978,7 @@ HOOK_DST="$WS/hooks/dinomem-reset-extract"
 copy_dir_upgradeable "$HOOK_SRC" "$HOOK_DST" "hooks/dinomem-reset-extract/"
 if [ "$DRY_RUN" = 0 ]; then
   if openclaw_running; then
-    openclaw hooks enable dinomem-reset-extract >/dev/null 2>&1 \
+    timeout "${DINOMEM_PROBE_TIMEOUT_S:-45}" openclaw hooks enable dinomem-reset-extract >/dev/null 2>&1 \
       && ok "dinomem-reset-extract hook enabled (restart OpenClaw to activate)" \
       || warn "openclaw hooks enable failed — run manually: openclaw hooks enable dinomem-reset-extract"
   else
@@ -993,7 +993,7 @@ HOOK2_DST="$WS/hooks/dinomem-open-notes"
 copy_dir_upgradeable "$HOOK2_SRC" "$HOOK2_DST" "hooks/dinomem-open-notes/"
 if [ "$DRY_RUN" = 0 ]; then
   if openclaw_running; then
-    openclaw hooks enable dinomem-open-notes >/dev/null 2>&1 \
+    timeout "${DINOMEM_PROBE_TIMEOUT_S:-45}" openclaw hooks enable dinomem-open-notes >/dev/null 2>&1 \
       && ok "dinomem-open-notes hook enabled (restart OpenClaw to activate)" \
       || warn "openclaw hooks enable failed — run manually: openclaw hooks enable dinomem-open-notes"
   else
@@ -1008,7 +1008,7 @@ HOOK3_DST="$WS/hooks/dinomem-memory-warm"
 copy_dir_upgradeable "$HOOK3_SRC" "$HOOK3_DST" "hooks/dinomem-memory-warm/"
 if [ "$DRY_RUN" = 0 ]; then
   if openclaw_running; then
-    openclaw hooks enable dinomem-memory-warm >/dev/null 2>&1 \
+    timeout "${DINOMEM_PROBE_TIMEOUT_S:-45}" openclaw hooks enable dinomem-memory-warm >/dev/null 2>&1 \
       && ok "dinomem-memory-warm hook enabled (restart OpenClaw to activate)" \
       || warn "openclaw hooks enable failed — run manually: openclaw hooks enable dinomem-memory-warm"
   else
@@ -1154,12 +1154,20 @@ fi
 # ── 2e) Wire copied skills into agent allowlist ─────────────────────────────
 # Skills in <workspace>/skills are auto-discovered, but agents with an explicit
 # skills allowlist will EXCLUDE them unless listed. Add the IDs we just shipped.
+# Exit 2 = wire_skills refused a destructive write (agent unresolved + defaults
+# unset); that is a config/arg problem the operator must fix, so HARD FAIL
+# instead of warning past it and reporting a green install with dead skills.
 if command -v python3 >/dev/null 2>&1; then
   python3 "$SKILL_DIR/scripts/wire_skills.py" \
     --workspace "$WS" \
     --agent-id "$AGENT_ID" \
-    --skills-dir "$SKILL_DIR/skills" \
-    || warn "skill allowlist wiring failed; skills may be excluded"
+    --skills-dir "$SKILL_DIR/skills"
+  _ws_rc=$?
+  if [ "$_ws_rc" = 2 ]; then
+    fail "skill allowlist wiring REFUSED (see above): agent '$AGENT_ID' unresolved and agents.defaults.skills unset. Fix --agent-id or register the agent, then re-run."
+  elif [ "$_ws_rc" != 0 ]; then
+    warn "skill allowlist wiring failed (rc=$_ws_rc); skills may be excluded"
+  fi
 else
   warn "python3 not found; skill allowlist wiring skipped"
 fi
@@ -3206,11 +3214,32 @@ fi
 if openclaw_running; then
   hr "Hook liveness self-check"
   GLOBAL_HOOKS_DIR="${OPENCLAW_DIR:-$HOME/.openclaw}/hooks"
-  for _hk in dinomem-reset-extract dinomem-open-notes; do
-    _elig="$(openclaw hooks check --json 2>/dev/null | python3 -c "import json,sys;
+  # Probe ONCE and reuse: `hooks check` was re-run per hook (N gateway round-trips
+  # for one unchanging answer). Timeout it for the same reason openclaw_running
+  # does -- the hooks CLI has been measured hanging >85s on a busy multi-agent
+  # box, and an untimed call here stalls the whole install (the P1-P5 "silent
+  # stall" class of bug).
+  _hk_eligible="$(timeout "${DINOMEM_PROBE_TIMEOUT_S:-45}" openclaw hooks check --json 2>/dev/null \
+    | python3 -c "import json,sys;
 try:
-  d=json.load(sys.stdin); print('yes' if '$_hk' in d.get('hooks',{}).get('eligible',[]) else 'no')
-except Exception: print('unknown')" 2>/dev/null)"
+  d=json.load(sys.stdin); print('\n'.join(d.get('hooks',{}).get('eligible',[])))
+except Exception: pass" 2>/dev/null)"
+  if [ -z "$_hk_eligible" ]; then
+    warn "could not read hook eligibility (gateway slow/down or CLI hang) — skipping liveness self-heal; verify later: openclaw hooks check --json"
+  fi
+  # memory-warm was enabled but never verified here, so a non-scanned \$WS left it
+  # dead with no self-heal and no warning. Verify every hook this installer ships.
+  for _hk in dinomem-reset-extract dinomem-open-notes dinomem-memory-warm; do
+    if [ -z "$_hk_eligible" ]; then
+      _elig="unknown"
+    elif printf '%s\n' "$_hk_eligible" | grep -qxF "$_hk"; then
+      _elig="yes"
+    else
+      _elig="no"
+    fi
+    if [ "$_elig" = "unknown" ]; then
+      continue
+    fi
     if [ "$_elig" = "yes" ]; then
       ok "$_hk is eligible (gateway can load it)"
     else
@@ -3220,7 +3249,7 @@ except Exception: print('unknown')" 2>/dev/null)"
         mkdir -p "$GLOBAL_HOOKS_DIR"
         rm -rf "$GLOBAL_HOOKS_DIR/$_hk"
         cp -r "$_hksrc" "$GLOBAL_HOOKS_DIR/$_hk"
-        openclaw hooks enable "$_hk" >/dev/null 2>&1 || true
+        timeout "${DINOMEM_PROBE_TIMEOUT_S:-45}" openclaw hooks enable "$_hk" >/dev/null 2>&1 || true
         warn "$_hk copied to global hooks dir — RESTART OpenClaw, then it will load (verify: openclaw hooks check --json)"
       else
         warn "$_hk source not found at $_hksrc — cannot self-heal; check the install"
