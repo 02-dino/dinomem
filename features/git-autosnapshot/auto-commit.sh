@@ -64,7 +64,11 @@ GIT_DIR="${AUTOSNAP_GIT_DIR:-$REPO/.dinomem-snap.git}"
 # or the lock dir isn't writable, just proceed (old behavior) rather than abort.
 _RUN_LOCK="$GIT_DIR/.autosnap-run.lock"
 if command -v flock >/dev/null 2>&1; then
-  exec 9>"$_RUN_LOCK" 2>/dev/null || true
+  # BRACE-WRAPPED DELIBERATELY: `exec` with no command applies its redirections
+  # to THE WHOLE REMAINING SCRIPT, so the old bare `exec 9>... 2>/dev/null`
+  # muted stderr permanently from here down. That is exactly how the size_gate
+  # `set -e` abort (fixed below) stayed invisible -- ticks died with NO output.
+  { exec 9>"$_RUN_LOCK"; } 2>/dev/null || true
   if [ -e /proc/self/fd/9 ] && ! flock -n 9; then
     # Could not grab the lock. TWO cases, must be told apart:
     #  (a) a LIVE sibling tick holds it -> correct to quiet-exit (single-instance).
@@ -91,7 +95,7 @@ if command -v flock >/dev/null 2>&1; then
   # NEXT tick sees `flock -n 9` fail -> quiet-exit(0) -> no commit (observed:
   # first install landed no snapshot + left a stale .autosnap-run.lock). An
   # explicit trap closes fd 9 so the lock is always freed the instant we finish.
-  trap 'flock -u 9 2>/dev/null || true; exec 9>&- 2>/dev/null || true' EXIT
+  trap 'flock -u 9 2>/dev/null || true; { exec 9>&-; } 2>/dev/null || true' EXIT
 fi
 
 # -- STALE index.lock GUARD -------------------------------------------------
@@ -231,21 +235,51 @@ if [ -n "$(g status --porcelain 2>/dev/null | head -c1)" ]; then
     done
     return 1
   }
-  # size_gate <relpath> -> append :(exclude) if oversized non-LFS non-allowlisted.
-  # WHY a fn: the guard now runs over TWO file sets (new + already-tracked-that-
-  # grew), so the size/LFS/allowlist decision must not be copy-pasted per set.
+  # size_gate <relpath> -> append :(exclude) if oversized and not allowlisted.
+  # WHY a fn: the guard runs over TWO file sets (new + already-tracked-that-grew),
+  # so the size/allowlist decision must not be copy-pasted per set.
   EXCLUDES=()
+  # EVERY early return here MUST be an explicit `return 0`. This script runs
+  # under `set -e` and this fn is called from a `while read` loop, so a non-zero
+  # return propagates and kills the whole tick.
+  # MEASURED 2026-10-08 (regression introduced by this very LFS cleanup):
+  # `[ "$sz" -gt N ] || return` inherited exit 1 from the failed test, so the
+  # FIRST under-limit file aborted auto-commit before `git add` ever ran. The
+  # store silently stopped snapshotting entirely -- and because the fd-9 `exec`
+  # above had muted stderr, it failed with zero error output.
   size_gate() {
     local f="$1" sz
-    [ -z "$f" ] && return
+    [ -z "$f" ] && return 0
     sz=$(stat -c '%s' "$REPO/$f" 2>/dev/null || echo 0)
-    [ "$sz" -gt $((MAX_MB*1024*1024)) ] || return
-    # LFS-aware: if this path is LFS-tracked, its bytes live OUTSIDE history,
-    # so size is irrelevant -> let it through. Only exclude oversized non-LFS
-    # blobs. `check-attr filter` returns 'lfs' when a gitattributes rule matches.
-    if g check-attr filter -- "$f" 2>/dev/null | grep -q ': filter: lfs$'; then
-      : # LFS-tracked oversized file -> keep (stored via LFS, snapshot stays tiny)
-    elif keep_large "$f"; then
+    # Under the ceiling -> nothing to exclude. Explicit `return 0`, see above.
+    if [ "$sz" -le $((MAX_MB*1024*1024)) ]; then return 0; fi
+    # ── THE LFS EXEMPTION IS GONE (2026-10-08) ──────────────────────────────
+    #
+    # This used to ask `git check-attr filter` and, if the path was LFS-tracked,
+    # let it through at ANY size — reasoning that "its bytes live OUTSIDE
+    # history, so size is irrelevant". Outside *history*, yes. Still on disk,
+    # inside .dinomem-snap.git/lfs/objects, forever.
+    #
+    # That one exemption is what turned this changelog into an accidental
+    # backup. MEASURED on workspace-analyst (2026-10-08): the snapshot store hit
+    # 11.33 GB, of which 11 GB was lfs/objects — 473 media blobs, largest
+    # ~0.59 GB. Verified as exact duplicates (an LFS object's filename IS the
+    # sha256 of its contents): both of the two largest .mp4 files in
+    # work/hype_video/ hashed straight onto existing objects. Across all 19
+    # dinomem workspaces that was ~15.6 GB of duplicated media.
+    #
+    # The guard exists so "a stray model/data dump can never bloat the snapshot
+    # DB". An exemption that lets the BIGGEST class of files through defeats it
+    # by construction. The guard is now ABSOLUTE: size is the only question, and
+    # the sole escape hatch is the explicit, user-authored allowlist below.
+    #
+    # Binaries are now IGNORED instead (gitignore.snippet), so they never reach
+    # this gate at all. This check is the second line of defence for a binary
+    # that slips past the ignores, or any oversized text blob.
+    #
+    # DO NOT re-add an attribute-based exemption here. Owner, 2026-10-08:
+    # "it shld be auto changelog only ... no backup, no media, etc".
+    if keep_large "$f"; then
       : # user-allowlisted oversized non-LFS blob -> keep (opted in explicitly)
     else
       EXCLUDES+=(":(exclude)$f")
@@ -259,7 +293,7 @@ if [ -n "$(g status --porcelain 2>/dev/null | head -c1)" ]; then
   # once while small (e.g. chroma.sqlite3) that later rewrites to 580MB every
   # tick was NEVER re-excluded -> it kept getting committed and blew up .git.
   # Gating on the modified set keeps the scan cheap (only dirty paths), and the
-  # same size/LFS/allowlist policy applies. An oversized grown file is dropped
+  # same size/allowlist policy applies. An oversized grown file is dropped
   # from THIS commit (stays on disk); ignore it permanently via info/exclude or
   # allowlist it via .dinomem-keep-large if you truly want it versioned.
   while IFS= read -r f; do size_gate "$f"; done \
@@ -399,12 +433,14 @@ DISK_PCT=$(df --output=pcent "$REPO" 2>/dev/null | tail -1 | tr -dc '0-9')
 _GC_LOCK="${AUTOSNAP_GLOBAL_GC_LOCK:-${XDG_RUNTIME_DIR:-/run}/dinomem-autosnap-gc.lock}"
 _GC_LOCK_HELD=0
 if command -v flock >/dev/null 2>&1; then
-  if exec 8>"$_GC_LOCK" 2>/dev/null && flock -n 8; then
+  # Brace-wrapped for the same reason as the fd-9 run lock above: a bare
+  # `exec 8>... 2>/dev/null` would mute stderr for the whole remaining script.
+  if { exec 8>"$_GC_LOCK"; } 2>/dev/null && flock -n 8; then
     _GC_LOCK_HELD=1
-    trap 'flock -u 8 2>/dev/null || true; exec 8>&- 2>/dev/null || true' EXIT
+    trap 'flock -u 8 2>/dev/null || true; { exec 8>&-; } 2>/dev/null || true' EXIT
   else
     # Another store is doing housekeeping right now -> skip ours this tick.
-    exec 8>&- 2>/dev/null || true
+    { exec 8>&-; } 2>/dev/null || true
     echo "$(date '+%F %T') SKIP housekeeping (global gc lock busy)" >> "$LOG" 2>/dev/null || true
     DISK_PCT=-1   # sentinel: fall through to the no-op else-branch below
   fi

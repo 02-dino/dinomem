@@ -24,7 +24,26 @@ GIT_DIR=""          # isolated snapshot git-dir; default set after REPO resolves
 INTERVAL_MIN=15
 MAX_MB=10
 RETAIN_DAYS=30
-DO_LFS=1
+# ── git-lfs IS OFF, PERMANENTLY (2026-10-08) ─────────────────────────────────
+# Was DO_LFS=1. LFS is what turned this CHANGELOG into an accidental BACKUP:
+# auto-commit.sh's size guard deliberately EXEMPTED LFS-tracked paths, so every
+# binary bypassed the ceiling and git-lfs kept a byte-exact copy forever in
+# .dinomem-snap.git/lfs/objects.
+#
+# MEASURED on workspace-analyst: that store reached 11.33 GB, of which 11 GB was
+# lfs/objects (473 blobs, largest ~0.59 GB). Verified exact duplicates -- an LFS
+# object's filename IS the sha256 of its contents, and the two largest .mp4s in
+# work/hype_video/ both hashed onto existing objects. Across all 19 dinomem
+# workspaces: ~15.6 GB of duplicated media.
+#
+# Binaries are now IGNORED (gitignore.snippet) instead of tracked, which also
+# makes the size guard absolute -- nothing can be exempted from it again.
+# Owner, 2026-10-08: "it shld be auto changelog only ... no backup, no media".
+#
+# Kept as a variable (not deleted) so --no-lfs stays accepted and existing
+# install commands/docs do not break. There is deliberately NO --lfs flag to
+# turn it back on.
+DO_LFS=0
 FORCE=0
 DRY_RUN=0
 UNINSTALL=0
@@ -232,62 +251,102 @@ fi
 hr "ignore rules (private to snapshot store)"
 EXC="$GIT_DIR/info/exclude"
 MARKER="# >>> dinomem git-autosnapshot ignores >>>"
+END_MARKER="# <<< dinomem git-autosnapshot ignores <<<"
+# ── CONTENT-VERSIONED, NOT MARKER-PRESENT (fixed 2026-10-08) ────────────────
+#
+# This used to `grep -qF "$MARKER"` and skip if found. That made the ignore block
+# WRITE-ONCE: any later change to gitignore.snippet was silently never deployed,
+# because the marker from the first install was still sitting there.
+#
+# It bit immediately and dangerously. Installing the LFS-removal onto
+# workspace-webdev stripped the 23 filter=lfs rules (good) but skipped the new
+# media globs (bad), leaving a state WORSE than before the fix: media was no
+# longer routed to LFS *and* not ignored, so any file under AUTOSNAP_MAX_MB went
+# straight into git history as a raw blob. A half-applied migration.
+#
+# So the block is now keyed to the snippet's CHECKSUM. Same content -> skip.
+# Different content -> excise the old block between the markers and re-append.
+# cksum is POSIX (unlike sha256sum/md5sum which vary across mac/busybox), and
+# only needs to detect change, not resist attack.
+SNIP_SUM="$(cksum < "$SELF_DIR/gitignore.snippet" 2>/dev/null | awk '{print $1}')"
+VER_LINE="# dinomem-ignores-cksum: $SNIP_SUM"
 if [ "$DRY_RUN" = 1 ]; then
-  plan "append runtime-noise ignore block to $EXC (private; NOT the user's .gitignore)"
-elif grep -qF "$MARKER" "$EXC" 2>/dev/null; then
-  skip "info/exclude block (already present)"
+  if grep -qF "$VER_LINE" "$EXC" 2>/dev/null; then
+    plan "info/exclude already current (cksum $SNIP_SUM)"
+  elif grep -qF "$MARKER" "$EXC" 2>/dev/null; then
+    plan "REFRESH stale info/exclude block in $EXC (content changed)"
+  else
+    plan "append runtime-noise ignore block to $EXC (private; NOT the user's .gitignore)"
+  fi
+elif grep -qF "$VER_LINE" "$EXC" 2>/dev/null; then
+  skip "info/exclude block (already current)"
 else
   mkdir -p "$GIT_DIR/info" 2>/dev/null || true
+  if grep -qF "$MARKER" "$EXC" 2>/dev/null; then
+    # Excise the previous block so repeated installs cannot stack duplicates.
+    sed -i "\|$MARKER|,\|$END_MARKER|d" "$EXC" 2>/dev/null || true
+    ok "removed stale info/exclude block (was out of date)"
+  fi
   cat "$SELF_DIR/gitignore.snippet" >> "$EXC"
+  echo "$VER_LINE" >> "$EXC"
   ok "runtime-noise ignore block written to snapshot store (user's tree untouched)"
 fi
-# git-lfs: match dinomem's real installer pattern (detect -> attempt install ->
-# warn+continue). The main installer already auto-installs Python via apt/brew/
-# pyenv, so being squeamish about git-lfs would be inconsistent. Attempt via the
-# available pkg manager; if it fails or none is present, degrade gracefully
-# (snapshots still work, media just isn't lfs-tracked).
-if [ "$DO_LFS" = 1 ] && ! command -v git-lfs >/dev/null 2>&1; then
+# ── ATTRIBUTES: installed UNCONDITIONALLY, and git-lfs is NOT used ──────────
+#
+# This used to be two DO_LFS-gated blocks: one that apt/brew-installed git-lfs,
+# and one that ran `git lfs install --local` + copied LFS media rules into
+# $GIT_DIR/info/attributes.
+#
+# BOTH ARE GONE (2026-10-08). LFS is exactly what turned this CHANGELOG into an
+# accidental BACKUP: auto-commit.sh's size guard deliberately EXEMPTED
+# LFS-tracked paths, so every binary bypassed the ceiling and git-lfs kept a
+# byte-exact copy of it forever under $GIT_DIR/lfs/objects.
+#
+# MEASURED on workspace-analyst: the snapshot store reached 11.33 GB, of which
+# 11 GB was lfs/objects (473 blobs, largest ~0.59 GB). Verified as exact
+# duplicates -- an LFS object's filename IS the sha256 of its contents, and the
+# two largest .mp4 files in work/hype_video/ both hashed onto existing objects.
+# Across all 19 dinomem workspaces that was ~15.6 GB of duplicated media.
+#
+# Binaries are now IGNORED via gitignore.snippet -> info/exclude (written above),
+# which is both the fix and a stronger guarantee: with no lfs filter configured
+# there is nothing left to exempt, so the size guard is absolute.
+#
+# The attributes file is STILL installed, because it now does something
+# different and useful: declare the memory corpus as text (readable, line-based
+# diffs) and the few remaining binary-ish paths as binary so git never tries to
+# diff or mangle them. It carries NO filter=lfs rules.
+#
+# Installed unconditionally -- it no longer depends on git-lfs being present, and
+# gating it behind DO_LFS would have made it dead code the moment DO_LFS went 0.
+ATTR="$GIT_DIR/info/attributes"
+if grep -qF 'dinomem git-autosnapshot' "$ATTR" 2>/dev/null; then
+  skip "info/attributes (already present)"
+else
   if [ "$DRY_RUN" = 1 ]; then
-    plan "git-lfs not found -> attempt install via apt/brew/dnf/yum/apk/pacman"
+    plan "write info/attributes (text/binary rules, no lfs)"
   else
-    warn "git-lfs not found — attempting install..."
-    if command -v apt-get >/dev/null 2>&1; then
-      apt-get update -q >/dev/null 2>&1 || true
-      apt-get install -y git-lfs >/dev/null 2>&1 || true
-    elif command -v brew >/dev/null 2>&1; then
-      brew install git-lfs >/dev/null 2>&1 || true
-    elif command -v dnf >/dev/null 2>&1; then
-      dnf install -y git-lfs >/dev/null 2>&1 || true
-    elif command -v yum >/dev/null 2>&1; then
-      yum install -y git-lfs >/dev/null 2>&1 || true
-    elif command -v apk >/dev/null 2>&1; then
-      apk add git-lfs >/dev/null 2>&1 || true
-    elif command -v pacman >/dev/null 2>&1; then
-      pacman -S --noconfirm git-lfs >/dev/null 2>&1 || true
-    fi
-    if command -v git-lfs >/dev/null 2>&1; then
-      ok "git-lfs installed"
-    else
-      warn "git-lfs install failed/unavailable — skipping media tracking (snapshots still work; install git-lfs manually for image/video handling)"
-    fi
+    mkdir -p "$(dirname "$ATTR")"
+    {
+      echo "# >>> dinomem git-autosnapshot attributes >>>"
+      cat "$SELF_DIR/gitattributes.template"
+      echo "# <<< dinomem git-autosnapshot attributes <<<"
+    } >> "$ATTR"
+    ok "info/attributes written (no git-lfs)"
   fi
 fi
-if [ "$DO_LFS" = 1 ] && command -v git-lfs >/dev/null 2>&1; then
-  if [ "$DRY_RUN" = 1 ]; then
-    plan "git lfs install + copy .gitattributes media rules"
-  else
-    g lfs install --local >/dev/null 2>&1 || true
-    # lfs media rules live in the snapshot store's info/attributes, NOT a
-    # .gitattributes in the user's tree (same isolation rule as the ignores).
-    ATTR="$GIT_DIR/info/attributes"
-    if grep -qF 'dinomem git-autosnapshot' "$ATTR" 2>/dev/null; then
-      skip "info/attributes media rules (already present)"
-    else
-      mkdir -p "$GIT_DIR/info" 2>/dev/null || true
-      printf '# >>> dinomem git-autosnapshot media rules >>>\n' >> "$ATTR"
-      cat "$SELF_DIR/gitattributes.template" >> "$ATTR"
-      ok "media/lfs rules written to snapshot store (user's tree untouched)"
-    fi
+
+# MIGRATION: a store installed before 2026-10-08 still has lfs filter config and
+# the old LFS attribute rules. Strip them so this install actually changes
+# behaviour instead of leaving the old media pipeline live underneath.
+if [ "$DRY_RUN" = 1 ]; then
+  plan "strip any legacy git-lfs config/attributes from existing store"
+else
+  g config --remove-section filter.lfs 2>/dev/null || true
+  g config --unset-all lfs.repositoryformatversion 2>/dev/null || true
+  if [ -f "$ATTR" ] && grep -q 'filter=lfs' "$ATTR" 2>/dev/null; then
+    sed -i '/filter=lfs/d' "$ATTR" 2>/dev/null || true
+    ok "stripped legacy filter=lfs rules from info/attributes"
   fi
 fi
 

@@ -105,4 +105,107 @@ workspace-*/backup/
 workspace-*/backups/
 data/*.db
 workspace-*/data/*.db
+
+# ── BINARIES / MEDIA: IGNORED, NOT LFS-TRACKED (2026-10-08) ────────────────
+#
+# These globs used to live in gitattributes.template as `filter=lfs` rules. That
+# made a CHANGELOG behave like a BACKUP: auto-commit.sh's size guard
+# (AUTOSNAP_MAX_MB) deliberately EXEMPTED LFS-tracked paths, so every binary
+# bypassed the guard and git-lfs kept a byte-exact copy of it forever in
+# .dinomem-snap.git/lfs/objects.
+#
+# MEASURED on workspace-analyst: that store reached 11.33 GB, of which 11 GB was
+# lfs/objects (473 objects, largest ~0.59 GB). Verified as exact duplicates — an
+# LFS object's filename IS the sha256 of its contents, and both of the two
+# largest videos in work/hype_video/ hashed straight onto existing objects.
+# Across all 19 dinomem workspaces: ~15.6 GB of duplicated media.
+#
+# WHY IGNORING IS THE RIGHT ANSWER, not just the cheaper one: a changelog exists
+# to answer "what text changed, and let me undo it". A binary has no readable
+# diff and no partial undo — you either keep the bytes or you do not, and keeping
+# them is a BACKUP's job (procedures/backup.py, which now excludes this store).
+# Owner, 2026-10-08: "it shld be auto changelog only ... no backup, no media".
+#
+# Ignoring also makes the size guard ABSOLUTE: with no LFS filter configured,
+# nothing can be exempted from it again, which is the loophole that caused this.
+#
+# Need one of these versioned? Put it in a real project repo, or allowlist it
+# via `.dinomem-keep-large` — do NOT re-add LFS rules to the snapshot store.
+
+# Archives
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.7z
+*.rar
+*.gz
+*.bz2
+*.xz
+*.zst
+
+# Images
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.bmp
+*.tiff
+*.ico
+*.psd
+*.svgz
+
+# Video / audio — the actual 11 GB in practice
+*.mp4
+*.mov
+*.webm
+*.mkv
+*.avi
+*.mp3
+*.wav
+*.ogg
+*.flac
+*.m4a
+
+# Docs / fonts
+*.pdf
+*.ttf
+*.otf
+*.woff
+*.woff2
+*.eot
+
+# Compiled / packaged blobs
+*.wasm
+*.so
+*.dylib
+*.dll
+*.node
+*.whl
+*.deb
+*.exe
+*.bin
+*.pack
+*.onnx
+*.safetensors
+*.gguf
+*.pt
+*.pth
+*.h5
+*.npy
+*.npz
+*.parquet
+*.sqlite
+*.sqlite3
+
+# Media work dirs: whole-directory ignores, because a render pipeline emits
+# hundreds of intermediate clips (183 .mp4 files in work/hype_video/ alone) and
+# per-extension rules still leave the churn of frames/manifests behind.
+work/*/clips/
+work/*/clips_*/
+work/*/archive_*/
+workspace-*/work/*/clips/
+workspace-*/work/*/clips_*/
+workspace-*/work/*/archive_*/
 # <<< dinomem git-autosnapshot ignores <<<
