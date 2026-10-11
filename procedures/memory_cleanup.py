@@ -300,7 +300,8 @@ def cleanup():
     for md_file in md_files:
         if not md_file.exists():
             continue
-        lines = md_file.read_text(encoding='utf-8').split('\n')
+        original = md_file.read_text(encoding='utf-8')
+        lines = original.split('\n')
         new_lines = []
         for line in lines:
             m = expires_pattern.search(line)
@@ -310,7 +311,15 @@ def cleanup():
                     ttl_removed += 1
                     continue
             new_lines.append(line)
-        md_file.write_text('\n'.join(new_lines), encoding='utf-8')
+        # Write ONLY when content actually changed. Previously this wrote every
+        # file unconditionally, so a no-op run (TTL expiry: 0) still bumped mtime
+        # on every .md file -- measured 2026-10-11 on a 4105-file workspace: 4028
+        # files rewritten with byte-identical content, every single day. That
+        # re-triggers downstream mtime-based re-indexing and burns I/O on a box
+        # already load-shedding (the cleanup's own log: "SKIP: load 9.10").
+        updated = '\n'.join(new_lines)
+        if updated != original:
+            md_file.write_text(updated, encoding='utf-8')
     print(f"TTL expiry: {ttl_removed} expired items deleted.")
 
     # ── Pass 3: Bootcheck cleanup ──
