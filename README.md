@@ -521,6 +521,7 @@ python3 benchmark/run_all.py --source . \
 │   ├── workspace_backup.py     # Weekly snapshot backup (keep 3, auto-rotate)
 │   ├── git_history.py          # git-backed state API (last-touched, commit-count, content_at, restore) — read-only, fail-open
 │   ├── memory_retention.py     # git-aware age/reinforcement check — spares recently-touched files from pruning
+│   ├── memory_cache_prune.py   # weekly: drop orphaned memory_embedding_cache rows + VACUUM (no LLM)
 │   └── _memory_diff.py         # audit log + git restore_ref (byte-exact undo of any add/update/delete)
 ├── tools/
 │   ├── route.py               # Surface arbiter — cost-ordered decision schema (cron>hook>skill>root); write-free

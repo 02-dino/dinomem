@@ -48,6 +48,7 @@ CRON_PATTERNS=(
   "memory_cleanup.py"
   "memory_review.py"
   "workspace_backup.py"
+  "memory_cache_prune.py"
   "docker-compose.tei.yml"
   "dinomem:"
 )

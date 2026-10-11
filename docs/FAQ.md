@@ -6,6 +6,11 @@ TEI requires Docker. Without it, `memory_search` falls back to OpenClaw's built-
 **How much disk space does it use?**
 TEI model: ~80MB. Memory files: minimal (text only). Vector DB grows with usage — roughly 1–2MB per 1000 memory entries.
 
+**My agent DB is hundreds of MB but I only have a few thousand memories — why?**
+`memory_embedding_cache` keeps one embedding per content hash so re-indexing unchanged text is free, but nothing in the engine removes a row once its content is gone (the only `DELETE` is the full-reindex table swap, which is not an ownership prune). So the table is append-only in practice. Measured on a live box 2026-10-11: one agent held 82,471 cache rows backing just 5,239 live chunks — 93% orphaned, 386MB of a 465MB file.
+
+Fix: `python3 procedures/memory_cache_prune.py` (add `--dry-run` first to see the damage). It deletes only rows whose `hash` no live chunk references — never by age — then `VACUUM`s so the file actually shrinks. That DB went 465MB → 83MB. Installs since v1.23.0 register a weekly cron for this automatically; older installs can run it by hand or re-run `install.sh`. With no `--db` it sweeps every agent DB on the box, and it refuses to touch a DB whose chunk index is empty (that means "not indexed yet", not "all orphaned").
+
 **Does it work on Windows?**
 Not natively. Use WSL2 with Ubuntu.
 

@@ -1496,6 +1496,20 @@ if [ "$DO_CRON" = 1 ]; then
   STARTUP_CLEANUP_CRON="$_STARTUP_MIN 2 * * * cd $WS && python3 procedures/cleanup_startup_daily.py >> logs/cleanup.log 2>&1"
   upsert_cron "cleanup_startup_daily.py" "dinomem: prune bare daily files for startupContext (>2d)" "$STARTUP_CLEANUP_CRON" "cleanup_startup_daily cron (daily 02:${_STARTUP_MIN} UTC, staggered)"
 
+  # memory_cache_prune — weekly Sunday 03:xx UTC, zero LLM, no flock needed.
+  # WHY: memory_embedding_cache is append-only in practice — the engine's only
+  # DELETE is the full-reindex table swap, never an ownership prune — so every
+  # install grows a cache of embeddings whose content is long gone. Measured
+  # 2026-10-11 on a 15-agent box: 11,138 orphaned rows; the worst single agent
+  # was 93% orphaned (82,471 rows for 5,239 live chunks, 465MB -> 83MB after).
+  # WEEKLY, not daily: orphans accrue slowly and VACUUM rewrites the whole file,
+  # so a daily run would pay a large I/O cost for a small reclaim. Scoped to
+  # THIS agent's resolved DB ($MEMORY_DB) rather than the box-wide sweep the
+  # script also supports, so N installed agents don't each prune all N DBs.
+  _CACHE_PRUNE_MIN=$(( (15 + _SMIN) % 60 ))
+  CACHE_PRUNE_CRON="$_CACHE_PRUNE_MIN 3 * * 0 cd $WS && python3 procedures/memory_cache_prune.py --db $MEMORY_DB >> logs/memory_cache_prune.log 2>&1"
+  upsert_cron "memory_cache_prune.py" "dinomem: weekly embedding-cache prune + VACUUM (no LLM)" "$CACHE_PRUNE_CRON" "memory_cache_prune cron (Sunday 03:${_CACHE_PRUNE_MIN} UTC, staggered)"
+
   # weekly_stats — Sunday 09:00 local, zero LLM, sends stats card to Telegram
   STATS_CRON="$_SMIN 9 * * 0 python3 $SKILL_DIR/scripts/weekly_stats.py --workspace $WS >> $WS/logs/weekly_stats.log 2>&1"
   upsert_cron "weekly_stats.py" "dinomem: weekly stats card (Sunday 09:00, no LLM)" "$STATS_CRON" "weekly_stats cron (Sunday 09:${_SMIN}, staggered)"
