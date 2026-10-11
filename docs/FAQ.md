@@ -56,6 +56,18 @@ Do **not** pin `cpu-1.6` here, even though it also fixes the download bug: `cpu-
 **How do I set `max-input-length` for a custom embedding model?**
 As of TEI `1.6.1`+ (still true on `1.9.4`), `--max-input-length` is not a valid CLI flag — passing it will crash-loop the container. TEI auto-derives `max_input_length` from the model's own config instead (e.g. 512 for `intfloat/multilingual-e5-small`, vs 256 for the default `all-MiniLM-L6-v2`). If you swap in a custom model, do not pass `--max-input-length` manually — check the model's `/info` endpoint after startup to confirm the derived value.
 
+**I put an env var in `~/.openclaw/.env` (or `$OPENCLAW_STATE_DIR/.env`) and restarted — why doesn't the gateway see it?**
+Because that file is read at service-INSTALL time, not at runtime. OpenClaw parses the state-dir `.env` when it writes the systemd unit and bakes the surviving keys into `gateway.systemd.env`, which is what the unit actually loads (`EnvironmentFile=-`). A plain `openclaw gateway restart` only restarts the existing unit — it never re-reads `.env`, so a key added after install stays invisible forever. The leading `-` also means systemd says nothing if the file is missing, so the failure is silent.
+
+Verify what the process really has, rather than trusting the file:
+```bash
+tr '\0' '\n' < /proc/$(pgrep -f 'openclaw.*gateway' | head -1)/environ | grep MY_VAR
+```
+To actually apply a new key: re-run `openclaw gateway install` (re-bakes `gateway.systemd.env` from `.env`), or write it into `gateway.systemd.env` directly and `systemctl --user daemon-reload` + restart. Note that values which are bare shell references (`$FOO`) are deliberately skipped during the bake.
+
+**Will dinomem set `MEMORY_SEARCH_TOOL_TIMEOUT_MS` or `DINOMEM_WARM_AGENTS` for me?**
+No — not since v1.24.0, because neither knob does anything. `MEMORY_SEARCH_TOOL_TIMEOUT_MS` was never an env var: OpenClaw's tool layer holds `const MEMORY_SEARCH_TOOL_TIMEOUT_MS = 15e3` and passes it straight to `timeoutMs`, with no `process.env` read anywhere in `dist/`. (Measured 2026-10-11: the variable was present in the gateway's process environment and searches still failed with "timed out after 15s".) `DINOMEM_WARM_AGENTS` was the warm hook's opt-in gate until v1.17.0; warming is mandatory now and resolves agents from `cfg.agents.list`. Older installs may still have both keys sitting in `openclaw.json`'s `env` block and in `.env` — they are inert and safe to delete.
+
 **`openclaw config patch` (RPC) rejects my config change with a "protected path" error — how do I still set it?**
 Some `openclaw.json` paths (e.g. `models.providers.<id>.models`, `agents.defaults.memorySearch.model`) are protected from the gateway's `config.patch`/`config.apply` RPC to prevent accidental corruption via raw edits. This is intentional — do not try to bypass it with a raw file edit. Use the OpenClaw CLI writer instead, which is allowed to touch these paths directly:
 ```bash
