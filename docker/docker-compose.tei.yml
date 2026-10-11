@@ -2,7 +2,18 @@ version: "3.8"
 
 services:
   tei-embed:
-    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.6
+    # PINNED 1.9.4, NOT 1.6: cpu-1.6 panics at core/src/queue.rs:87
+    # ("Queue background task dropped the receiver ... Full(..)") under
+    # concurrent load and dies -> upstream bug, HF issue #811 "internal queue
+    # overflow under high concurrency", closed 2026-02-20, fix landed before
+    # v1.9.3. Measured on this box 2026-10-09: 1.6 crashed 79x in 5.4 days
+    # (~14.6/day, OOMKilled=false, exit 0) and each reboot = ~30s of dead
+    # recall, which surfaced to users as "memory_search timed out".
+    # Verified before swapping: embeddings are bit-identical to 1.6
+    # (cosine 1.000000, dim 384), boot 15s vs 30s, steady-state RAM LOWER
+    # (844MiB vs 1.27GiB), and a 20x-parallel batch-16 burst produced ZERO
+    # panics (RestartCount=0) where 1.6 reproducibly crashed on the same load.
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.4
     ports:
       - "127.0.0.1:8080:80"   # loopback-only: see SECURITY note in README
     volumes:
@@ -25,8 +36,17 @@ services:
       # embed at once, or interactive memory_search gets rejected and surfaces as
       # "memory_search timed out". Real incident 2026-10-04: 11 cron lanes
       # against a depth of 3 -> TEI logged `no permits available` and recall died.
+      #
+      # RAISED 8 -> 16 together with the 1.9.4 bump, because 1.9.4 spends
+      # permits PER INPUT where 1.6 was laxer. Measured at depth 8 on the same
+      # box: a 12-item batch returned 200 on 1.6 but 429 on 1.9.4. The gateway
+      # batches by TOKENS (EMBEDDING_BATCH_MAX_TOKENS=8000), so a batch well
+      # over 8 items is routine -> bumping the image without this would have
+      # traded crash-restarts for silent 429 rejections. 16 also clears the 11
+      # cron lanes on this box with headroom; at depth 64 RAM still only hit
+      # 844MiB/2GiB, so this is cheap.
       - --max-concurrent-requests
-      - "8"
+      - "16"
     # Resource ceilings are DEFAULTS ON PURPOSE: a fresh install used to ship
     # with none, so the first heavy ingest could saturate the host. Raise them
     # on a bigger box; do not delete them.
