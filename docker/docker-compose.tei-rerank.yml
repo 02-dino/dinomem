@@ -5,7 +5,15 @@ version: "3.8"
 services:
   tei-rerank:
     container_name: tei-rerank
-    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.6
+    # PINNED 1.9.4, NOT 1.6 -- same upstream bug the embed service was moved off
+    # on 2026-10-09, but this service was missed. cpu-1.6 panics at
+    # core/src/queue.rs:87 ("Queue background task dropped the receiver")
+    # under concurrent load: HF issue #811, closed 2026-02-20, fix landed
+    # before v1.9.3. Measured on this box 2026-10-11 BEFORE the swap:
+    # RestartCount=30, 8 panics in 24h, OOMKilled=false exit=0 -- and an
+    # 8-document rerank request reproducibly killed the process outright.
+    # Each death is ~30s of dead reranking for semantic_search/memory_rerank.
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.4
     ports:
       - "127.0.0.1:8081:80"   # loopback-only: see SECURITY note in README
     volumes:
@@ -18,8 +26,15 @@ services:
       - --port
       - "80"
       - --auto-truncate
+      # RAISED 2 -> 32 together with the 1.9.4 bump: 1.9.4 spends a permit PER
+      # INPUT, so a depth of 2 would 429 any multi-document rerank. The embed
+      # service hit exactly this and was moved 8 -> 16 on the same grounds.
+      # 32 specifically, because TEI's own max_client_batch_size is 32 (see
+      # /info): a 32-text rerank is the largest request a client can legally
+      # send, so anything below 32 means TEI 429s requests it would otherwise
+      # accept. Measured at depth 16 on this box: n=16 OK, n=32 -> 429.
       - --max-concurrent-requests
-      - "2"
+      - "32"
     cpus: 1.0
     mem_limit: 512m
     pids_limit: 32
