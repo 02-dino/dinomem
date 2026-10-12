@@ -1226,7 +1226,47 @@ upsert_cron() {
   # procedures/<script>` has NEITHER wrapper nor DINOMEM_ env, so it is NOT adopted
   # and NOT clobbered. This is the false-delete guard.
   if [ -n "${WS:-}" ]; then
-    crontab -l 2>/dev/null | awk -v ws="$WS" -v kw="$keyword" -v tag="$tag" '
+    crontab -l 2>/dev/null | awk -v ws="$WS" -v kw="$keyword" -v tag="$tag" -v aid="$aid" '
+      # OWNERSHIP, not mere substring presence. A cron line belongs to THIS agent
+      # only if it carries an explicit marker naming this workspace/agent:
+      #   --workspace <WS> | cd <WS> | >> <WS>/logs/... | DINOMEM_AGENT_ID=<aid>
+      #
+      # The old test was index(line, ws)>0, which asked "does this line mention my
+      # workspace path anywhere?". That is true for EVERY agent on a box where the
+      # installer itself lives under an agent workspace: cron lines invoke scripts
+      # from $SKILL_DIR, so a kttal line reads
+      #   python3 /root/.openclaw/workspace-analyst/github/dinomem/scripts/weekly_stats.py --workspace /root/.openclaw/workspace-kttal
+      # and contains the literal string "workspace-analyst" purely as the TOOL path.
+      # Installing analyst then stamped analyst tags onto kttal lines, and phase 2
+      # (replace-by-tag) deleted them. Simulated against this box 2026-10-12:
+      # 14 foreign lines carried the string, 3 lines got the analyst tag (one
+      # targeting workspace-kttal), crontab 827 -> 825.
+      #
+      # Boundary check matters: a bare prefix test would let workspace-main claim
+      # workspace-main2. The marker must end at a path separator or whitespace.
+      # NOTE: the terminator set is built with sprintf("%c",39) for the single
+      # quote. A literal single quote cannot appear inside this awk program,
+      # because the program itself is delimited by single quotes in the shell;
+      # the usual '\''...'\'' escape dance works inline but silently corrupts the
+      # program if anyone ever extracts it to a .awk file. sprintf keeps the
+      # source copy-pasteable and unambiguous.
+      function boundary(line, pos, len,   c) {
+        c = substr(line, pos + len, 1)
+        if (c == "") return 1
+        return index(" \t/&;|>\"" sprintf("%c", 39), c) > 0
+      }
+      function marker(line, pre, val,   full, p) {
+        full = pre val
+        p = index(line, full)
+        return (p > 0 && boundary(line, p, length(full)))
+      }
+      function owned(line) {
+        return (marker(line, "--workspace ", ws) ||
+                marker(line, "cd ", ws) ||
+                marker(line, ">> ", ws) ||
+                marker(line, ">>", ws) ||
+                marker(line, "DINOMEM_AGENT_ID=", aid))
+      }
       {
         line=$0
         if (line ~ /# dinomem-managed:/) { print line; next }
@@ -1248,7 +1288,11 @@ upsert_cron() {
         #  Measured 2026-10-11: 2 untagged weekly_stats crons (kttal, analyst)
         #  surviving alongside their tagged twins = duplicate weekly runs.
         dino_sig = (index(line,"dinomem_run.sh")>0 || line ~ /DINOMEM_[A-Z_]+=/ || line ~ /(procedures|scripts)\/(auto_session_reset|memory_cleanup|memory_review|cleanup_startup_daily|workspace_backup|weekly_stats|memory_graph|memory_synthesis|contradiction_check|confidence_engine|memory_promote|generate_topic_index|docs_ingest|code_graph|code_anchors|_retrieval_log)\.py/)
-        if (index(line, ws)>0 && dino_sig && index(line, kw)>0) { print line " " tag }
+        # owned() replaces index(line,ws)>0. A legacy line with NO ownership
+        # marker at all is now left untouched: the installer appends its own
+        # tagged copy instead. That is a deliberate trade -- a duplicate cron is
+        # noisy, deleting another agent'"'"'s job is not recoverable.
+        if (owned(line) && dino_sig && index(line, kw)>0) { print line " " tag }
         else { print line }
       }' | crontab -
   fi
