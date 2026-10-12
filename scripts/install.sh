@@ -1181,6 +1181,13 @@ if [ "$DO_DOCKER" = 1 ]; then
       if [ "$DRY_RUN" != 1 ] && docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^tei-embed$'; then
         skip "TEI container already running (tei-embed)"
       else
+        # IMAGE PIN must match docker/docker-compose.tei.yml (cpu-1.9.4). This
+        # fallback sat on cpu-1.6 after the compose files were moved off it, so a
+        # box WITHOUT the compose plugin — the only box that reaches this branch —
+        # silently got the one image we documented as broken: cpu-1.6 panics at
+        # core/src/queue.rs:87 under concurrent load (upstream TEI #811). Measured
+        # 2026-10-09: 79 crashes in 5.4 days, each ~30s of dead recall surfacing to
+        # users as "memory_search timed out". See docs/FAQ.md.
         # Same ceilings as the compose path. Without these the fallback ran
         # COMPLETELY UNBOUNDED -- no thread cap, no --cpus, no --memory -- which
         # is the exact condition that once let TEI eat ~400% CPU and starve the
@@ -1189,7 +1196,7 @@ if [ "$DO_DOCKER" = 1 ]; then
           -p 127.0.0.1:8080:80 \
           -e "RAYON_NUM_THREADS=$TEI_RAYON_THREADS" \
           --cpus "$TEI_CPUS" --memory "$TEI_MEM_LIMIT" \
-          ghcr.io/huggingface/text-embeddings-inference:cpu-1.6 \
+          ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.4 \
           --model-id intfloat/multilingual-e5-small --auto-truncate \
           --max-concurrent-requests "${TEI_MAX_CONCURRENT:-16}"
         [ "$DRY_RUN" = 1 ] || ok "TEI container started on port 8080 (docker run)"
