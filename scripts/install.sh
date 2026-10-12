@@ -2421,6 +2421,14 @@ else
   ok "cheap model resolves to: $cheap_now (auto-linked to compaction.model)"
 fi
 
+# ── REPAIR-CRON GUARD (region A: openclaw.json / AGENTS.md / TOOLS.md / allowlist) ──
+# --repair-cron means "re-register ONLY the crons". These phases rewrite config
+# and the managed AGENTS.md/TOOLS.md blocks — nothing to do with crons. Running
+# them from an auto-repair re-entry turns a cron-only fix into a full content
+# rewrite. Cron registration, the dry-run exit and the cron self-check/gate all
+# live OUTSIDE this guard and still run.
+if [ "$REPAIR_CRON" = 0 ]; then
+
 # ── 5) Patch openclaw.json config ─────────────────────────────────────────────
 hr "OpenClaw config"
 OPENCLAW_JSON="${OPENCLAW_JSON:-$HOME/.openclaw/openclaw.json}"
@@ -3185,6 +3193,9 @@ except Exception as e:
     print(f"  \033[33m[warn]\033[0m Could not check tools.allow: {e}")
 PYEOF
 
+
+fi  # end REPAIR-CRON GUARD region A
+
 echo
 if [ "$DRY_RUN" = 1 ]; then
   hr "dry run complete"
@@ -3340,6 +3351,12 @@ except Exception: pass" 2>/dev/null)"
     fi
   done
 fi
+
+# ── REPAIR-CRON GUARD (region B: hook plugins + system tuning) ──────────────
+# Plugin install (recall-gate, retrieval-log) and host tuning (swap/sysctl/
+# systemd Restart=) are one-time heavy phases, not cron work. The watchdog and
+# health-watcher sections below stay OUTSIDE the guard: those ARE cron wiring.
+if [ "$REPAIR_CRON" = 0 ]; then
 
 # ── Install dinomem-recall-gate plugin (before_tool_call mid-session recall) ──
 # The bootstrap dinomem-open-notes hook injects the recall gate ONCE at agent
@@ -3661,6 +3678,9 @@ if [ "$(uname)" = "Linux" ] && command -v systemctl >/dev/null 2>&1 && command -
 elif [ "$(uname)" = "Linux" ] && command -v systemctl >/dev/null 2>&1; then
   warn "'timeout' binary not found — skipping Restart=on-failure patch (systemctl calls unbounded, avoiding a possible hang)"
 fi
+
+
+fi  # end REPAIR-CRON GUARD region B
 
 # ── Internal watchdog: auto-install ──────────────────────────────────────────
 # Copies internal-watchdog.sh to scripts/ and wires a crontab entry.
