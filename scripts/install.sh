@@ -1117,6 +1117,59 @@ if [ "$DO_DOCKER" = 1 ]; then
     if docker compose version >/dev/null 2>&1; then
       run "copy docker-compose.tei.yml -> $WS/" cp "$SKILL_DIR/docker/docker-compose.tei.yml" "$WS/docker-compose.tei.yml"
       [ "$DRY_RUN" = 1 ] || ok "docker-compose.tei.yml copied"
+      # AUTO-SIZE TEI to the host instead of shipping one hardcoded number.
+      # RAYON_NUM_THREADS is the DRAIN rate (how many embeds are computed at
+      # once); --max-concurrent-requests is only the QUEUE DEPTH (how many may
+      # wait). Too few threads = the queue fills and callers get `no permits
+      # available`, which surfaces to users as "memory_search timed out".
+      # Measured 2026-10-12 on an 8-core box running 11 agent workspaces:
+      # 1303 `no permits` in 24h while the cgroup was throttled just 1.31% of
+      # periods -- CPU quota was not the limit, the 2-thread pool was.
+      # Half the cores keeps the old guardrail intact (unpinned, TEI once ate
+      # ~400% CPU and starved the gateway) while scaling with the box.
+      _tei_autosize() {
+        local c="${CPU_COUNT:-0}" r="${TOTAL_RAM_MB:-0}" t cpus mem cap
+        case "$c" in (''|*[!0-9]*) c=0 ;; esac
+        case "$r" in (''|*[!0-9]*) r=0 ;; esac
+        if [ "$c" -lt 1 ]; then
+          # nproc failed -> keep the conservative compose defaults verbatim
+          TEI_RAYON_THREADS="${TEI_RAYON_THREADS:-2}"
+          TEI_CPUS="${TEI_CPUS:-2.5}"
+          TEI_MEM_LIMIT="${TEI_MEM_LIMIT:-2048m}"
+          export TEI_RAYON_THREADS TEI_CPUS TEI_MEM_LIMIT
+          return 0
+        fi
+        t=$(( c / 2 )); [ "$t" -lt 1 ] && t=1
+        [ "$t" -gt 8 ] && t=8            # diminishing returns for e5-small
+        # An operator who exported THREADS by hand wins -- but the derived
+        # values must follow that number, not the auto one, or we would hand
+        # back cpus < threads and silently CPU-cap the very threads they asked
+        # for. So resolve the override FIRST, then derive from the result.
+        TEI_RAYON_THREADS="${TEI_RAYON_THREADS:-$t}"
+        case "$TEI_RAYON_THREADS" in (''|*[!0-9]*) TEI_RAYON_THREADS="$t" ;; esac
+        [ "$TEI_RAYON_THREADS" -lt 1 ] && TEI_RAYON_THREADS=1
+        t="$TEI_RAYON_THREADS"
+        cpus=$(( t + 1 ))                 # headroom so threads are not CPU-capped
+        [ "$cpus" -gt "$c" ] && cpus="$c" # but never promise more than the host has
+        [ "$cpus" -lt 1 ] && cpus=1
+        mem=$(( 1024 + 512 * t ))         # more threads hold more resident state
+        [ "$mem" -lt 2048 ] && mem=2048
+        [ "$mem" -gt 4096 ] && mem=4096
+        if [ "$r" -gt 0 ]; then
+          cap=$(( r / 4 )); [ "$cap" -lt 1024 ] && cap=1024
+          [ "$mem" -gt "$cap" ] && mem="$cap"   # never claim >1/4 of host RAM
+        fi
+        TEI_CPUS="${TEI_CPUS:-$cpus}"
+        TEI_MEM_LIMIT="${TEI_MEM_LIMIT:-${mem}m}"
+        export TEI_RAYON_THREADS TEI_CPUS TEI_MEM_LIMIT
+        # Loud warning instead of silent mis-sizing when a hand override asks
+        # for more threads than the host can actually run in parallel.
+        if [ "$TEI_RAYON_THREADS" -gt "$c" ]; then
+          warn "TEI_RAYON_THREADS=$TEI_RAYON_THREADS exceeds ${c} host CPU — threads will contend; consider <= $(( c / 2 ))"
+        fi
+      }
+      _tei_autosize
+      ok "TEI sized for ${CPU_COUNT:-?} CPU: threads=$TEI_RAYON_THREADS cpus=$TEI_CPUS mem=$TEI_MEM_LIMIT"
       if [ "$DRY_RUN" != 1 ] && docker compose -f "$WS/docker-compose.tei.yml" ps 2>/dev/null | grep -q "running"; then
         skip "TEI container already running"
       else
@@ -2205,7 +2258,11 @@ PYEOF
   # line racing other agents' TEI crons for port 8080 on every reboot.
   if [ "$DO_DOCKER" = 1 ] && [ "${_TEI_OWNED:-0}" = 1 ] && command -v docker >/dev/null 2>&1; then
     if docker compose version >/dev/null 2>&1; then
-    TEI_CRON="@reboot sleep 30 && docker compose -f $WS/docker-compose.tei.yml up -d >> /tmp/tei-startup.log 2>&1"
+    # Carry the auto-sized values INTO the reboot line. Without them the
+    # post-reboot container silently falls back to the small-box defaults in
+    # the compose file, so a tuned host would quietly lose its sizing on the
+    # next boot -- the hardest kind of regression to notice.
+    TEI_CRON="@reboot sleep 30 && TEI_RAYON_THREADS=${TEI_RAYON_THREADS:-2} TEI_CPUS=${TEI_CPUS:-2.5} TEI_MEM_LIMIT=${TEI_MEM_LIMIT:-2048m} docker compose -f $WS/docker-compose.tei.yml up -d >> /tmp/tei-startup.log 2>&1"
   else
     TEI_CRON="@reboot sleep 30 && docker start tei-embed >> /tmp/tei-startup.log 2>&1"
   fi

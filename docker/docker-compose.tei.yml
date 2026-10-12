@@ -59,11 +59,24 @@ services:
     # on a bigger box; do not delete them.
     #
     # TUNING WITHOUT FORKING THIS FILE: every value below is ${VAR:-default}.
-    # Put overrides in docker/.env (gitignored) and `docker compose up -d
-    # --force-recreate`. The defaults are what a small box should ship with, so
-    # an unset .env reproduces the old pinned numbers exactly. This replaces the
+    # The defaults are what a small box should ship with, so an unset
+    # environment reproduces the old pinned numbers exactly. This replaces the
     # generated docker-compose.tei.override.yml that used to be committed by
     # mistake -- a per-box number does not belong in a repo other people install.
+    #
+    # install.sh AUTO-SIZES these from nproc when it copies this file to the
+    # workspace, so a normal install needs no manual tuning at all. To override
+    # by hand, pass the value on the command line:
+    #     TEI_RAYON_THREADS=6 TEI_CPUS=7 docker compose -f <file> up -d --force-recreate
+    #
+    # DO NOT put these in a .env file next to the compose file. Compose reads
+    # .env from the PROJECT DIRECTORY (the dir holding the -f file, not your
+    # cwd), and in the installed layout that directory is the agent workspace,
+    # whose .env holds live credentials (GH_PAT, bot tokens, gateway token).
+    # Verified 2026-10-12: a probe compose in that dir resolved a var straight
+    # out of that secrets file. Nothing leaks into the container -- only vars
+    # this file names are substituted -- but tuning numbers do not belong in a
+    # credential file, and agents are routinely blocked from writing one.
     cpus: ${TEI_CPUS:-2.5}
     # e5-small sits near 1GiB steady-state; 2048m is headroom for the deeper
     # queue above. Too low + deep queue = OOM-kill mid-embed. Raising
