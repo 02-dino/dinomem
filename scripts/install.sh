@@ -1113,11 +1113,7 @@ if [ "$DO_DOCKER" = 1 ]; then
     warn "Use --no-docker to skip TEI, or free port 8080 and re-run."
   else
     _TEI_OWNED=1
-    # Detect Compose plugin; fallback to docker run
-    if docker compose version >/dev/null 2>&1; then
-      run "copy docker-compose.tei.yml -> $WS/" cp "$SKILL_DIR/docker/docker-compose.tei.yml" "$WS/docker-compose.tei.yml"
-      [ "$DRY_RUN" = 1 ] || ok "docker-compose.tei.yml copied"
-      # AUTO-SIZE TEI to the host instead of shipping one hardcoded number.
+    # AUTO-SIZE TEI to the host instead of shipping one hardcoded number.
       # RAYON_NUM_THREADS is the DRAIN rate (how many embeds are computed at
       # once); --max-concurrent-requests is only the QUEUE DEPTH (how many may
       # wait). Too few threads = the queue fills and callers get `no permits
@@ -1167,9 +1163,13 @@ if [ "$DO_DOCKER" = 1 ]; then
         if [ "$TEI_RAYON_THREADS" -gt "$c" ]; then
           warn "TEI_RAYON_THREADS=$TEI_RAYON_THREADS exceeds ${c} host CPU — threads will contend; consider <= $(( c / 2 ))"
         fi
-      }
-      _tei_autosize
-      ok "TEI sized for ${CPU_COUNT:-?} CPU: threads=$TEI_RAYON_THREADS cpus=$TEI_CPUS mem=$TEI_MEM_LIMIT"
+    }
+    _tei_autosize
+    ok "TEI sized for ${CPU_COUNT:-?} CPU: threads=$TEI_RAYON_THREADS cpus=$TEI_CPUS mem=$TEI_MEM_LIMIT"
+    # Detect Compose plugin; fallback to docker run
+    if docker compose version >/dev/null 2>&1; then
+      run "copy docker-compose.tei.yml -> $WS/" cp "$SKILL_DIR/docker/docker-compose.tei.yml" "$WS/docker-compose.tei.yml"
+      [ "$DRY_RUN" = 1 ] || ok "docker-compose.tei.yml copied"
       if [ "$DRY_RUN" != 1 ] && docker compose -f "$WS/docker-compose.tei.yml" ps 2>/dev/null | grep -q "running"; then
         skip "TEI container already running"
       else
@@ -1181,10 +1181,17 @@ if [ "$DO_DOCKER" = 1 ]; then
       if [ "$DRY_RUN" != 1 ] && docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^tei-embed$'; then
         skip "TEI container already running (tei-embed)"
       else
+        # Same ceilings as the compose path. Without these the fallback ran
+        # COMPLETELY UNBOUNDED -- no thread cap, no --cpus, no --memory -- which
+        # is the exact condition that once let TEI eat ~400% CPU and starve the
+        # gateway. A box with no compose plugin is the least able to absorb that.
         run "docker run tei-embed (TEI embed server on :8080)" docker run -d --name tei-embed --restart unless-stopped \
           -p 127.0.0.1:8080:80 \
+          -e "RAYON_NUM_THREADS=$TEI_RAYON_THREADS" \
+          --cpus "$TEI_CPUS" --memory "$TEI_MEM_LIMIT" \
           ghcr.io/huggingface/text-embeddings-inference:cpu-1.6 \
-          --model-id intfloat/multilingual-e5-small --auto-truncate
+          --model-id intfloat/multilingual-e5-small --auto-truncate \
+          --max-concurrent-requests "${TEI_MAX_CONCURRENT:-16}"
         [ "$DRY_RUN" = 1 ] || ok "TEI container started on port 8080 (docker run)"
       fi
     fi
@@ -2264,6 +2271,7 @@ PYEOF
     # next boot -- the hardest kind of regression to notice.
     TEI_CRON="@reboot sleep 30 && TEI_RAYON_THREADS=${TEI_RAYON_THREADS:-2} TEI_CPUS=${TEI_CPUS:-2.5} TEI_MEM_LIMIT=${TEI_MEM_LIMIT:-2048m} docker compose -f $WS/docker-compose.tei.yml up -d >> /tmp/tei-startup.log 2>&1"
   else
+    # docker start reuses the sizing baked in at create time, so no env needed.
     TEI_CRON="@reboot sleep 30 && docker start tei-embed >> /tmp/tei-startup.log 2>&1"
   fi
   TEI_CRON="$TEI_CRON" # assigned above
