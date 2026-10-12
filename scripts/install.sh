@@ -1225,7 +1225,16 @@ upsert_cron() {
   # and not already tagged. A user's hand-written `cd $WS && python3
   # procedures/<script>` has NEITHER wrapper nor DINOMEM_ env, so it is NOT adopted
   # and NOT clobbered. This is the false-delete guard.
-  if [ -n "${WS:-}" ]; then
+  # DRY_RUN guard: phase 1 ends in `| crontab -`, i.e. it WRITES. Phase 2 checks
+  # DRY_RUN before every write, but phase 1 never did, so --dry-run silently
+  # mutated the live crontab. Measured 2026-10-12: a --repair-cron --dry-run for
+  # agent kttal changed the crontab md5 (314b19739fbf -> 54e8cdbb8423) by
+  # stamping a tag onto a line, while the run printed "Preview only — nothing
+  # was written". A dry run that writes is worse than no dry run: it is the one
+  # command an operator trusts to be safe before touching a 827-line crontab.
+  local _p1 _b1 _a1
+  if [ -n "${WS:-}" ] && [ "${DRY_RUN:-0}" != 1 ]; then
+    _p1=$(mktemp "${TMPDIR:-/tmp}/dinomem-cron.XXXXXX")
     crontab -l 2>/dev/null | awk -v ws="$WS" -v kw="$keyword" -v tag="$tag" -v aid="$aid" '
       # OWNERSHIP, not mere substring presence. A cron line belongs to THIS agent
       # only if it carries an explicit marker naming this workspace/agent:
@@ -1294,23 +1303,67 @@ upsert_cron() {
         # noisy, deleting another agent'"'"'s job is not recoverable.
         if (owned(line) && dino_sig && index(line, kw)>0) { print line " " tag }
         else { print line }
-      }' | crontab -
+      }' > "$_p1" || true
+    # NEVER pipe straight into `crontab -`. Under `set -euo pipefail` a producer
+    # that exits non-zero aborts the group BEFORE it emits anything, and the
+    # empty stream still reaches `crontab -`, which cheerfully installs an EMPTY
+    # crontab. Reproduced 2026-10-12 in a sandbox: a crontab whose every line was
+    # dinomem-tagged went 1 line -> 0 lines, exit 1, silently wiped. That is the
+    # fresh/single-agent box shape, i.e. a brand-new install of this tool.
+    #
+    # Phase 1 only STAMPS a tag onto lines already present, so its line count is
+    # an exact invariant. Anything else means the filter misfired -> refuse.
+    _b1=$(crontab -l 2>/dev/null | wc -l || echo 0)
+    _a1=$(wc -l < "$_p1" 2>/dev/null || echo 0)
+    if [ "$_a1" -eq "$_b1" ] && [ "$_a1" -gt 0 ]; then
+      crontab "$_p1"
+    elif [ "$_b1" -gt 0 ]; then
+      warn "cron adoption skipped for $keyword ($aid): line count would change ($_b1 -> $_a1)"
+    fi
+    rm -f "$_p1"
   fi
   # Phase 2 MATCH BY TAG: dedup/replace keys on the tag only, so untagged user
   # jobs calling the same script are never touched.
-  local scope existing
-  scope="${tag}\$"
+  # SCOPE must match the tag wherever it sits, not only at end-of-line. Other
+  # one-off migrations append their own provenance markers AFTER our tag:
+  #   ... # dinomem-managed:auto_session_reset.py:kttal # stagger-session-ingest-v1 # dedupe-auto-session-reset-v1
+  # With the old anchored "${tag}$" those lines were INVISIBLE to phase 2, so
+  # the installer concluded the job was missing and REGISTERED a second copy.
+  # Measured 2026-10-12 against this box's crontab: 11 of 11 agents had an
+  # invisible auto_session_reset line, and a --repair-cron dry run for kttal
+  # duly planned "register" instead of "skip/update" -- i.e. 11 duplicate
+  # every-15-minute jobs, one per agent, on the next repair run.
+  #
+  # The boundary ($|whitespace) is still required so :kttal cannot match a
+  # hypothetical :kttal2 agent. Regex metacharacters in the tag (the "." in
+  # script names, "--path"/"--rollup" keywords) are escaped rather than left
+  # to chance.
+  local scope existing suffix want tag_re
+  tag_re=$(printf '%s' "$tag" | sed 's/[][\.^$*+?(){}|\\]/\\&/g')
+  scope="${tag_re}(\$|[[:space:]])"
   existing=$(crontab -l 2>/dev/null | grep -E "$scope" || true)
-  if [ "$existing" = "$managed_line" ]; then
+  # Preserve whatever another tool appended after our tag. Dropping those
+  # markers would make the owning migration think it never ran and re-apply.
+  suffix=""
+  case "$existing" in *"$tag"*) suffix="${existing##*"$tag"}" ;; esac
+  want="${managed_line}${suffix}"
+  if [ "$existing" = "$want" ]; then
     skip "$label (exists, up to date)"
   elif [ -n "$existing" ]; then
     if [ "$DRY_RUN" = 1 ]; then plan "update cron: $label"; return; fi
-    # Content differs — replace (only THIS agent's tagged line)
-    { crontab -l 2>/dev/null | grep -vE "$scope"; echo "# $comment"; echo "$managed_line"; } | crontab -
+    # Content differs — replace (only THIS agent's tagged line), carrying any
+    # foreign provenance markers across so they are not silently lost.
+    # `|| true`: grep -vE exits 1 when it filters EVERY line, which under
+    # pipefail would abort the group and feed `crontab -` an empty stream.
+    local _rest
+    _rest=$(crontab -l 2>/dev/null | grep -vE "$scope" || true)
+    { [ -n "$_rest" ] && printf '%s\n' "$_rest"; echo "# $comment"; echo "$want"; } | crontab -
     ok "$label (updated)"
   else
     if [ "$DRY_RUN" = 1 ]; then plan "register cron: $label"; return; fi
-    { crontab -l 2>/dev/null; echo "# $comment"; echo "$managed_line"; } | crontab -
+    local _cur
+    _cur=$(crontab -l 2>/dev/null || true)
+    { [ -n "$_cur" ] && printf '%s\n' "$_cur"; echo "# $comment"; echo "$want"; } | crontab -
     ok "$label (registered)"
   fi
 }
