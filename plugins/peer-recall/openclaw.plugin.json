@@ -1,0 +1,50 @@
+{
+  "id": "peer-recall",
+  "name": "peer recall",
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "tools": [
+      "peer_recall"
+    ]
+  },
+  "description": "Scoped peer-memory READ tool for non-owner callers. Registers the `peer_recall` native tool, which returns ONLY the current conversation partner's own stored record (memory/peers/<platform>_<id>.md + their own peers_graph edges). The peer identity is derived SERVER-SIDE from ctx.sessionKey and is deliberately absent from the parameter schema, so neither the model nor the user can name a target peer — prompt injection cannot widen the scope because no field accepts it. Exists because dinotrust-enforce correctly denies non-owners `memory_search` (which reaches the whole corpus: owner DMs, _pin_ infra notes, other people's reps), leaving web-chat members with a working WRITE path but no READ path. Registered as a FACTORY, not a static tool object, because only the factory receives the live per-session ctx. Fails CLOSED (returns empty on any parse/read/scope error) — the inverse of dinomem-recall-gate's fail-open, because leaking the wrong person's record is worse than returning nothing. Group/non-direct lanes return empty by construction: a group chat must never dereference to one member's private rep.",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "workspaceDir": {
+        "type": "string",
+        "default": "",
+        "description": "Workspace root holding memory/peers. Empty = derive from the runtime-supplied ctx.workspaceDir."
+      },
+      "agentFilter": {
+        "type": "string",
+        "default": "",
+        "description": "Only serve sessionKeys containing this substring (e.g. 'agent:<agentId>'). Empty = all agents. Other agents get no tool at all, not an empty result."
+      },
+      "maxChars": {
+        "type": "number",
+        "default": 4000,
+        "description": "Max rep characters returned. A rep grows unbounded over months of DMs; this caps context cost."
+      },
+      "maxEdges": {
+        "type": "number",
+        "default": 25,
+        "description": "Max peers_graph edges returned for the scoped peer subject."
+      },
+      "allowSections": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "default": [
+          "FACTS",
+          "BEAT",
+          "RELATIONS"
+        ],
+        "description": "Rep sections safe to return to the peer themselves. LEDGER and PROVENANCE are deliberately excluded: they carry operator-side bookkeeping about how the rep was derived (our pipeline), not facts about the person."
+      }
+    }
+  }
+}

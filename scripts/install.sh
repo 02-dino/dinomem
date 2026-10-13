@@ -3555,6 +3555,121 @@ PYEOF
   fi
 fi
 
+# ── Install peer-recall plugin (scoped peer-memory READ tool for non-owners) ──
+# Non-owner callers (web-chat / group members) already have a working dinomem
+# WRITE path: every DM derives a peer rep into memory/peers/<platform>_<id>.md.
+# They have NO read path, because a correctly-configured permission fence denies
+# non-owners `memory_search` -- that tool reaches the WHOLE corpus (owner DMs,
+# _pin_ infra notes, OTHER people's reps). Widening it would fail in the unsafe
+# direction. This plugin instead registers one narrow native tool, `peer_recall`,
+# which can only ever return the CURRENT conversation partner's own record. The
+# peer identity is derived SERVER-SIDE from ctx.sessionKey and is deliberately
+# absent from the parameter schema, so neither the model nor the user can name a
+# target peer -- prompt injection cannot widen the scope because no field accepts
+# it. Fails CLOSED (empty on any parse/read/scope error); non-`:direct:` lanes
+# (group/channel/cron) return empty by construction. Same global-extensions
+# install pattern as the other plugins (a workspace-relative plugin path dangles
+# + crash-loops if the workspace moves).
+hr "Peer-recall plugin"
+PRPLUGIN_SRC="$SKILL_DIR/plugins/peer-recall"
+PRPLUGIN_DST="$OPENCLAW_DIR/extensions/peer-recall"
+if [ ! -d "$PRPLUGIN_SRC" ]; then
+  warn "plugin source $PRPLUGIN_SRC missing — skipping (non-owners keep NO peer-memory read path)"
+else
+  mkdir -p "$PRPLUGIN_DST"
+  cp "$PRPLUGIN_SRC/openclaw.plugin.json" "$PRPLUGIN_SRC/package.json" "$PRPLUGIN_SRC/index.ts" "$PRPLUGIN_DST/"
+  ok "plugin files -> $PRPLUGIN_DST"
+  if [ ! -f "$OPENCLAW_JSON" ]; then
+    warn "openclaw.json not found — plugin copied but NOT wired. Add id 'peer-recall' to plugins.allow + its path to plugins.load.paths, then restart."
+  else
+    DINOMEM_DRY_RUN="$DRY_RUN" DINOMEM_OPENCLAW_JSON="$OPENCLAW_JSON" DINOMEM_PLUGIN_DST="$PRPLUGIN_DST" python3 - <<'PYEOF'
+import json, os
+path = os.environ["DINOMEM_OPENCLAW_JSON"]
+plugin_dst = os.environ["DINOMEM_PLUGIN_DST"]
+PID = "peer-recall"
+TOOL = "peer_recall"
+with open(path) as f:
+    cfg = json.load(f)
+changed = []
+plugins = cfg.setdefault("plugins", {})
+# 1) allowlist
+allow = plugins.get("allow")
+if not isinstance(allow, list):
+    allow = []
+    plugins["allow"] = allow
+if PID not in allow:
+    allow.append(PID)
+    changed.append(f"plugins.allow += {PID}")
+# 1b) bundledDiscovery — REQUIRED companion to plugins.allow on OpenClaw 2026.6.x+.
+if plugins.get("bundledDiscovery") not in ("compat", "allowlist"):
+    plugins["bundledDiscovery"] = "compat"
+    changed.append("plugins.bundledDiscovery -> compat")
+# 2) load.paths (dedupe stale copies of THIS plugin id, then add current dst)
+load = plugins.setdefault("load", {})
+if not isinstance(load, dict):
+    load = {}
+    plugins["load"] = load
+paths = load.get("paths")
+if not isinstance(paths, list):
+    paths = []
+    load["paths"] = paths
+stale_paths = [p for p in paths
+               if isinstance(p, str)
+               and p.rstrip("/").endswith("/" + PID)
+               and p != plugin_dst]
+for sp in stale_paths:
+    paths.remove(sp)
+    changed.append(f"plugins.load.paths -= {sp} (stale)")
+if plugin_dst not in paths:
+    paths.append(plugin_dst)
+    changed.append(f"plugins.load.paths += {plugin_dst}")
+# 3) enable -> plugins.entries.<PID>.enabled. agentFilter left as shipped default
+#    ("" = all agents) so every agent gets a peer read path out of the box.
+entries = plugins.setdefault("entries", {})
+if not isinstance(entries, dict):
+    entries = {}
+    plugins["entries"] = entries
+entry = entries.get(PID)
+if not isinstance(entry, dict):
+    entry = {}
+    entries[PID] = entry
+if entry.get("enabled") is not True:
+    entry["enabled"] = True
+    changed.append(f"plugins.entries.{PID}.enabled -> true")
+# 4) THE SILENT-DROP TRAP (measured: cost 9 restarts to find).
+#    An agent with a NON-EMPTY tools.allow allowlist drops any tool not named in
+#    it -- with NO error, NO log line: the plugin loads, registers fine, and the
+#    tool simply never appears to the model. A plugin wired perfectly at every
+#    step above is still invisible if this list exists and omits the tool name.
+#    Empty/absent list = allow-all, so it is left untouched.
+for scope, holder in (("agents", cfg.get("agents")), ("agent", cfg.get("agent"))):
+    if not isinstance(holder, dict):
+        continue
+    for agent_id, acfg in holder.items():
+        if not isinstance(acfg, dict):
+            continue
+        tools = acfg.get("tools")
+        if not isinstance(tools, dict):
+            continue
+        tallow = tools.get("allow")
+        if isinstance(tallow, list) and tallow and TOOL not in tallow:
+            tallow.append(TOOL)
+            changed.append(f"{scope}.{agent_id}.tools.allow += {TOOL} (was allowlisted-out)")
+if changed and os.environ.get("DINOMEM_DRY_RUN") == "1":
+    for c in changed:
+        print(f"  \033[36m[plan]\033[0m wire openclaw.json: {c}")
+elif not changed:
+    print("  \033[33m[skip]\033[0m peer-recall already wired in openclaw.json")
+else:
+    with open(path, "w") as f:
+        json.dump(cfg, f, indent=2)
+    for c in changed:
+        print(f"  \033[32m[ok]\033[0m   wired: {c}")
+    print("  \033[33m[warn]\033[0m Restart OpenClaw to load the plugin: openclaw gateway restart")
+PYEOF
+  fi
+fi
+
 # ── System tuning: reduce swap thrashing ──────────────────────────────────────
 hr "System tuning"
 if [ "$(uname)" = "Linux" ]; then
