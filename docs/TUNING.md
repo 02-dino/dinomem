@@ -6,9 +6,31 @@ Not patched automatically — skipping these hurts cost, performance, response s
 
 ## Compaction tuning
 
-**`reserveTokens`** — set to `contextWindow - 200000`. If your model is `200000` or under, set it to `20000` instead. Keeps active context below 200k, which fixes three things: context bloat, response speed (inference slows non-linearly above 200k), and memory quality (leaner sessions = better compaction summaries).
+**`reserveTokens`** — **leave it at the default `20000` unless you have measured a reason not to.**
 
-**`keepRecentTokens`** — set to 10% of `min(contextWindow, 200000)`. Minimum tokens preserved from the most recent window during compaction — protects immediate context continuity.
+> ⚠️ **Earlier versions of this guide said to set `contextWindow - 200000` (e.g. `800000` on a 1M model). Do not do that.** It silently breaks compaction. The reason is that `reserveTokens` is **global and absolute**, but it is applied against **whichever model is currently running — including your `compaction.model`**, which is usually a *different, smaller* model. There is no per-model form of this knob.
+
+What a 1M-sized reserve actually does, measured on both OpenClaw generations:
+
+| OpenClaw | `reserveTokens` | primary (1M window) | compaction model (131k window) |
+| --- | --- | --- | --- |
+| `< 2026.9.3` | `800000` | 200,000 prompt budget ✅ | **8,000** ❌ compaction can never run |
+| `< 2026.9.3` | `20000` (default) | 980,000 | 111,072 ✅ |
+| `>= 2026.9.3` | `800000` | 750,000 (**not** the 200k you asked for) | 98,304 ✅ |
+| `>= 2026.9.3` | `20000` (default) | 980,000 | 111,072 ✅ |
+
+Two separate failure modes, one per generation:
+
+- **Before `2026.9.3`**, an absolute reserve larger than a model's window is clamped to a flat **8,000-token** prompt budget (`MIN_PROMPT_BUDGET_TOKENS`). Any compaction model smaller than your reserve is then permanently stuck: every attempt returns `context_overflow` instead of compacting, and the session keeps growing. Measured live: a session reached ~485k tokens with every provider-side compaction failing on `timeout` / `context_overflow`.
+- **From `2026.9.3` onward**, `resolveEffectiveCompactionReserveTokens()` caps the reserve at **25% of the resolved model window** (`MAX_COMPACTION_RESERVE_RATIO = 0.25`), so the 8k collapse is gone — but your big number is silently cut down and the "keep active context at 200k" intent **is not achieved anyway**. Asking for `800000` on a 1M model yields a 250k reserve, not 800k.
+
+So the old formula is harmful on old versions and inert on new ones. The default is correct on both.
+
+**If you specifically want a smaller active context** (for speed or summary quality), do **not** express it as a huge reserve. On `>= 2026.9.3` the ceiling is 25% of the window no matter what you type; pick your number *under* that cap and verify it against your **compaction model's** window, not your primary's.
+
+**`keepRecentTokens`** — set to 10% of `min(contextWindow, 200000)` (so `20000` for most setups). Minimum tokens preserved from the most recent window during compaction — protects immediate context continuity.
+
+**`reserveTokensFloor`** — keep this equal to `reserveTokens` (default `20000`). It is a *floor*, so leaving it high while lowering `reserveTokens` silently re-raises the reserve and reintroduces the collapse above.
 
 **`model`** — compaction (summarizing session context) is a **no-reasoning bulk task**, the same tier as dinomem's `extract_memory` / `memory_review`. Set `agents.defaults.compaction.model` to your cheap, high-context model — this is now **the single anchor**: dinomem's [`DINOMEM_CHEAP_MODEL`](#model-selection) resolution auto-follows whatever you set here, so one change here routes every non-reasoning dinomem script too, no separate export needed. If unset, OpenClaw uses your default model for compaction too (works, just costs more). dinomem does not set this for you — you (or your install agent) pick it, since the right model depends entirely on what you have.
 
