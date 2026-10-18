@@ -3030,14 +3030,17 @@ DINOMEM_BODY=$(cat <<'DINOMEM_AGENTS_BODY'
     skip: do not call memory_search every turn
 
   skills:
-    memory_pin: when user says remember/pin/note this, you commit to deferred work, or a todo/reminder/time-bound/project task arises → read skill "memory-pinning" for _pin_/_note_/project format + done_when rules
+    self_observed_insight: fires when YOU noticed it, not when the user asked — the asymmetry this closes is that every other trigger below waits on "user implies", so an agent-noticed improvement used to have exactly one open door (memory) and took it by default. BEFORE writing anything durable, answer one question: does this RECORD something (fact|decision|outcome|todo|person detail) or GOVERN future turns (rule|SOP|routing|trigger|tool spec|persona)? RECORD → memory. GOVERN → run `tools/route.py classify` and place it on the surface it names (cron|hook|skill|root), NOT a _pin_. BOTH → SPLIT, rule to its surface + fact to memory, never one file for both. WHY this is not a style preference: memory is retrieval-gated, so a RULE parked in a _pin_ is never loaded and the behaviour silently never happens — facts survive unannounced, rules do not.
+    memory_pin: a RECORD to store — user says remember/pin/note this, you commit to deferred work, or a todo/reminder/time-bound/project task arises → read skill "memory-pinning" for _pin_/_note_/project format + done_when rules. NOT the home for a rule/SOP/behaviour change (route those via self_observed_insight above).
     self_config: when user implies changing behavior/rules/workflow/persona/tools/preferences → read skill "self-config"
     cron_config: when user implies scheduling/reminding/recurring checks/automation timing ("every day", "remind me", "check X periodically") → read skill "cron-config"
     hook_config: when user implies reacting to a gateway event ("every time X happens", on session-start/inbound-message/command/compaction/lifecycle) → read skill "hook-config"
     skill_config: when user wants the agent to learn a repeatable method/procedure needed sometimes (not every turn) → read skill "skill-config"
     build_quality: BEFORE writing >a few lines of new self-mod code (a cron gate, hook handler, skill body, tool, lib fn) → read skill "build-quality" (reuse→DRY→minimal→doc-why→test; run route.py dup + route.py verify)
     backup_restore: when user asks to undo/restore a file or memory change, or what backups exist → read skill "backup-restore"
-    safe_file_ops: BEFORE any file edit, large write (>~6KB), or multi-step exec → read skill "safe-file-ops" (read-first/exact-oldText/verify-after, atomic-batch rollback trap, incremental large-write, exec single-command discipline). Pre-edit hygiene half; edit-verify-loop is the post-edit syntax-gate half.
+    safe_file_ops: BEFORE any file edit, large write (>~6KB), or multi-step exec → read skill "safe-file-ops" (read-first/exact-oldText/verify-after, atomic-batch rollback trap, incremental large-write, exec single-command discipline). Pre-edit hygiene half; edit_verify_loop below is the post-edit syntax-gate half.
+    edit_verify_loop: AFTER editing any CODE file (py/sh/js/ts/json or a shebang script) → read skill "edit-verify-loop" (run scripts/verify.sh on it, loop edit→verify→fix IN THE SAME TURN; never end a turn on an unverified code edit waiting for a cron or the user to catch the break).
+    openclaw_config_edit: BEFORE any openclaw.json / gateway-config change (tools, plugins, agent fields, channels, nonOwner allowlists) → read skill "openclaw-config-edit" (validate schema before restart; config patch/set, never a raw edit). Applies to THIS session too, not only subagents — subagent_build_discipline covers delegated work only.
 
   durability_tripwire:
     fires_on: own_draft pre_send

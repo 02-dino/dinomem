@@ -1,7 +1,7 @@
 {
   "id": "dinomem-recall-gate",
   "name": "dinomem recall gate",
-  "description": "Mid-session recall enforcement via before_tool_call (LANGUAGE-AGNOSTIC). TIER A: blocks the first COLD fs/exec reach on a turn until a recall tool has run. TIER B (hot-zone write re-arm): a write/edit/apply_patch whose target path is a MECHANISM path (hotZoneGlobs, e.g. scripts/tools/config) requires a FRESH recall THIS turn even if a general recall latched earlier \u2014 closes the 'recalled once about X, then built mechanism Y blind' hole. No user-message parsing \u2014 fires on the danger (cold fs/exec, or a hot-zone write path) not the message, so it works regardless of language. SCOPE BOUNDARY (by design): Tier B gates the STRUCTURED write tools where the path is a clean param; it does NOT gate freeform exec-shell writes (echo>, sed -i, tee, heredoc) because statically parsing arbitrary shell for hot-zone targets is the exact fragility this gate abandoned. Do mechanism edits via write/edit, not exec-redirects. Complements the bootstrap-only dinomem-open-notes hook. recallTools/fsTools are config-driven; BASE dinomem ships the native retrieval set (memory_search/memory_get). If you also install neuron retrieval tools (session_search/graph_search/docs_search/data_query), add them to recallTools. writeTools/hotZoneGlobs/hotZoneExclude are tool-agnostic and shared across tiers.",
+  "description": "Mid-session recall enforcement via before_tool_call (LANGUAGE-AGNOSTIC). TIER A: blocks the first COLD fs/exec reach on a turn until a recall tool has run. TIER B (hot-zone write re-arm): a write/edit/apply_patch whose target path is a MECHANISM path (hotZoneGlobs, e.g. scripts/tools/config) requires a FRESH recall THIS turn even if a general recall latched earlier — closes the 'recalled once about X, then built mechanism Y blind' hole. No user-message parsing — fires on the danger (cold fs/exec, or a hot-zone write path) not the message, so it works regardless of language. SCOPE BOUNDARY (by design): Tier B gates the STRUCTURED write tools where the path is a clean param; it does NOT gate freeform exec-shell writes (echo>, sed -i, tee, heredoc) because statically parsing arbitrary shell for hot-zone targets is the exact fragility this gate abandoned. Do mechanism edits via write/edit, not exec-redirects. Complements the bootstrap-only dinomem-open-notes hook. recallTools/fsTools are config-driven; BASE dinomem ships the native retrieval set (memory_search/memory_get). If you also install neuron retrieval tools (session_search/graph_search/docs_search/data_query), add them to recallTools. writeTools/hotZoneGlobs/hotZoneExclude are tool-agnostic and shared across tiers.",
   "configSchema": {
     "type": "object",
     "properties": {
@@ -101,6 +101,27 @@
         "type": "string",
         "default": "memory_search",
         "description": "The raw retrieval tool whose direct reflex Tier C redirects to routeTool. NOTE: when routeEnforce is on, gatedTool must NOT be in recallTools (else the recall-latch fires before Tier C sees it). Neuron config drops memory_search from recallTools for this reason."
+      },
+      "surfaceNudge": {
+        "type": "boolean",
+        "default": true,
+        "description": "TIER D master switch (durable-surface nudge). ON by default and base-safe: unlike Tier C it needs no neuron tool -- route.py and memory/ both ship with base dinomem. WHY IT EXISTS: memory was winning by DEFAULT, not by merit. Every other surface trigger in AGENTS.md reads 'when USER implies...', while memory_pin also self-fires ('...or a todo arises'), so an AGENT-noticed improvement had exactly ONE open door. A RULE parked in a _pin_ is retrieval-gated => never loaded => the behaviour silently never happens. On a writeTools call targeting a surfacePaths file with no routing decision yet this turn, it asks RECORD-vs-GOVERN ONCE. SOFTEST TIER BY DESIGN: fires at most once per turn and NEVER escalates to a hard block (unlike Tier C) -- re-issue and a legitimate pin goes straight through. A false block on a real pin costs one re-issue; a misrouted rule costs a silently dead behaviour."
+      },
+      "surfacePaths": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "default": [
+          "memory/_pin_",
+          "memory/_note_"
+        ],
+        "description": "Path substrings that mark a DURABLE MEMORY write Tier D should question. NOTE these intentionally overlap hotZoneExclude's 'memory/': Tier B must keep excluding memory/ for loop-safety (a gate firing on its own notes self-perpetuates -- the 2026-07-24 cron-gate-loop lesson), so Tier D asks its weaker, separate question instead of widening Tier B."
+      },
+      "routeMarker": {
+        "type": "string",
+        "default": "route.py",
+        "description": "Substring that marks 'a routing decision ran this turn'. route.py is a CLI with no dedicated tool name, so the signal is an exec whose command mentions it. Latching this BEFORE the write check means the intended flow (classify -> then write) is never nudged."
       }
     }
   }

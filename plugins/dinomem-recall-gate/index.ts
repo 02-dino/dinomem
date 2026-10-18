@@ -71,6 +71,21 @@ type Cfg = {
   routeEnforce: boolean;     // TIER C master switch (default false = base-safe, neuron turns on)
   routeTool: string;         // the fuzzy "door" to route to (hybrid_recall)
   gatedTool: string;         // the raw tool whose reflex we redirect (memory_search)
+  // ── TIER D: durable-surface nudge on memory writes (2026-10-18) ──
+  // WHY: memory was winning by DEFAULT, not by merit. Every other surface trigger
+  // in AGENTS.md reads "when USER implies...", while memory_pin also self-fires
+  // ("...or a todo arises"), so an AGENT-noticed improvement had exactly ONE open
+  // door and took it. A RULE parked in a _pin_ is retrieval-gated => never loaded
+  // => the behaviour silently never happens. This tier asks the RECORD-vs-GOVERN
+  // question at the moment of the write, which is the only moment it is cheap.
+  // DELIBERATELY THE SOFTEST TIER (owner call, 2026-10-18: "jgn maksa banget gt,
+  // kalo memang itu baiknya di _pin memory ya udah kesitu aj"): fires at most ONCE
+  // per turn and NEVER escalates to a hard block, unlike Tier C. A legitimate pin
+  // costs one re-issue; a misrouted rule costs a silently-dead behaviour. The
+  // asymmetry is why this is a nudge and not a gate.
+  surfaceNudge: boolean;     // TIER D master switch
+  surfacePaths: string[];    // memory-write paths that should answer RECORD vs GOVERN first
+  routeMarker: string;       // substring marking "a routing decision ran this turn"
 };
 
 function cfg(raw: any): Cfg {
@@ -103,6 +118,13 @@ function cfg(raw: any): Cfg {
     routeEnforce: c.routeEnforce === true,
     routeTool: typeof c.routeTool === "string" ? c.routeTool : "hybrid_recall",
     gatedTool: typeof c.gatedTool === "string" ? c.gatedTool : "memory_search",
+    // ON by default for BOTH tiers: unlike Tier C (which needs neuron's
+    // hybrid_recall and so must stay off for base), route.py + memory/ ship with
+    // base dinomem, so this is safe everywhere. Soft by construction.
+    surfaceNudge: c.surfaceNudge !== false,
+    surfacePaths: Array.isArray(c.surfacePaths) ? c.surfacePaths
+      : ["memory/_pin_", "memory/_note_"],
+    routeMarker: typeof c.routeMarker === "string" ? c.routeMarker : "route.py",
   };
 }
 
@@ -152,6 +174,8 @@ type TurnState = {
   firedTurn: number;    // turnIndex of last cold-fs fire (-Infinity if never) -> cooldown
   writeFiredTurn: number; // turnIndex of last hot-zone-write fire -> independent cooldown
   routeFiredTurn: number;  // turnIndex of last TIER-C route soft-nudge -> soft-then-hard within turn
+  routeDecisionDone: boolean; // TIER D: a routing decision (route.py) ran this turn
+  surfaceFiredTurn: number;   // turnIndex of last TIER-D nudge -> once per turn, never escalates
 };
 const _state = new Map<string, TurnState>();
 
@@ -200,6 +224,8 @@ export default definePluginEntry({
             firedTurn: st?.firedTurn ?? -Infinity,
             writeFiredTurn: st?.writeFiredTurn ?? -Infinity,
             routeFiredTurn: st?.routeFiredTurn ?? -Infinity,
+            routeDecisionDone: false,
+            surfaceFiredTurn: st?.surfaceFiredTurn ?? -Infinity,
           };
           _state.set(sessionKey, st);
         }
@@ -208,6 +234,44 @@ export default definePluginEntry({
         if (c.recallTools.includes(toolName)) {
           st.recallDone = true;
           return undefined;
+        }
+
+        // ── TIER D latch: did a routing decision run this turn? ──
+        // route.py is a CLI (no dedicated tool name), so the signal is an exec
+        // whose command mentions it. Latch BEFORE the write check below so the
+        // normal flow -- classify, then write -- is never nudged.
+        if (c.surfaceNudge && !st.routeDecisionDone) {
+          const a: any = event?.toolArgs ?? event?.args ?? event?.input ??
+                         event?.params ?? event?.arguments;
+          const cmd = String(a?.command ?? a?.cmd ?? a?.script ?? "");
+          if (cmd.includes(c.routeMarker)) st.routeDecisionDone = true;
+        }
+
+        // ── TIER D: durable-surface nudge on a memory write (SOFT, once/turn) ──
+        // Deliberately NOT folded into Tier B: Tier B excludes memory/ for
+        // loop-safety (a gate that fires on its own notes self-perpetuates), and
+        // that exclusion must stay. This is a separate, weaker question asked only
+        // of _pin_/_note_ writes.
+        if (c.surfaceNudge && c.writeTools.includes(toolName) && !st.routeDecisionDone) {
+          const paths = extractTargetPaths(event);
+          const isSurfaceWrite = paths.some((p) =>
+            c.surfacePaths.some((s) => String(p || "").includes(s)));
+          const firedThisTurn = st.surfaceFiredTurn === st.turnIndex;
+          if (isSurfaceWrite && !firedThisTurn && c.enforce) {
+            st.surfaceFiredTurn = st.turnIndex;
+            return {
+              block: true,
+              blockReason:
+                `dinomem-recall-gate (surface): you're writing durable memory ` +
+                `(${paths[0] ?? "memory file"}) without a routing decision this turn. One ` +
+                `question first -- does this RECORD something (fact/decision/outcome/todo) ` +
+                `or GOVERN future turns (rule/SOP/routing/trigger/persona)? RECORD -> memory ` +
+                `is correct, just RE-ISSUE and it goes through (this won't fire again this ` +
+                `turn). GOVERN -> run 'tools/route.py classify' and place it on the surface ` +
+                `it names (cron|hook|skill|root) -- a rule in a _pin_ is retrieval-gated, so ` +
+                `it never loads and the behaviour silently never happens. BOTH -> split them.`,
+            };
+          }
         }
 
         // ── TIER C: fuzzy-recall route enforcement (NEURON-only, OFF by default) ──

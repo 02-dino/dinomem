@@ -152,6 +152,49 @@ if [ "$LAYER" = "base+neuron" ]; then
   done
 fi
 
+# ── 6b. skill TRIGGERS in AGENTS.md (orphan-skill check) ──────────────────────
+# WHY (2026-10-18): shipping a skill is only half an install — a skill with no
+# `skills:` trigger line in the managed AGENTS.md block is UNREACHABLE. It sits on
+# disk looking installed and is never read, because nothing tells the agent when to
+# open it. Measured: edit-verify-loop and openclaw-config-edit were both shipped and
+# installed but orphaned for months; openclaw-config-edit was reachable ONLY from
+# subagent_build_discipline, so a MAIN session editing openclaw.json got no trigger
+# at all. This check exists so skill #11 cannot silently repeat that.
+#
+# TRIGGER CONVENTION (what counts): the managed block writes triggers as
+#   <key>: <when...> → read skill "<skill-dir-name>"
+# so the QUOTED name is the discriminator. An unquoted prose mention (e.g.
+# "...edit-verify-loop is the post-edit syntax-gate half") is a cross-reference,
+# NOT a trigger — which is exactly the orphan state we are hunting. Matching on the
+# quoted form is what makes "mentioned" vs "triggered" distinguishable.
+#
+# SOURCE OF TRUTH (two run modes): from a CHECKOUT, enumerate the repo's own
+# skills/ dir so a newly added skill is covered with zero edits here. From an
+# INSTALLED workspace, scripts/ and skills/ both live under $WS and skills/ is mixed
+# dinomem + the agent's own custom skills — enumerating there would flag every
+# custom skill as an orphan. So that mode falls back to the shipped list, same
+# hardcoded-roster convention this file already uses for crons/procedures.
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd || echo '')"
+skills_shipped="backup-restore build-quality cron-config edit-verify-loop hook-config memory-pinning openclaw-config-edit safe-file-ops self-config skill-config"
+if [ -n "$SELF_DIR" ] && [ "$SELF_DIR" != "$WS" ] && [ -f "$SELF_DIR/VERSION" ] && [ -d "$SELF_DIR/skills" ]; then
+  skills_shipped="$(cd "$SELF_DIR/skills" && ls -d */ 2>/dev/null | tr -d '/' | tr '\n' ' ')"
+fi
+if [ -f "$WS/AGENTS.md" ]; then
+  _orphans=0
+  for sk in $skills_shipped; do
+    # Only judge skills actually INSTALLED here — an opt-out/partial install must
+    # not be reported as an orphaned trigger.
+    [ -f "$WS/skills/$sk/SKILL.md" ] || continue
+    if grep -qF "\"$sk\"" "$WS/AGENTS.md" 2>/dev/null; then
+      _pass "skill trigger present: $sk"
+    else
+      _orphans=$((_orphans+1))
+      _warn "skill ORPHANED: $sk is installed but has no 'read skill \"$sk\"' trigger in AGENTS.md — it will never be opened (add a skills: line to the managed block)"
+    fi
+  done
+  [ "$_orphans" -eq 0 ] && _pass "no orphaned skills (every installed dinomem skill has a trigger)"
+fi
+
 # ── 7. openclaw.json validity (a broken config crash-loops the Gateway) ────────
 if command -v openclaw >/dev/null 2>&1; then
   if openclaw config validate >/dev/null 2>&1; then

@@ -380,6 +380,66 @@ def _workspace_dir():
     return cand if os.path.isdir(os.path.join(cand, "tools")) else os.getcwd()
 
 
+def _route_log(event, surface=None, needle=None, ok=None, extra=None):
+    """Append ONE routing event to kb/route_log/YYYY-MM-DD.jsonl. Fail-open: never raises.
+
+    WHY THIS EXISTS (2026-10-18): route.py was deliberately write-free, which also
+    made it UNMEASURABLE -- "the router is rarely used" was a feeling with no data
+    behind it, so no fix to it could ever be proven to work. This is the minimum
+    write that buys observability without turning the arbiter into a leaf writer:
+    it logs the ROUTING EVENT only, never the routed content.
+
+    WHY TWO EVENTS (the funnel): `classify` means the door was OPENED -- the surface
+    is NOT yet decided at that moment, so logging only classify would count
+    intentions, not outcomes. `verify` is where a concrete surface is named and
+    pass/fail is known. Together they answer the only question that matters: of the
+    times routing was considered, how many actually landed somewhere other than
+    memory? A classify with no matching verify is an abandoned route.
+
+    WHY NOT procedures/_retrieval_log.py (the DRY question, answered deliberately):
+    its log_retrieval() schema is retrieval-shaped (tool/query/k/result_uris/
+    top_scores/fallback_used) and a routing decision is not a retrieval -- forcing
+    one into the other would corrupt both datasets. Only the ~8 lines of plumbing
+    (daily file, atomic append, fail-open) are shared, and importing across
+    tools/ -> procedures/ would need a sys.path hack that breaks route.py's
+    zero-dependency property, which is exactly what keeps it working on a fresh
+    install. So: same CONVENTIONS, separate store.
+    """
+    import os
+    from datetime import datetime, timezone
+    try:
+        ws = _workspace_dir()
+        d = os.path.join(ws, "kb", "route_log")
+        os.makedirs(d, exist_ok=True)
+        now = datetime.now(timezone.utc)
+        rec = {
+            "ts": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "event": str(event),
+            "agent": os.path.basename(ws.rstrip("/")),
+        }
+        if surface is not None:
+            rec["surface_decision"] = str(surface)
+        if needle is not None:
+            rec["needle"] = str(needle)[:200]
+        if ok is not None:
+            rec["ok"] = bool(ok)
+        if extra and isinstance(extra, dict):
+            try:
+                json.dumps(extra)
+                rec["extra"] = extra
+            except Exception:
+                pass
+        # POSIX atomic append for a single <4KB line -- no lock needed even with
+        # several agents/crons writing their own workspace logs concurrently.
+        with open(os.path.join(d, now.strftime("%Y-%m-%d") + ".jsonl"), "a",
+                  encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        return True
+    except Exception:
+        # An observability write must NEVER break the arbiter it observes.
+        return False
+
+
 def _verify(surface, needle, target_file=None):
     """Mechanized 'did the routed write actually land' check (test-don't-assume).
     Returns (ok: bool, detail: str). No writes; read-only probes. Fail-closed:
@@ -523,6 +583,7 @@ def main():
         print(json.dumps(SURFACES, indent=2))
     elif args.cmd == "verify":
         ok, detail = _verify(args.surface, args.needle, args.file)
+        _route_log("verify", surface=args.surface, needle=args.needle, ok=ok)
         print(json.dumps({"surface": args.surface, "needle": args.needle, "ok": ok, "detail": detail}, indent=2))
         raise SystemExit(0 if ok else 1)
     elif args.cmd == "dup":
@@ -530,6 +591,10 @@ def main():
         print(json.dumps({"file": args.file, "clean": clean, "detail": detail}, indent=2))
         raise SystemExit(0 if clean else 1)
     else:
+        # classify = the door was OPENED. The surface is NOT decided yet at this
+        # point, so this row is deliberately surface-less; the matching `verify`
+        # row carries the outcome. classify-without-verify = abandoned route.
+        _route_log("classify")
         print(json.dumps(SCHEMA, indent=2))
 
 if __name__ == "__main__":
