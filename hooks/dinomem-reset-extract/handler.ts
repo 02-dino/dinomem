@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, openSync, closeSync } from "node:fs";
-import { join, isAbsolute } from "node:path";
+import { join, isAbsolute, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
 // dinomem-reset-extract: fire-and-forget memory pipeline on manual /new or /reset.
 // Shells to procedures/auto_session_reset.py (adopt + extract + optional ingest).
@@ -10,6 +11,23 @@ type MaybeRecord = Record<string, unknown> | undefined | null;
 
 function asString(v: unknown): string | undefined {
   return typeof v === "string" && v.length > 0 ? v : undefined;
+}
+
+// The compaction event (session/compact:after) carries ONLY compaction metrics --
+// no workspaceDir and no cfg (runtime: runAfterCompactionHooks). Only the manual
+// /new //reset path passes those. So context-based resolution CANNOT work on the
+// compaction trigger, which is exactly the path that must flush memory.
+// This hook always lives at <workspaceDir>/hooks/<hookName>/handler.ts, so its own
+// location identifies its workspace with no runtime cooperation required.
+function selfWorkspaceDir(): string | undefined {
+  try {
+    const url = typeof import.meta !== "undefined" ? import.meta.url : undefined;
+    if (!url) return undefined;
+    const ws = join(dirname(fileURLToPath(url)), "..", "..");
+    return isAbsolute(ws) ? ws : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function resolveWorkspaceDir(context: MaybeRecord): string | undefined {
@@ -28,6 +46,7 @@ function resolveWorkspaceDir(context: MaybeRecord): string | undefined {
   }
 
   return (
+    selfWorkspaceDir() ??
     asString(process.env.DINOMEM_WORKSPACE) ??
     asString(process.env.OPENCLAW_WORKSPACE)
   );
