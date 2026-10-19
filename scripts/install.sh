@@ -63,6 +63,12 @@ if [ -f "$SKILL_DIR/lib/discover_instances.sh" ]; then
   # shellcheck source=/dev/null
   . "$SKILL_DIR/lib/discover_instances.sh"
 fi
+# Hand-edit guard for managed blocks (see lib/block_guard.sh). Same file ships in
+# dinotrust + neuron — one contract, one implementation. Absent lib -> guard off.
+if [ -f "$SKILL_DIR/lib/block_guard.sh" ]; then
+  # shellcheck source=/dev/null
+  . "$SKILL_DIR/lib/block_guard.sh"
+fi
 WS="${OPENCLAW_WORKSPACE:-$HOME/.openclaw/workspace}"
 AGENT_ID=""
 INSTANCE_ID=""   # --instance <agent-id>: scripted single-instance target (skips prompt)
@@ -169,6 +175,18 @@ wire_managed_block() {
     return 0
   fi
   touch "$_file"
+  # P9 (2026-10-19) HAND-EDIT GUARD. wire_managed_block is an UNCONDITIONAL upsert
+  # — that is correct for the installer's OWN stale output, and destructive for a
+  # human's edit inside the same markers. Measured: analyst's dinotrust block was
+  # hand-hardened to DENY a read path the stock preset allows; a blind re-inject
+  # would have reopened it with no diff and no error. Fails OPEN when no checksum
+  # was ever recorded, so legacy installs arm the guard instead of blocking.
+  if declare -f block_guard_check >/dev/null 2>&1 \
+     && ! block_guard_check "$_file" "$_begin" "$_end" "dinomem" "${FORCE:-0}"; then
+    warn "$_label managed block was MODIFIED BY HAND since install — NOT overwriting."
+    warn "  Merge your edits into the new block manually, or re-run with --force."
+    return 0
+  fi
   # P6 ATOMICITY: build the ENTIRE final file in ONE temp, then a SINGLE `mv` into
   # place. A rename on the same filesystem is atomic, so a kill -9 at any point
   # leaves EITHER the untouched original OR the complete new file — never a
@@ -224,6 +242,9 @@ wire_managed_block() {
     mv -f "$_tmp2" "$_file"
     ok "$_label wired"
   fi
+  # Arm/re-arm the hand-edit guard against what we JUST wrote.
+  declare -f block_guard_record >/dev/null 2>&1 \
+    && block_guard_record "$_file" "$_begin" "$_end" "dinomem"
   # P8 (2026-09-05): POST-WRITE MARKER INVARIANT (belt-and-suspenders). The strip
   # awk above already collapses orphan/double-BEGIN cleanly (pinned by the 4-case
   # test), and the single-mv makes each write atomic — but a marker count that is
