@@ -35,6 +35,20 @@
 #                     info/exclude, no .gitignore dropped in your tree.
 #                     (--git-snapshot still accepted; it's the default now.)
 #                     See features/git-autosnapshot/README.md.
+#   --no-worker-guard Disable the orphaned-worker janitor (default: ON).
+#                     When on, a 5-min cron trims `openclaw-infer` workers that
+#                     were reparented to init (ppid=1) and are older than 3m —
+#                     leaked when a CLI timeout killed the parent but not the
+#                     worker. Workers with a LIVING parent are never touched,
+#                     so it cannot truncate a live reply.
+#                     See features/worker-leak-guard/README.md.
+#   --no-rea          Skip the REA reverse-engineering capability (default: ON).
+#                     When on, fetches 02-dino/rea-installer and runs it with
+#                     --harness openclaw: installs the REA CLI + Ghidra and
+#                     wires the skill/trigger into AGENTS.md, so the agent can
+#                     MEASURE an unknown artifact (site, APK, binary, minified
+#                     bundle) instead of guessing. Needs network; every failure
+#                     path is non-fatal. See features/rea/README.md.
 #   --force           Overwrite existing files
 #   --dry-run         Preview every change without writing anything (no files,
 #                     no crons, no Docker, no config patch). Idempotency-aware:
@@ -58,6 +72,8 @@ DO_BACKUP_CRON=1
 DO_SMART_CACHE=1
 DO_GIT_SNAPSHOT=1   # default-ON: ISOLATED git snapshot store (.dinomem-snap.git — never touches your own repo). Opt out with --no-git-snapshot. See features/git-autosnapshot
 DO_GREP_GUARD=1     # default-ON (ANNOUNCED at install): PATH-ahead shim blocking ONLY broad recursive greps over large trees. Opt out with --no-grep-guard. See features/grep-guard
+DO_WORKER_GUARD=1   # default-ON: 5-min cron trimming ORPHANED openclaw-infer workers (ppid=1 only). Opt out with --no-worker-guard. See features/worker-leak-guard
+DO_REA=1            # default-ON (NETWORK): REA reverse-engineering capability via 02-dino/rea-installer --harness openclaw. Opt out with --no-rea. See features/rea
 FORCE=0
 DRY_RUN=0
 # ── Topology-aware auto-restart (owner-requested UX) ─────────────────────────
@@ -107,6 +123,8 @@ while [ $# -gt 0 ]; do
     --no-git-snapshot) DO_GIT_SNAPSHOT=0; shift ;;
     --grep-guard)      DO_GREP_GUARD=1; shift ;;
     --no-grep-guard)   DO_GREP_GUARD=0; shift ;;
+    --no-worker-guard) DO_WORKER_GUARD=0; shift ;;
+    --no-rea)          DO_REA=0; shift ;;
     --restart)         AUTO_RESTART=always; shift ;;
     --no-restart)      AUTO_RESTART=never; shift ;;
     --health-cron)     DO_HEALTH_CRON=1; shift ;;
@@ -2996,6 +3014,58 @@ if [ "$DO_GREP_GUARD" = 1 ]; then
   fi
 else
   skip "grep-guard (disabled via --no-grep-guard)"
+fi
+
+# ── 5d) worker-leak-guard (default-ON; --no-worker-guard to skip) ────────────
+# Safety net for leaked `openclaw-infer` workers. The SOURCE fix lives in
+# procedures/extract_memory.py (process-group kill on CLI timeout); this cron
+# catches the same bug class from any other path, a version skew, or a
+# half-updated install. Only ppid=1 orphans past an age floor are touched, so
+# it can never truncate a live reply. Self-contained under features/.
+if [ "$DO_WORKER_GUARD" = 1 ]; then
+  hr "worker-leak-guard (orphaned inference workers)"
+  WG_INSTALLER="$SKILL_DIR/features/worker-leak-guard/install.sh"
+  if [ ! -f "$WG_INSTALLER" ]; then
+    warn "features/worker-leak-guard/install.sh not found — skipping"
+  elif [ "$DRY_RUN" = 1 ]; then
+    plan "run worker-leak-guard installer (5-min cron, orphans older than 3m)"
+  else
+    WG_ARGS=()
+    [ "$FORCE" = 1 ] && WG_ARGS+=(--force)
+    if bash "$WG_INSTALLER" "${WG_ARGS[@]}"; then
+      ok "worker-leak-guard installed (orphan-only; bash \$OPENCLAW_HOME/scripts/worker-leak-guard.sh --dry-run to preview)"
+    else
+      warn "worker-leak-guard installer returned non-zero — check output above"
+    fi
+  fi
+else
+  skip "worker-leak-guard (disabled via --no-worker-guard)"
+fi
+
+# ── 5e) REA reverse-engineering capability (default-ON; --no-rea to skip) ─────
+# Memory answers "what did we learn about X"; REA is how the agent LOOKS at an
+# unknown X in the first place (site, APK, binary, minified bundle) instead of
+# guessing from its name. Shim delegates to 02-dino/rea-installer with
+# --harness openclaw. NETWORK-dependent and strictly non-fatal: an offline box
+# logs a warning and the dinomem install continues.
+if [ "$DO_REA" = 1 ]; then
+  hr "REA (reverse-engineering capability)"
+  REA_INSTALLER="$SKILL_DIR/features/rea/install.sh"
+  if [ ! -f "$REA_INSTALLER" ]; then
+    warn "features/rea/install.sh not found — skipping"
+  elif [ "$DRY_RUN" = 1 ]; then
+    plan "run REA installer (fetch 02-dino/rea-installer, --harness openclaw)"
+  else
+    REA_ARGS=(--workspace "$WS")
+    [ "$FORCE" = 1 ] && REA_ARGS+=(--force)
+    if bash "$REA_INSTALLER" "${REA_ARGS[@]}"; then
+      ok "REA step finished (run 'rea --help' to verify)"
+    else
+      warn "REA installer returned non-zero — dinomem install continues"
+    fi
+  fi
+else
+  skip "REA (disabled via --no-rea)"
 fi
 
 # ── 6) Wire AGENTS.md ──────────────────────────────────────────────

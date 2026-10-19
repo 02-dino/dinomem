@@ -18,6 +18,7 @@ import os
 import re
 import glob as _glob
 import shutil as _shutil
+import signal
 import subprocess
 import sys
 import fcntl
@@ -86,6 +87,36 @@ def _source_id_from_archive(filename):
     return None
 from pathlib import Path
 from datetime import datetime, timedelta
+
+# --- orphan-free subprocess (added 2026-10-19) ------------------------------
+# WHY: subprocess.run(timeout=N) kills ONLY the direct child. The openclaw CLI
+# spawns its own `openclaw-infer` worker (400-550MB); killing just the CLI left
+# that worker running, reparented to init, with no caller left to read its
+# output. Measured across 11 agents: ~2.3 orphans/min, 22 alive at once (~8GB),
+# box load 81 on 8 cores. Running the child in its OWN process group and
+# killing the GROUP on timeout takes the whole tree down with it.
+def _run_in_process_group(cmd, timeout=None, capture_output=False,
+                          text=False, env=None, **kw):
+    """Drop-in for subprocess.run() that cannot leak grandchildren."""
+    if capture_output:
+        kw.setdefault("stdout", subprocess.PIPE)
+        kw.setdefault("stderr", subprocess.PIPE)
+    proc = subprocess.Popen(cmd, start_new_session=True, text=text,
+                            env=env, **kw)
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            proc.kill()          # fall back to direct-child kill
+        try:
+            proc.communicate(timeout=10)
+        except Exception:
+            pass
+        raise                    # callers already handle TimeoutExpired
+    return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+
 
 # Optional git-backing (support-only, base-owned shared helper). git_history.py
 # ships in this same procedures/ dir. Used here ONLY to print a diff-provenance
@@ -701,7 +732,7 @@ def call_llm(prompt, max_tokens=None, reasoning=False, model=None):
             _env["PATH"] = _node_dir + ":" + _env.get("PATH", "")
         else:
             log("   ⚠️  No Node >=%d.%d found for openclaw CLI; gateway may fail" % _NODE_MIN)
-        result = subprocess.run(
+        result = _run_in_process_group(
             [_oc] + _gw_cmd,
             capture_output=True, text=True, timeout=120, env=_env
         )
