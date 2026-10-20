@@ -102,6 +102,11 @@
         "default": "memory_search",
         "description": "The raw retrieval tool whose direct reflex Tier C redirects to routeTool. NOTE: when routeEnforce is on, gatedTool must NOT be in recallTools (else the recall-latch fires before Tier C sees it). Neuron config drops memory_search from recallTools for this reason."
       },
+      "routeToolPath": {
+        "type": "string",
+        "default": "tools/hybrid_recall.py",
+        "description": "TIER C capability probe. Workspace-relative path that must EXIST for Tier C to arm in a given agent's workspace. routeTool is a neuron CLI living in the agent's OWN workspace, so arming is a per-agent question: without this probe, agentFilter:\"\" would hard-block gatedTool in workspaces that have no routeTool at all, driving recall there to ZERO. Fail-open: unresolvable workspace or missing file => Tier C never blocks. Empty string disables the probe (always armed)."
+      },
       "surfaceNudge": {
         "type": "boolean",
         "default": true,

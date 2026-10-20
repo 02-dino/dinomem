@@ -161,6 +161,12 @@ const cfgC = {
   routeEnforce: true, routeTool: "hybrid_recall", gatedTool: "memory_search",
 };
 const _stateC = new Map();
+// CAPABILITY PROBE (2026-10-20): Tier C tells the model to use routeTool instead of
+// gatedTool -- but routeTool is a neuron CLI in the agent's OWN workspace. Measured
+// on this box: 11 of 19 workspaces have it, 8 do not. Without the probe, opening
+// agentFilter to "" would hard-block the ONLY recall path those 8 have. The engine
+// probes the filesystem; here we inject the answer so the test stays hermetic.
+let _hasRouteTool = true;   // test knob standing in for fs.existsSync(ws/routeToolPath)
 function gateC(sessionKey, toolName, msg){
   const c = cfgC;
   if(c.agentFilter && !sessionKey.includes(c.agentFilter)) return null;
@@ -175,6 +181,7 @@ function gateC(sessionKey, toolName, msg){
   if(c.recallTools.includes(toolName)){st.recallDone=true;return null;}
   if(c.routeEnforce && toolName===c.gatedTool){
     if(st.recallDone) return null;               // door opened this turn -> exempt
+    if(!_hasRouteTool) return null;              // no routeTool in THIS workspace -> fail-open
     if(!c.enforce) return null;
     const firedThisTurn = st.routeFiredTurn===st.turnIndex;
     st.routeFiredTurn = st.turnIndex;
@@ -207,6 +214,30 @@ chk("TierC ON: new turn re-arms soft nudge",
 _stateC.clear();
 chk("TierC ON: memory_get (not gatedTool) untouched",
     gateC(SKC,"memory_get","c4"), null);
+
+// ── CAPABILITY PROBE: the precondition for ever setting agentFilter:"" ──
+// A workspace with NO routeTool must never be blocked -- blocking there removes the
+// only recall path it has. Fail-open is the whole point, so it is tested on BOTH the
+// first reach (where armed cfg nudges) and the repeat (where armed cfg hard-blocks).
+_hasRouteTool = false;
+_stateC.clear();
+chk("NoRouteTool: 1st memory_search -> pass (fail-open, would be SOFT if armed)",
+    gateC(SKC,"memory_search","p1"), null);
+chk("NoRouteTool: repeat memory_search -> STILL pass (would be HARD if armed)",
+    gateC(SKC,"memory_search","p1"), null);
+// ...and the probe must NOT leak into the other tiers: only Tier C consults it.
+// Checked on the Tier A harness (gate), which never reads _hasRouteTool -- a
+// workspace without routeTool still has memory_search, so cold-fs discipline is
+// unaffected by the probe. Regression guard: if someone wires the probe into the
+// shared path, this flips to null and the test fails.
+_state.clear();
+chk("NoRouteTool: cold fs reach still nudged (TierA unaffected)",
+    gate(SKC,"exec","p2"), "BLOCK");
+// Re-arm: a workspace that installs neuron later is covered with no config change.
+_hasRouteTool = true;
+_stateC.clear();
+chk("RouteTool appears later: Tier C arms itself, no config edit",
+    gateC(SKC,"memory_search","p3"), "SOFT");
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);

@@ -41,6 +41,8 @@
 // live test: before_tool_call handler never fired -> gate was dead), matching the
 // 'definePluginEntry is not a function' report. Aligned to the working path.
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
+import fs from "node:fs";
+import path from "node:path";
 
 // ── Config (overridable via plugins.entries["dinomem-recall-gate"].config) ──
 type Cfg = {
@@ -71,6 +73,14 @@ type Cfg = {
   routeEnforce: boolean;     // TIER C master switch (default false = base-safe, neuron turns on)
   routeTool: string;         // the fuzzy "door" to route to (hybrid_recall)
   gatedTool: string;         // the raw tool whose reflex we redirect (memory_search)
+  // CAPABILITY GATE (2026-10-20): routeTool is a NEURON CLI living in the agent's
+  // OWN workspace, so "is Tier C safe here?" is a per-agent question, not a global
+  // one. Without this, widening agentFilter to "" (all agents) would hard-block
+  // gatedTool in workspaces that have no routeTool at all -> recall goes to ZERO
+  // there. Probing for the file makes the gate self-maintaining: a workspace that
+  // installs neuron later is covered automatically, one that never does is never
+  // gated. Empty string disables the probe (always gate).
+  routeToolPath: string;     // workspace-relative path that must EXIST for Tier C to arm
   // ── TIER D: durable-surface nudge on memory writes (2026-10-18) ──
   // WHY: memory was winning by DEFAULT, not by merit. Every other surface trigger
   // in AGENTS.md reads "when USER implies...", while memory_pin also self-fires
@@ -118,6 +128,7 @@ function cfg(raw: any): Cfg {
     routeEnforce: c.routeEnforce === true,
     routeTool: typeof c.routeTool === "string" ? c.routeTool : "hybrid_recall",
     gatedTool: typeof c.gatedTool === "string" ? c.gatedTool : "memory_search",
+    routeToolPath: typeof c.routeToolPath === "string" ? c.routeToolPath : "tools/hybrid_recall.py",
     // ON by default for BOTH tiers: unlike Tier C (which needs neuron's
     // hybrid_recall and so must stay off for base), route.py + memory/ ship with
     // base dinomem, so this is safe everywhere. Soft by construction.
@@ -126,6 +137,54 @@ function cfg(raw: any): Cfg {
       : ["memory/_pin_", "memory/_note_"],
     routeMarker: typeof c.routeMarker === "string" ? c.routeMarker : "route.py",
   };
+}
+
+// ── Tier C capability probe: does THIS agent's workspace actually HAVE routeTool? ──
+// WHY: Tier C hard-blocks gatedTool and tells the model to use routeTool instead.
+// routeTool is a NEURON CLI living in the agent's OWN workspace. Measured 2026-10-20
+// on this box: 11 of 19 workspaces have tools/hybrid_recall.py, 8 do not. So opening
+// agentFilter to "" (all agents) WITHOUT this probe would hard-block the only recall
+// path those 8 have -> recall drops to ZERO there. Probing the file makes the gate
+// self-maintaining: install neuron later and that lane arms itself; never install it
+// and the lane is never gated. Fail-OPEN by construction (can't resolve => not armed).
+//
+// Workspace resolution mirrors dinomem-retrieval-log's resolver (same OpenClaw
+// convention <OPENCLAW_DIR>/workspace-<agentId>), deliberately NOT imported: plugins
+// install as independent dirs with no shared module, so a cross-plugin import would
+// couple their install order. The probe target differs too (routeTool vs its logger).
+const _capCache = new Map<string, boolean>();
+function openclawRoots(): string[] {
+  const roots: string[] = [];
+  const push = (d?: string) => { if (d && !roots.includes(d)) roots.push(d); };
+  push(process.env.OPENCLAW_DIR);
+  push(process.env.OPENCLAW_HOME);
+  push(path.join(process.env.HOME || "/root", ".openclaw"));
+  push("/root/.openclaw");
+  return roots;
+}
+function hasRouteTool(c: Cfg, agentId: string, ctx: any): boolean {
+  if (!c.routeToolPath) return true;            // probe disabled -> always armed
+  const key = `${agentId}|${c.routeToolPath}`;
+  const hit = _capCache.get(key);
+  if (hit !== undefined) return hit;
+  const probe = (dir?: string | null): boolean => {
+    try { return !!dir && fs.existsSync(path.join(dir, c.routeToolPath)); } catch { return false; }
+  };
+  let found = false;
+  if (agentId) {
+    for (const root of openclawRoots()) {
+      // shared-dir layout (<root>/workspace-<id>) + per-instance layouts.
+      if (probe(path.join(root, `workspace-${agentId}`)) ||
+          probe(path.join(`${root}-${agentId}`, `workspace-${agentId}`)) ||
+          probe(`${root}-${agentId}`)) { found = true; break; }
+    }
+  }
+  if (!found) {                                  // runtimes that expose cwd but no agentId
+    const cwd = ctx?.cwd ?? ctx?.workspace ?? ctx?.workspaceDir;
+    if (typeof cwd === "string" && cwd) found = probe(cwd);
+  }
+  _capCache.set(key, found);
+  return found;
 }
 
 // Pull plausible target file paths out of a write tool's params. Mirrors
@@ -284,6 +343,8 @@ export default definePluginEntry({
         // (routeFiredTurn), hard-block on repeat within the turn.
         if (c.routeEnforce && toolName === c.gatedTool) {
           if (st.recallDone) return undefined;              // door opened this turn -> exempt
+          // Capability gate: routeTool absent in THIS workspace -> never block.
+          if (!hasRouteTool(c, String(event?.agentId ?? ctx?.agentId ?? ""), ctx)) return undefined;
           if (!c.enforce) return undefined;                 // dry-run
           const firedThisTurn = st.routeFiredTurn === st.turnIndex;
           st.routeFiredTurn = st.turnIndex;
