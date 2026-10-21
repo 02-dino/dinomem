@@ -74,6 +74,9 @@ SKIP_EXIT_CODE = 3
 # FAIL-OPEN by design: no flock binary, or no writable lock dir, and the stage
 # runs unserialized exactly as before. A lock must never become an outage.
 HEAVY_EMBED_STAGES = {"session_ingest.py"}
+HEAVY_LLM_STAGES = {"extract_memory.py"}
+LLM_LOCK_WAIT_SECS = int(os.environ.get("DINOMEM_LLM_LOCK_WAIT_SECS", "900"))
+
 LOCK_WAIT_SECS = int(os.environ.get("DINOMEM_EMBED_LOCK_WAIT_SECS", "600"))
 
 
@@ -113,17 +116,41 @@ def _wrap_heavy_embed(cmd, script_name):
     ] + cmd, True)
 
 
+
+
+def _wrap_heavy_llm(cmd, script_name):
+    """Prefix cmd with flock on the shared heavy-llm lock when possible."""
+    if script_name not in HEAVY_LLM_STAGES:
+        return cmd, False
+    if not shutil.which("flock"):
+        log(f"⚠️  flock not found — running {script_name} unserialized (LLM)")
+        return cmd, False
+    lock_dir = _embed_lock_dir()
+    if lock_dir is None:
+        log(f"⚠️  no writable lock dir — running {script_name} unserialized (LLM)")
+        return cmd, False
+    return ([
+        "flock",
+        "--timeout", str(LLM_LOCK_WAIT_SECS),
+        "--conflict-exit-code", str(SKIP_EXIT_CODE),
+        str(lock_dir / "heavy-llm.lock"),
+    ] + cmd, True)
+
+
 def run_script(script_name):
     """Run a subprocess script. Returns True on success, False on failure, and the
     string 'skipped' when the stage exited with SKIP_EXIT_CODE (lock held by a
     concurrent instance — not a real failure, but NOT a real success either)."""
     workspace = Path(__file__).parent.parent
     script_path = workspace / "procedures" / script_name
-    cmd, serialized = _wrap_heavy_embed(
+    cmd, embed_ser = _wrap_heavy_embed(
         [sys.executable, str(script_path)], script_name
     )
+    cmd, llm_ser = _wrap_heavy_llm(cmd, script_name)
+    serialized = embed_ser or llm_ser
     log(f"🔄 Running {script_name}..."
-        + (" (serialized on heavy-embed lock)" if serialized else ""))
+        + (" (serialized on heavy-embed lock)" if embed_ser else "")
+        + (" (serialized on heavy-llm lock)" if llm_ser else ""))
     try:
         result = subprocess.run(
             cmd,
@@ -131,7 +158,7 @@ def run_script(script_name):
             # 600s covers the WORK. When serialized, add the bounded flock wait
             # so queueing behind a peer cannot eat the work budget and look like
             # a hang; flock itself gives up at LOCK_WAIT_SECS and exits 3.
-            timeout=600 + (LOCK_WAIT_SECS if serialized else 0)
+            timeout=600 + (LOCK_WAIT_SECS if embed_ser else 0) + (LLM_LOCK_WAIT_SECS if llm_ser else 0)
                          # widened 300->600 2026-09-28: session_ingest.py was flaking
                          # against the local TEI embed endpoint on a growing chroma
                          # DB, getting cut off mid-prune every time (fleet-wide fix
@@ -269,3 +296,4 @@ def _run_main():
 
 if __name__ == "__main__":
     main()
+# patch-auto-session-reset-heavy-llm-flock-v1
