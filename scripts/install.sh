@@ -1163,7 +1163,7 @@ if [ "$DO_DOCKER" = 1 ]; then
       # Half the cores keeps the old guardrail intact (unpinned, TEI once ate
       # ~400% CPU and starved the gateway) while scaling with the box.
       _tei_autosize() {
-        local c="${CPU_COUNT:-0}" r="${TOTAL_RAM_MB:-0}" t cpus mem cap
+        local c="${CPU_COUNT:-0}" r="${TOTAL_RAM_MB:-0}" t cpus mem cap conc
         case "$c" in (''|*[!0-9]*) c=0 ;; esac
         case "$r" in (''|*[!0-9]*) r=0 ;; esac
         if [ "$c" -lt 1 ]; then
@@ -1171,7 +1171,8 @@ if [ "$DO_DOCKER" = 1 ]; then
           TEI_RAYON_THREADS="${TEI_RAYON_THREADS:-2}"
           TEI_CPUS="${TEI_CPUS:-2.5}"
           TEI_MEM_LIMIT="${TEI_MEM_LIMIT:-2048m}"
-          export TEI_RAYON_THREADS TEI_CPUS TEI_MEM_LIMIT
+          TEI_MAX_CONCURRENT="${TEI_MAX_CONCURRENT:-16}"
+          export TEI_RAYON_THREADS TEI_CPUS TEI_MEM_LIMIT TEI_MAX_CONCURRENT
           return 0
         fi
         t=$(( c / 2 )); [ "$t" -lt 1 ] && t=1
@@ -1196,7 +1197,33 @@ if [ "$DO_DOCKER" = 1 ]; then
         fi
         TEI_CPUS="${TEI_CPUS:-$cpus}"
         TEI_MEM_LIMIT="${TEI_MEM_LIMIT:-${mem}m}"
-        export TEI_RAYON_THREADS TEI_CPUS TEI_MEM_LIMIT
+        # QUEUE DEPTH must SCALE, not stay pinned. This was the one TEI knob the
+        # installer left constant while sizing the other three from nproc, so a
+        # 32-core box hosting a dozen agents shipped the same depth as a 2-core
+        # box -- and the compose comment's own requirement ("MUST exceed the
+        # number of agents/cron lanes that can embed at once") was therefore
+        # never actually guaranteed by an install.
+        #
+        # Why it bites: 1.9.4 spends one permit PER INPUT, and the gateway
+        # batches by TOKENS (up to MAX_EMBEDDING_INPUTS=128 per request), so a
+        # request carrying more inputs than the depth is ROUTINE, not extreme.
+        # Measured 2026-10-22, 8-core box, load 2.1 (idle): batch=16 -> 200 but
+        # batch=17 -> 429, 5/5 runs. Not load-dependent -- a hard wall exactly at
+        # the configured depth. At 32 the same batch returns 200 AND per-item
+        # latency improves (5.1ms -> 3.5ms), because bigger batches amortise
+        # better. Depth is cheap: the existing note measured 844MiB at depth 64.
+        #
+        # 4x cores is a proxy for "how many agent/cron lanes this box hosts" --
+        # the real driver, which is not knowable at install time. Floor 16 so no
+        # existing install ever SHRINKS; ceiling 64 to stay inside the measured
+        # RAM envelope above.
+        conc=$(( c * 4 ))
+        [ "$conc" -lt 16 ] && conc=16
+        [ "$conc" -gt 64 ] && conc=64
+        TEI_MAX_CONCURRENT="${TEI_MAX_CONCURRENT:-$conc}"
+        case "$TEI_MAX_CONCURRENT" in (''|*[!0-9]*) TEI_MAX_CONCURRENT="$conc" ;; esac
+        [ "$TEI_MAX_CONCURRENT" -lt 1 ] && TEI_MAX_CONCURRENT=16
+        export TEI_RAYON_THREADS TEI_CPUS TEI_MEM_LIMIT TEI_MAX_CONCURRENT
         # Loud warning instead of silent mis-sizing when a hand override asks
         # for more threads than the host can actually run in parallel.
         if [ "$TEI_RAYON_THREADS" -gt "$c" ]; then
@@ -1204,7 +1231,7 @@ if [ "$DO_DOCKER" = 1 ]; then
         fi
     }
     _tei_autosize
-    ok "TEI sized for ${CPU_COUNT:-?} CPU: threads=$TEI_RAYON_THREADS cpus=$TEI_CPUS mem=$TEI_MEM_LIMIT"
+    ok "TEI sized for ${CPU_COUNT:-?} CPU: threads=$TEI_RAYON_THREADS cpus=$TEI_CPUS mem=$TEI_MEM_LIMIT queue_depth=$TEI_MAX_CONCURRENT"
     # Detect Compose plugin; fallback to docker run
     if docker compose version >/dev/null 2>&1; then
       run "copy docker-compose.tei.yml -> $WS/" cp "$SKILL_DIR/docker/docker-compose.tei.yml" "$WS/docker-compose.tei.yml"
@@ -2412,7 +2439,7 @@ PYEOF
     # post-reboot container silently falls back to the small-box defaults in
     # the compose file, so a tuned host would quietly lose its sizing on the
     # next boot -- the hardest kind of regression to notice.
-    TEI_CRON="@reboot sleep 30 && TEI_RAYON_THREADS=${TEI_RAYON_THREADS:-2} TEI_CPUS=${TEI_CPUS:-2.5} TEI_MEM_LIMIT=${TEI_MEM_LIMIT:-2048m} docker compose -f $WS/docker-compose.tei.yml up -d >> /tmp/tei-startup.log 2>&1"
+    TEI_CRON="@reboot sleep 30 && TEI_RAYON_THREADS=${TEI_RAYON_THREADS:-2} TEI_CPUS=${TEI_CPUS:-2.5} TEI_MEM_LIMIT=${TEI_MEM_LIMIT:-2048m} TEI_MAX_CONCURRENT=${TEI_MAX_CONCURRENT:-16} docker compose -f $WS/docker-compose.tei.yml up -d >> /tmp/tei-startup.log 2>&1"
   else
     # docker start reuses the sizing baked in at create time, so no env needed.
     TEI_CRON="@reboot sleep 30 && docker start tei-embed >> /tmp/tei-startup.log 2>&1"
