@@ -971,7 +971,7 @@ hr "Copying engine files"
 # templates (explicit — only the shipped ones)
 if [ -f "$SKILL_DIR/templates/peer_rep.md.tmpl" ]; then copy_engine_file templates/peer_rep.md.tmpl; fi
 # procedures/*.py, tools/*.py, scripts/*.sh, scripts/lib/*.sh — auto-discovered
-for _dir in procedures tools scripts scripts/lib; do
+for _dir in procedures tools tools/gate scripts scripts/lib; do
   [ -d "$SKILL_DIR/$_dir" ] || continue
   for _src in "$SKILL_DIR/$_dir"/*.py "$SKILL_DIR/$_dir"/*.sh; do
     [ -f "$_src" ] || continue                      # glob-no-match guard
@@ -2053,17 +2053,25 @@ AI_ID = upsert_gated_worker(job, "auto_improve")
 # channel THIS agent already uses — no channel name is hardcoded anywhere, so a
 # WhatsApp/Discord/Slack install works unchanged.
 try:
+    # Resolve the workspace LOCALLY. The module-level `WS` is assigned further
+    # down this same heredoc, so referencing it here raised NameError at install
+    # time (measured on the analyst install: "auto_improve_digest cron skipped:
+    # name 'WS' is not defined"). A syntax check cannot catch a use-before-assign
+    # across statements -- only running it can.
+    _dg_ws = os.environ.get("OPENCLAW_WORKSPACE") or os.environ.get("DINOMEM_WS", "")
     _dg_name = "Auto Improve Digest"
-    if not _find_cron(_dg_name):
+    if not _dg_ws:
+        print("  \033[33m[warn]\033[0m auto_improve_digest cron skipped: workspace unresolved")
+    elif not _find_cron(_dg_name):
         _dg = {
             "name": _dg_name,
             "schedule": {"kind": "cron", "expr": "0 9 * * 1", "tz": "UTC"},
             "payload": {
                 "kind": "command",
-                "argv": ["sh", "-lc", f'out=$(sh "{WS}/tools/gate/improvement-digest.sh" "{WS}"); '
+                "argv": ["sh", "-lc", f'out=$(sh "{_dg_ws}/tools/gate/improvement-digest.sh" "{_dg_ws}"); '
                                        '[ -n "$out" ] && printf "%s" "$out"; exit 0'],
-                "cwd": WS,
-                "env": {"OPENCLAW_WORKSPACE": WS},
+                "cwd": _dg_ws,
+                "env": {"OPENCLAW_WORKSPACE": _dg_ws},
             },
             "delivery": {"mode": "announce"},
         }
