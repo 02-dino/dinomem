@@ -80,7 +80,10 @@ _WS_DEFAULT = "DINOMEM_WORKSPACE_PLACEHOLDER"
 if _WS_DEFAULT.startswith("DINOMEM_"):  # sed did not run
     _WS_DEFAULT = str(Path(__file__).resolve().parent.parent)
 WORKSPACE = Path(os.environ.get("DINOMEM_WORKSPACE", _WS_DEFAULT))
-BACKUP_SCRIPT = WORKSPACE.parent.parent / "scripts/file-backup.sh"
+# Backup lives in procedures/_file_backup.py (ONE shared primitive, see there
+# for why). The old BACKUP_SCRIPT pointed at <ws>/../../scripts/file-backup.sh,
+# which neither exists on this layout nor ships with this repo, and the
+# `if BACKUP_SCRIPT.exists()` guard turned that into a silent no-op.
 
 ALLOWED_FILES = {"SOUL.md", "IDENTITY.md", "AGENTS.md", "TOOLS.md", "USER.md"}
 
@@ -153,8 +156,19 @@ def _drop_reason(verb, detail):
 
 
 def backup(path):
-    if BACKUP_SCRIPT.exists():
-        subprocess.run([str(BACKUP_SCRIPT), str(path)], capture_output=True)
+    """Copy `path` aside before a mutating write. Returns the backup Path, or
+    None when nothing was saved (missing source / unwritable .backups dir)."""
+    try:
+        import sys as _sys
+        _sys.path.insert(0, str(WORKSPACE))
+        from procedures._file_backup import backup_file
+    except Exception:
+        try:
+            _sys.path.insert(0, str(WORKSPACE / "procedures"))
+            from _file_backup import backup_file
+        except Exception:
+            return None
+    return backup_file(path, workspace=WORKSPACE)
 
 def check_size(filename, new_content):
     """Check if writing new_content would exceed per-file or total bootstrap limits.

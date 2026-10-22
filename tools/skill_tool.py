@@ -52,13 +52,29 @@ if _WS_DEFAULT.startswith("DINOMEM_"):
 WORKSPACE = Path(os.environ.get("DINOMEM_WORKSPACE", _WS_DEFAULT))
 SKILLS_DIR = WORKSPACE / "skills"
 AGENTS_FILE = WORKSPACE / "AGENTS.md"
-BACKUP_SCRIPT = WORKSPACE.parent.parent / "scripts/file-backup.sh"
+# Backup is provided by procedures/_file_backup.py (ONE shared primitive).
+# The previous BACKUP_SCRIPT pointed at <ws>/../../scripts/file-backup.sh — a
+# path that does not exist on this layout and a script this repo never ships —
+# guarded by `if BACKUP_SCRIPT.exists()`, so every backup silently no-opped
+# while still reporting success. `remove` then rmtree'd with nothing saved.
 
 SLUG_RE = re.compile(r"^[a-z][a-z0-9-]{1,63}$")
 
 def _backup(path):
-    if BACKUP_SCRIPT.exists() and Path(path).exists():
-        subprocess.run([str(BACKUP_SCRIPT), str(path)], capture_output=True)
+    """Copy `path` aside. Returns the backup Path, or None if nothing was saved.
+    Callers that DELETE must check the return value — a silent no-op here is how
+    the old implementation lost data."""
+    try:
+        import sys as _sys
+        _sys.path.insert(0, str(WORKSPACE))
+        from procedures._file_backup import backup_file
+    except Exception:
+        try:
+            _sys.path.insert(0, str(WORKSPACE / "procedures"))
+            from _file_backup import backup_file
+        except Exception:
+            return None
+    return backup_file(path, workspace=WORKSPACE)
 
 def _valid(text):
     return "\x00" not in text and len(text) <= 50_000
@@ -170,15 +186,32 @@ def list_skills(substr=None):
         out.append({"slug": p.name, "description": desc})
     return {"ok": True, "skills": out}
 
+
 def remove(slug, confirmed=False):
     d = _skill_dir(slug)
     if not (d / "SKILL.md").exists():
         return {"ok": False, "error": f"skill '{slug}' not found"}
     if not confirmed:
         return {"ok": False, "needs_confirm": True, "note": f"Re-run with --confirmed to remove skill '{slug}'."}
-    _backup(d / "SKILL.md")
-    import shutil
-    shutil.rmtree(d)
+    # ARCHIVE, don't delete. A skill is a DIRECTORY (SKILL.md + references/ +
+    # scripts/), so backing up SKILL.md and rmtree-ing the rest destroyed every
+    # supporting file even when the backup worked. Moving the whole package is
+    # reversible by construction and costs the same.
+    import shutil, time as _time
+    if not _backup(d / "SKILL.md"):
+        # Fail-CLOSED: no backup means no safety net. Refuse rather than delete
+        # on a promise we cannot keep -- this is exactly how the old silent
+        # no-op lost skills.
+        return {"ok": False, "error": (
+            f"refusing to remove '{slug}': pre-write backup failed, so this "
+            f"would be unrecoverable. Check write access to {WORKSPACE}/.backups/")}
+    archive_root = WORKSPACE / "skills" / ".archive"
+    archive_root.mkdir(parents=True, exist_ok=True)
+    dest = archive_root / slug
+    if dest.exists():                      # never clobber an earlier archive
+        dest = archive_root / f"{slug}.{int(_time.time())}"
+    shutil.move(str(d), str(dest))
+    _restore_hint = f"mv {dest} {d}"
     # Best-effort: strip its trigger line from AGENTS.md
     if AGENTS_FILE.exists():
         txt = AGENTS_FILE.read_text(encoding="utf-8")
@@ -187,7 +220,8 @@ def remove(slug, confirmed=False):
             _backup(AGENTS_FILE)
             AGENTS_FILE.write_text(new + "\n", encoding="utf-8")
     _drop_reason("skill", f"remove {slug}")
-    return {"ok": True, "slug": slug, "action": "remove"}
+    return {"ok": True, "slug": slug, "action": "archive",
+            "archived_to": str(dest), "restore": _restore_hint}
 
 def main():
     p = argparse.ArgumentParser(description="Safe scaffolder for agent skills (dinomem)")
