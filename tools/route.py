@@ -197,6 +197,9 @@ selected leaf tool. Keeping it write-free avoids duplicating any leaf-tool logic
 """
 import argparse
 import json
+import os
+import re
+import sys
 
 SURFACES = {
     "cron":  {"leaf": "tools/cron_tool.py",  "skill": "cron-config",  "cost": "none (schedule-gated)"},
@@ -566,6 +569,312 @@ def _dup_scan(path, min_run=5):
                    "floor). Heuristic; confirm it's real before refactoring."
                    % (a+1, a+length, b+1, b+length, length))
 
+# ── L3: the approval gate ────────────────────────────────────────────────────
+# A pending proposal is AUTHORED BY A MODEL, so it is DATA, never intent. If
+# `approve` simply ran whatever argv the file carried, anything able to write
+# that directory would have arbitrary code execution behind a one-word owner
+# reply. So the gate is allowlist-first: the proposal may only name one of the
+# four existing leaf writers, and every write therefore still passes through
+# that writer's own guards (config_tool._guard, forbidden targets, char caps,
+# skill/cron/hook validation). No new write path is created by this feature.
+LEAF_TOOLS = {
+    "cron":  ("cron_tool.py", "--confirmed"),
+    "hook":  ("hook_tool.py", "--confirmed"),
+    "skill": ("skill_tool.py", "--confirmed"),
+    "root":  ("config_tool.py", None),   # takes no confirm flag; guards internally
+}
+_MEM_NAME_OK = re.compile(r"^_(pin|note)_[A-Za-z0-9][A-Za-z0-9._-]*\.md$")
+
+
+def _pending_dir():
+    return os.path.join(_workspace_dir(), "kb", "improvement_pending")
+
+
+def _pending_items():
+    """Every proposal on disk, oldest first. Unreadable files are skipped, not
+    guessed at (fail-closed: a corrupt proposal is never auto-approved)."""
+    import glob as _glob
+    out = []
+    for path in sorted(_glob.glob(os.path.join(_pending_dir(), "*.json"))):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except Exception:
+            continue
+        if isinstance(data, dict) and data.get("id"):
+            out.append((path, data))
+    out.sort(key=lambda t: t[1].get("created_at", 0))
+    return out
+
+
+def _pending_find(pid):
+    for path, data in _pending_items():
+        if data.get("id") == pid or data.get("id", "").startswith(pid):
+            return path, data
+    return None, None
+
+
+def _validate_action(data):
+    """Gate every proposal BEFORE it can run. -> (ok, detail, plan).
+
+    Rejects anything that is not one of the four leaf writers or a memory file
+    with a legal _pin_/_note_ name inside memory/. Path traversal and the
+    auto-generated root files are refused here as well as at the leaf, because
+    defence in depth is the whole point of a gate.
+    """
+    surface = (data.get("surface") or "").strip().lower()
+    action = data.get("action") or {}
+    if surface not in SURFACES:
+        return False, f"unknown surface {surface!r}", None
+
+    if surface == "memory":
+        rel = (action.get("path") or "").strip()
+        base = os.path.basename(rel)
+        if not rel.startswith("memory/") or ".." in rel:
+            return False, f"memory path must be memory/<file>.md, got {rel!r}", None
+        if not _MEM_NAME_OK.match(base):
+            return False, f"memory file must be _pin_*.md or _note_*.md, got {base!r}", None
+        if not (action.get("content") or "").strip():
+            return False, "memory proposal carries no content", None
+        return True, f"write {rel}", {"kind": "memory", "rel": rel,
+                                      "content": action["content"]}
+
+    # Archive is its own verb, deliberately NOT skill_tool.py remove. MEASURED
+    # 2026-10-22: `remove` calls shutil.rmtree, and its _backup() resolves to
+    # <ws>/../../scripts/file-backup.sh which does not exist on this layout, so
+    # the backup silently no-ops. A curator that said "reversible" while calling
+    # that would be lying to the owner. Archive MOVES the directory instead, so
+    # reversibility is a property of the operation, not of a backup that may or
+    # may not have run.
+    if surface == "skill" and action.get("archive"):
+        name = str(action["archive"]).strip()
+        if not name or "/" in name or name.startswith(".") or ".." in name:
+            return False, f"illegal skill name {name!r}", None
+        src = os.path.join(_workspace_dir(), "skills", name)
+        if not os.path.isdir(src):
+            return False, f"skill not found: skills/{name}", None
+        return True, f"archive skills/{name} -> skills/.archive/{name}", {
+            "kind": "archive", "name": name, "src": src}
+
+    tool, confirm_flag = LEAF_TOOLS[surface]
+    argv = action.get("argv")
+    if not isinstance(argv, list) or not all(isinstance(a, str) for a in argv):
+        return False, "action.argv must be a list of strings", None
+    if any(a == "--confirmed" for a in argv):
+        # The owner's approval IS the confirmation. A pre-confirmed proposal
+        # would let the authoring model grant its own approval.
+        return False, "proposal must not pre-set --confirmed", None
+    for forbidden in SCHEMA["forbidden_write_targets"]:
+        if forbidden in argv:
+            return False, f"{forbidden} is a FORBIDDEN write target", None
+    tool_path = os.path.join(_workspace_dir(), "tools", tool)
+    if not os.path.isfile(tool_path):
+        return False, f"leaf writer missing: {tool_path}", None
+    cmd = [sys.executable, tool_path] + argv + ([confirm_flag] if confirm_flag else [])
+    return True, " ".join([tool] + argv), {"kind": "leaf", "cmd": cmd}
+
+
+# ── lessons-not-logs linter ───────────────────────────────────────────────
+# A durable rule has to stand WITHOUT the story behind it. The failure mode this
+# catches is an agent pasting its own incident narration into a skill: it reads
+# like evidence, but a future session cannot act on "then I tried X and it
+# failed on 2026-10-22". ADVISORY by design (same contract as `dup`): a linter
+# that blocks writes gets worked around, and the judgement here is heuristic.
+_LINT_NARRATION = re.compile(
+    r"\b(then I tried|I then|next I|first I tried|turned out|it failed|"
+    r"as it happened|after that I|at first|eventually I)\b", re.I)
+_LINT_DATE = re.compile(r"\b20\d{2}-\d{2}-\d{2}\b")
+_LINT_TICKET = re.compile(r"(?:\bPR\s*#?\d+|\bissue\s*#?\d+|(?<![\w/])#\d{2,})", re.I)
+_LINT_CHATQUOTE = re.compile(r'^\s*(?:>|"|user:|assistant:)', re.I | re.M)
+LINT_BODY_MAX = 24000   # skill_view loads the whole file and it stays in context
+
+
+# Fences are matched with OPTIONAL leading whitespace: a code block nested in a
+# numbered list is indented, and anchoring at column 0 silently stripped nothing
+# (measured on this repo's own auto-improve skill: 4736 chars in, 4736 out, and
+# a JSON example then produced 9 bogus quoted-chat findings).
+_LINT_FENCE = re.compile(r"^[ \t]*```.*?^[ \t]*```", re.S | re.M)
+# Inline code spans are stripped for the same reason as fences: a doc that
+# TEACHES this rule has to be able to quote the bad pattern as an anti-example.
+# Without this, the linter flags its own instruction manual — measured here, the
+# only surviving findings on the auto-improve skill were its anti-example line.
+_LINT_INLINE = re.compile(r"`[^`\n]+`")
+
+
+def _lint_strip(text):
+    """Remove what a linter must NOT judge: fenced code and indented examples.
+
+    WHY: a JSON payload or a shell snippet legitimately starts lines with quotes
+    and contains dates/ids. Flagging those makes the linter fire on every
+    well-written doc, and a linter that cries wolf gets ignored — which costs
+    more than having no linter. Measured on this repo's own auto-improve skill:
+    9 of 11 findings came from a JSON example block.
+    """
+    return _LINT_INLINE.sub("", _LINT_FENCE.sub("", text))
+
+
+def _lint_text(text, name="<stdin>"):
+    """Advisory shape check for a durable rule. -> (clean, findings[])."""
+    raw_len = len(text)
+    text = _lint_strip(text)
+    findings = []
+
+    def hit(rule, pat, why):
+        m = pat.findall(text)
+        if m:
+            sample = str(m[0])[:60]
+            findings.append({"rule": rule, "count": len(m),
+                             "sample": sample, "why": why})
+
+    hit("incident-narration", _LINT_NARRATION,
+        "story, not rule. State the rule + one clause of WHY; drop the retelling.")
+    hit("dated-event", _LINT_DATE,
+        "a date pins a rule to one incident. Keep it only as a measurement stamp.")
+    hit("ticket-reference", _LINT_TICKET,
+        "PR/issue numbers are not procedure; a future reader cannot resolve them.")
+    hit("quoted-chat", _LINT_CHATQUOTE,
+        "quoted conversation is a log. Generalise it into the rule it implies.")
+    if raw_len > LINT_BODY_MAX:
+        findings.append({"rule": "oversized-body", "count": raw_len,
+                         "sample": f"{raw_len} chars",
+                         "why": f"over {LINT_BODY_MAX}: loaded whole and held in "
+                                "context for the rest of the session. Split into references/."})
+    return (not findings), findings
+
+
+def _op_lint(target, as_json=False):
+    """Lint a drafted rule body. `-` reads stdin so a draft can be piped in
+    before it is ever written to disk."""
+    if target == "-":
+        text, name = sys.stdin.read(), "<stdin>"
+    else:
+        try:
+            with open(target, encoding="utf-8") as fh:
+                text = fh.read()
+        except Exception as exc:
+            print(f"cannot read {target}: {exc}", file=sys.stderr)
+            return 2
+        name = os.path.basename(target)
+    clean, findings = _lint_text(text, name)
+    if as_json:
+        print(json.dumps({"file": name, "clean": clean, "findings": findings}, indent=2))
+    elif clean:
+        print(f"LINT: CLEAN {name} (lessons-not-logs)")
+    else:
+        print(f"LINT: ADVISORY {name} — {len(findings)} finding(s)")
+        for f in findings:
+            print(f"  - {f['rule']} (x{f['count']}): {f['sample']!r}")
+            print(f"      {f['why']}")
+    return 0 if clean else 1
+
+
+def _op_pending(as_json=False):
+    items = _pending_items()
+    rows = [{"id": d.get("id"), "status": d.get("status", "pending"),
+             "surface": d.get("surface"), "title": d.get("title", "")[:60],
+             "source": d.get("source_candidate", "")} for _, d in items]
+    if as_json:
+        print(json.dumps({"ok": True, "count": len(rows), "items": rows}, indent=2))
+    else:
+        print(f"pending proposals: {len(rows)}  ({_pending_dir()})")
+        for r in rows:
+            print(f"  [{r['id']}] {r['status']:9s} {str(r['surface']):7s} {r['title']}")
+        if rows:
+            print("\nreview: route.py diff <id>   apply: route.py approve <id>   drop: route.py reject <id>")
+    return 0 if rows else 1
+
+
+def _op_diff(pid):
+    """Show EXACTLY what would run, plus the gate verdict, before any approval.
+
+    The verdict is printed even when it is a refusal: an owner must be able to
+    see that a proposal is unapprovable without having to try approving it.
+    """
+    _, data = _pending_find(pid)
+    if not data:
+        print(f"no pending proposal {pid!r}", file=sys.stderr)
+        return 1
+    ok, detail, plan = _validate_action(data)
+    print(f"PROPOSAL {data.get('id')}")
+    print(f"surface  : {data.get('surface')}")
+    print(f"title    : {data.get('title','')}")
+    print(f"evidence : {data.get('evidence_ref','(none)')}")
+    print("\n--- ARGUMENT (why the agent proposes this) ---")
+    print(data.get("argument", "(none given)"))
+    body = (data.get("action") or {}).get("content")
+    if body:
+        print("\n--- CONTENT ---")
+        print(body)
+    print("\n--- WOULD RUN ---")
+    print(detail if ok else f"REFUSED: {detail}")
+    if ok and plan and plan["kind"] == "leaf":
+        print("  " + " ".join(plan["cmd"][1:]))
+    return 0 if ok else 1
+
+
+def _op_approve(pid):
+    """Apply a proposal THROUGH the existing leaf writer (never a new path)."""
+    import subprocess
+    path, data = _pending_find(pid)
+    if not path:
+        print(f"no pending proposal {pid!r}", file=sys.stderr)
+        return 1
+    if data.get("status") == "approved":
+        print(f"{data['id']} already approved", file=sys.stderr)
+        return 1
+    ok, detail, plan = _validate_action(data)
+    if not ok:
+        print(json.dumps({"ok": False, "error": detail}, indent=2), file=sys.stderr)
+        return 1
+
+    if plan["kind"] == "archive":
+        import shutil
+        dest_dir = os.path.join(_workspace_dir(), "skills", ".archive")
+        os.makedirs(dest_dir, exist_ok=True)
+        dest = os.path.join(dest_dir, plan["name"])
+        if os.path.exists(dest):  # never clobber an earlier archive of the same name
+            dest = f"{dest}.{int(__import__('time').time())}"
+        shutil.move(plan["src"], dest)
+        out = (f"archived skills/{plan['name']} -> {os.path.relpath(dest, _workspace_dir())}"
+               f"\nrestore with: mv {dest} {plan['src']}")
+        rc = 0
+    elif plan["kind"] == "memory":
+        target = os.path.join(_workspace_dir(), plan["rel"])
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target, "w", encoding="utf-8") as fh:
+            fh.write(plan["content"])
+        out, rc = f"wrote {plan['rel']}", 0
+    else:
+        proc = subprocess.run(plan["cmd"], capture_output=True, text=True, timeout=120)
+        out, rc = (proc.stdout or "") + (proc.stderr or ""), proc.returncode
+
+    data["status"] = "approved" if rc == 0 else "failed"
+    data["applied_at"] = int(__import__("time").time())
+    data["apply_output"] = out[-2000:]
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, ensure_ascii=False, indent=2)
+    _route_log("approve", surface=data.get("surface"), needle=data.get("id"), ok=(rc == 0))
+    print(out.strip() or detail)
+    if rc == 0:
+        print(f"\nAPPROVED {data['id']} -> {data.get('surface')}. "
+              "Now VERIFY it landed: route.py verify <surface> <needle> [--file F]")
+    return 0 if rc == 0 else 1
+
+
+def _op_reject(pid, why=""):
+    path, data = _pending_find(pid)
+    if not path:
+        print(f"no pending proposal {pid!r}", file=sys.stderr)
+        return 1
+    data["status"] = "rejected"
+    data["rejected_reason"] = why
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, ensure_ascii=False, indent=2)
+    _route_log("reject", surface=data.get("surface"), needle=data.get("id"), ok=True)
+    print(f"rejected {data['id']}" + (f": {why}" if why else ""))
+    return 0
+
+
 def main():
     p = argparse.ArgumentParser(description="Surface arbiter for dinomem self-modification intents")
     sub = p.add_subparsers(dest="cmd")
@@ -575,11 +884,33 @@ def main():
     v.add_argument("surface", help="cron|hook|memory|skill|root")
     v.add_argument("needle", help="job name/id, hook/skill dir name, or content substring")
     v.add_argument("--file", dest="file", default=None, help="root target file (AGENTS.md/SOUL.md/IDENTITY.md/TOOLS.md)")
+    ln = sub.add_parser("lint", help="advisory lessons-not-logs check on a drafted rule (exit 0=clean, 1=advisory)")
+    ln.add_argument("file", help="path to the draft, or - for stdin")
+    ln.add_argument("--json", dest="as_json", action="store_true")
+    pend = sub.add_parser("pending", help="list proposals awaiting owner approval (L3 gate)")
+    pend.add_argument("--json", dest="as_json", action="store_true")
+    df = sub.add_parser("diff", help="show a proposal's argument + EXACTLY what would run")
+    df.add_argument("id", help="proposal id (prefix ok)")
+    ap_ = sub.add_parser("approve", help="apply a proposal THROUGH its existing leaf writer")
+    ap_.add_argument("id", help="proposal id (prefix ok)")
+    rj = sub.add_parser("reject", help="drop a proposal")
+    rj.add_argument("id", help="proposal id (prefix ok)")
+    rj.add_argument("--why", default="", help="reason recorded on the proposal")
     d = sub.add_parser("dup", help="advisory copy-paste scan of a just-built script (build-quality DRY floor; exit 0=clean, 1=dup)")
     d.add_argument("file", help="path to the script/file you just built")
     d.add_argument("--min-run", dest="min_run", type=int, default=5, help="min consecutive repeated lines to flag (default 5)")
     args = p.parse_args()
-    if args.cmd == "surfaces":
+    if args.cmd == "lint":
+        raise SystemExit(_op_lint(args.file, args.as_json))
+    elif args.cmd == "pending":
+        raise SystemExit(_op_pending(args.as_json))
+    elif args.cmd == "diff":
+        raise SystemExit(_op_diff(args.id))
+    elif args.cmd == "approve":
+        raise SystemExit(_op_approve(args.id))
+    elif args.cmd == "reject":
+        raise SystemExit(_op_reject(args.id, args.why))
+    elif args.cmd == "surfaces":
         print(json.dumps(SURFACES, indent=2))
     elif args.cmd == "verify":
         ok, detail = _verify(args.surface, args.needle, args.file)

@@ -65,6 +65,7 @@ DELETER_ID="${GATE_DELETER_ID:-}"
 # Optional lanes — set these env vars to enable:
 DAILY_NOTE_REVIEW_ID="${GATE_DAILY_NOTE_REVIEW_ID:-}"
 PENDING_REMINDER_ID="${GATE_PENDING_REMINDER_ID:-}"
+AUTO_IMPROVE_ID="${GATE_AUTO_IMPROVE_ID:-}"
 
 # Locate the openclaw CLI (cron command jobs run with the Gateway's PATH, but be safe).
 OPENCLAW_BIN="${OPENCLAW_BIN:-$(command -v openclaw || true)}"
@@ -121,6 +122,17 @@ fi
 if [ -n "$PENDING_REMINDER_ID" ] && [ -f "$SCRIPTS/check_pending_notes.py" ]; then
   if python3 "$SCRIPTS/check_pending_notes.py" >/dev/null 2>&1; then
     trigger "pending-reminder" "$PENDING_REMINDER_ID"
+  fi
+fi
+
+# Lane 6 — Auto-Improve (optional): run when a session was flagged as possibly
+# containing a durable lesson. check_improvement.sh scans for candidates and
+# exits 0 only when one is claimable; it deliberately does NOT claim, so a
+# dispatch that never reaches the model leaves the candidate available instead
+# of stranded. Enable via GATE_AUTO_IMPROVE_ID.
+if [ -n "$AUTO_IMPROVE_ID" ] && [ -f "$SCRIPTS/check_improvement.sh" ]; then
+  if bash "$SCRIPTS/check_improvement.sh"; then
+    trigger "auto-improve" "$AUTO_IMPROVE_ID"
   fi
 fi
 

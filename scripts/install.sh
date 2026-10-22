@@ -2007,6 +2007,77 @@ job = {
 }
 PNR_ID = upsert_gated_worker(job, "pending_note_reminder")
 
+# Auto Improve — the automatic half of the build stack. Gate-driven like the
+# others, but NOT cheap-model: this turn judges whether a lesson is real and
+# then drafts a durable rule, which is exactly the work a downgraded model gets
+# wrong in the expensive direction (a bad proposal costs the owner review time;
+# a missed one costs nothing). delivery none — it writes a proposal to the
+# pending queue and stays silent; the owner is reached by the weekly digest.
+job = {
+    "name": "Auto Improve",
+    "schedule": {"kind": "cron", "expr": "0 4 * * *", "tz": "UTC"},
+    "payload": {
+        "kind": "agentTurn",
+        "message": (
+            "A past session was flagged as possibly containing a durable lesson.\n\n"
+            "READ THIS FIRST and follow it exactly: skills/auto-improve/SKILL.md\n"
+            "(path is RELATIVE to the workspace cwd — do NOT prefix it with any shell variable).\n\n"
+            "Claim the candidate: python3 procedures/improvement_propose.py next\n"
+            "If that exits non-zero the queue is empty — reply NO_REPLY and STOP, zero cost.\n\n"
+            "Required stack, do NOT improvise a shortcut:\n"
+            "  - read skills/build-quality/SKILL.md BEFORE writing any code into a proposal\n"
+            "  - pick the surface with: python3 tools/route.py classify\n"
+            "  - confirm it is not already covered: python3 tools/route.py verify <surface> <needle>\n"
+            "  - lint your own draft: python3 tools/route.py lint -\n"
+            "  - write the proposal to kb/improvement_pending/ ONLY. NEVER touch a live\n"
+            "    surface; the owner applies it via route.py approve.\n"
+            "  - close the candidate: python3 procedures/improvement_propose.py done <id>\n\n"
+            "DROPPING IS THE EXPECTED MAJORITY OUTCOME. The detector favours recall, so\n"
+            "most candidates are ordinary work that merely looked busy. If there is no\n"
+            "durable lesson, run: python3 procedures/improvement_propose.py drop <id> "
+            "--why \"<one line>\" and stop. A wrong proposal costs the owner more than a "
+            "missed one."
+        ),
+        "lightContext": True,
+        "timeoutSeconds": 900
+    },
+    "sessionTarget": "isolated",
+    "delivery": {"mode": "none"}
+}
+AI_ID = upsert_gated_worker(job, "auto_improve")
+
+# Auto Improve Digest — weekly backstop, COMMAND kind (zero LLM in the gateway).
+# The daily lane announces nothing; this is the only thing that reaches the
+# owner. It prints ONLY when a proposal is actually waiting, so a quiet week
+# costs nothing and sends nothing. delivery announce resolves to whatever
+# channel THIS agent already uses — no channel name is hardcoded anywhere, so a
+# WhatsApp/Discord/Slack install works unchanged.
+try:
+    _dg_name = "Auto Improve Digest"
+    if not _find_cron(_dg_name):
+        _dg = {
+            "name": _dg_name,
+            "schedule": {"kind": "cron", "expr": "0 9 * * 1", "tz": "UTC"},
+            "payload": {
+                "kind": "command",
+                "argv": ["sh", "-lc", f'out=$(sh "{WS}/tools/gate/improvement-digest.sh" "{WS}"); '
+                                       '[ -n "$out" ] && printf "%s" "$out"; exit 0'],
+                "cwd": WS,
+                "env": {"OPENCLAW_WORKSPACE": WS},
+            },
+            "delivery": {"mode": "announce"},
+        }
+        _r = subprocess.run(_cron_add_argv(_dg), capture_output=True, text=True, timeout=_CLI_T)
+        if _r.returncode == 0:
+            print("  \033[32m[ok]\033[0m   auto_improve_digest cron registered (Mondays, zero-LLM, announce)")
+        else:
+            print(f"  \033[33m[warn]\033[0m auto_improve_digest cron not registered: {_r.stderr[:120]}")
+            print("  \033[33m[warn]\033[0m   Proposals still queue; review them with: python3 tools/route.py pending")
+    else:
+        print("  \033[32m[ok]\033[0m   auto_improve_digest cron already present")
+except Exception as _e:
+    print(f"  \033[33m[warn]\033[0m auto_improve_digest cron skipped: {_e}")
+
 # ── SAME-NAME DEDUP SWEEP (idempotency guarantee across ANY prior state) ─────
 # The upsert helpers already update-by-name so a clean re-run never duplicates,
 # BUT a PRIOR half-finished/crashed run (or a manual add) could have left two jobs
@@ -2059,12 +2130,13 @@ def _fallback_selfsched():
         if jid:
             subprocess.run(['openclaw', 'cron', 'enable', jid], capture_output=True, text=True, timeout=_CLI_T)
 
-if not (DNR_ID or PNR_ID):
+if not (DNR_ID or PNR_ID or AI_ID):
     print("  \033[33m[warn]\033[0m No worker ids captured — skipping Note Cron Gate wiring.")
 else:
     lane_env = {}
     if DNR_ID: lane_env["GATE_DAILY_NOTE_REVIEW_ID"] = DNR_ID
     if PNR_ID: lane_env["GATE_PENDING_REMINDER_ID"] = PNR_ID
+    if AI_ID:  lane_env["GATE_AUTO_IMPROVE_ID"] = AI_ID
     gate_id = _find_cron(GATE_NAME)
     if gate_id:
         # Gate exists — MERGE our lanes into its env (preserve any neuron lanes).
