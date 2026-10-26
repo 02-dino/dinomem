@@ -768,19 +768,55 @@ def _op_lint(target, as_json=False):
     return 0 if clean else 1
 
 
+def _first_sentence(text, limit=220):
+    """Opening claim of a proposal's argument, for the review listing.
+
+    A proposal is only reviewable if the owner can see WHY it exists without
+    opening a file, so the listing carries one line of the argument. Cut on a
+    sentence end when one is close enough, else on a word boundary -- never
+    mid-word, which is what made the old 60-char title slice unreadable.
+    """
+    flat = " ".join(str(text or "").split())
+    if not flat:
+        return ""
+    if len(flat) <= limit:
+        return flat
+    window = flat[:limit]
+    cut = max(window.rfind(". "), window.rfind("? "), window.rfind("! "))
+    if cut < limit // 2:                     # no sentence end worth using
+        cut = window.rfind(" ")
+    else:
+        cut += 1                             # keep the terminator itself
+    return (window[:cut] if cut > 0 else window).rstrip(" ,;:-") + " ..."
+
+
 def _op_pending(as_json=False):
     items = _pending_items()
+    # Titles are NOT truncated here. This listing is the only view most owners
+    # ever see (it is what the weekly digest pipes to chat), so a title cut at
+    # 60 chars silently hid the actual proposal -- the reader could not tell a
+    # skill rewrite from a one-line rule. Full title + one line of argument.
     rows = [{"id": d.get("id"), "status": d.get("status", "pending"),
-             "surface": d.get("surface"), "title": d.get("title", "")[:60],
+             "surface": d.get("surface"), "title": d.get("title", ""),
+             "why": _first_sentence(d.get("argument", "")),
              "source": d.get("source_candidate", "")} for _, d in items]
     if as_json:
         print(json.dumps({"ok": True, "count": len(rows), "items": rows}, indent=2))
     else:
         print(f"pending proposals: {len(rows)}  ({_pending_dir()})")
-        for r in rows:
-            print(f"  [{r['id']}] {r['status']:9s} {str(r['surface']):7s} {r['title']}")
+        for i, r in enumerate(rows, 1):
+            print(f"\n{i}. [{r['surface']}] {r['title']}")
+            if r["why"]:
+                print(f"   why: {r['why']}")
+            print(f"   id : {r['id']}  ({r['status']})")
         if rows:
-            print("\nreview: route.py diff <id>   apply: route.py approve <id>   drop: route.py reject <id>")
+            # Absolute path: this output is read in a CHAT client, far from a
+            # shell whose cwd happens to be the workspace. A bare "route.py"
+            # is not a runnable command there.
+            tool = os.path.join(_workspace_dir(), "tools", "route.py")
+            print(f"\nreview: {tool} diff <id>")
+            print(f"apply : {tool} approve <id>")
+            print(f"drop  : {tool} reject <id>")
     return 0 if rows else 1
 
 
