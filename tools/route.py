@@ -790,7 +790,18 @@ def _first_sentence(text, limit=220):
     return (window[:cut] if cut > 0 else window).rstrip(" ,;:-") + " ..."
 
 
-def _op_pending(as_json=False):
+# A proposal is still OPEN when the owner has not decided ("pending"), or when
+# they decided yes but the leaf writer refused the write ("failed" -- approved
+# by the owner, not landed on disk). Both are unfinished business.
+# "approved" and "rejected" are CLOSED and must drop out of the listing: the
+# weekly digest announces whatever this prints, so leaving settled items in it
+# re-announces finished work every week, and a gate that cries wolf is a gate
+# the owner stops reading -- the exact failure the digest exists to prevent.
+# The files stay on disk either way; this filters the VIEW, never the record.
+_OPEN_STATUSES = ("pending", "failed")
+
+
+def _op_pending(as_json=False, show_all=False):
     items = _pending_items()
     # Titles are NOT truncated here. This listing is the only view most owners
     # ever see (it is what the weekly digest pipes to chat), so a title cut at
@@ -800,6 +811,11 @@ def _op_pending(as_json=False):
              "surface": d.get("surface"), "title": d.get("title", ""),
              "why": _first_sentence(d.get("argument", "")),
              "source": d.get("source_candidate", "")} for _, d in items]
+    closed = 0
+    if not show_all:
+        kept = [r for r in rows if r["status"] in _OPEN_STATUSES]
+        closed = len(rows) - len(kept)
+        rows = kept
     if as_json:
         print(json.dumps({"ok": True, "count": len(rows), "items": rows}, indent=2))
     else:
@@ -827,6 +843,12 @@ def _op_pending(as_json=False):
             # staring at an instruction to press a control that is not there),
             # while a sentence degrades to a sentence everywhere.
             print("\nor just ask by number (\"approve 2\") -- same commands, same gate.")
+        if closed:
+            # Named, not hidden: an owner who remembers filing six proposals
+            # must be able to see that the missing ones were settled rather
+            # than lost.
+            print(f"\n({closed} already settled -- see them with: "
+                  f"{os.path.join(_workspace_dir(), 'tools', 'route.py')} pending --all)")
     return 0 if rows else 1
 
 
@@ -935,6 +957,8 @@ def main():
     ln.add_argument("--json", dest="as_json", action="store_true")
     pend = sub.add_parser("pending", help="list proposals awaiting owner approval (L3 gate)")
     pend.add_argument("--json", dest="as_json", action="store_true")
+    pend.add_argument("--all", dest="show_all", action="store_true",
+                      help="include already-approved/rejected proposals (audit view)")
     df = sub.add_parser("diff", help="show a proposal's argument + EXACTLY what would run")
     df.add_argument("id", help="proposal id (prefix ok)")
     ap_ = sub.add_parser("approve", help="apply a proposal THROUGH its existing leaf writer")
@@ -949,7 +973,7 @@ def main():
     if args.cmd == "lint":
         raise SystemExit(_op_lint(args.file, args.as_json))
     elif args.cmd == "pending":
-        raise SystemExit(_op_pending(args.as_json))
+        raise SystemExit(_op_pending(args.as_json, args.show_all))
     elif args.cmd == "diff":
         raise SystemExit(_op_diff(args.id))
     elif args.cmd == "approve":
