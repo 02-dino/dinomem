@@ -57,22 +57,16 @@ MIN_INTERVAL_SECS=$(( 24 * 3600 ))  # daily floor for the time-based GC guarante
 
 [ -d "$MEMORY_DIR" ] || exit 1
 
-# claim_freshness windows (must match check_ideator.sh / check_improvable.sh):
-#   live-session* -> 120 min (2h) lease; other claimants -> 30 min.
-LIVE_WINDOW=7200
-OTHER_WINDOW=1800
+# claim_freshness: delegated to gate_lib.sh (gate__is_fresh_claimed / gate__claim_window)
+# so all three gates + claim_note.sh share ONE window. The local 120-min copy that
+# used to live here drifted from claim_note.sh's 30 min and stalled the Advancer
+# for 7 weeks -- see gate__claim_window's WHY block. Fail-open shim: an old
+# gate_lib without the helper keeps this gate working (never fresh-claimed).
 now_epoch=$(date -u +%s)
 
-# is a note FRESHLY claimed by another worker/live session? (skip it if so)
 is_fresh_claimed() {
-  local f="$1" cb ca ce age window
-  cb=$(grep -E '^claimed_by:'  "$f" | tail -n1 | sed -E 's/^claimed_by:[[:space:]]*//'  | tr -d '\r' | xargs || true)
-  ca=$(grep -E '^claimed_at:'  "$f" | tail -n1 | sed -E 's/^claimed_at:[[:space:]]*//'  | tr -d '\r' | xargs || true)
-  [ -n "$cb" ] && [ -n "$ca" ] || return 1          # no claim -> not fresh-claimed
-  ce=$(date -u -d "$ca" +%s 2>/dev/null) || return 1 # unparsable -> treat as not claimed
-  age=$(( now_epoch - ce ))
-  case "$cb" in live-session*) window=$LIVE_WINDOW ;; *) window=$OTHER_WINDOW ;; esac
-  [ "$age" -lt "$window" ]                            # 0 (true) = fresh claim -> skip
+  declare -F gate__is_fresh_claimed >/dev/null 2>&1 || return 1
+  gate__is_fresh_claimed "$1"
 }
 
 # Note: the claim-excluding content hash now lives in gate_lib.sh (gate__body_hash),

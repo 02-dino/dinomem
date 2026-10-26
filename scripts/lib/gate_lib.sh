@@ -105,6 +105,44 @@ guard_by_interval() {
   return 1
 }
 
+# gate__claim_window <claimed_by>     # echo the freshness window (secs) for a claimant
+# SINGLE SOURCE OF TRUTH for "how long is a claim still fresh", shared by every
+# gate (check_daily_notes / check_improvable / check_ideator) so writer+readers
+# cannot drift apart again.
+#
+# WHY 30min FOR live-session TOO (fixed 2026-10-26): claim_note.sh shrank its
+# LIVE_WINDOW_MIN 120->30 in 9bab624 (2026-08-14) so a CRASHED live session goes
+# stale fast, but the gates + cron prompts kept the old 120. That left a 90-min
+# DEAD ZONE: claim_note.sh would hand out the claim (it considers it stale at
+# 30min) while every gate still skipped the note as "freshly held" until 120min.
+# Measured cost: the Advancer woke every 15min for 7 weeks and advanced nothing;
+# three project notes sat untouched since 2026-09-07. A live worker that is
+# genuinely active keeps refreshing (note-claim-refresh plugin bumps claimed_at
+# every 5min), so 30min never interrupts real work -- it only reaps dead claims.
+gate__claim_window() {
+  case "$1" in
+    live-session*) echo "${GATE_LIVE_CLAIM_SECS:-1800}" ;;
+    *)             echo "${GATE_OTHER_CLAIM_SECS:-1800}" ;;
+  esac
+}
+
+# gate__is_fresh_claimed <note>       # 0 (true) = freshly claimed by someone else
+# Reads claimed_by/claimed_at from a note and decides whether another worker
+# still owns it. Factored out of three near-identical copies (build-quality DRY).
+# Fail-OPEN on a missing/unparseable claim: no claim -> not fresh -> gate proceeds.
+gate__is_fresh_claimed() {
+  local f="$1" cb ca ce age window now_epoch
+  now_epoch=$(date -u +%s 2>/dev/null || echo 0)
+  [ "$now_epoch" -gt 0 ] || return 1
+  cb=$(grep -E '^claimed_by:' "$f" 2>/dev/null | tail -n1 | sed -E 's/^claimed_by:[[:space:]]*//' | tr -d '\r' | xargs || true)
+  ca=$(grep -E '^claimed_at:' "$f" 2>/dev/null | tail -n1 | sed -E 's/^claimed_at:[[:space:]]*//' | tr -d '\r' | xargs || true)
+  [ -n "$cb" ] && [ -n "$ca" ] || return 1
+  ce=$(date -u -d "$ca" +%s 2>/dev/null) || return 1
+  age=$(( now_epoch - ce ))
+  window=$(gate__claim_window "$cb")
+  [ "$age" -lt "$window" ]
+}
+
 # gate__crash_signature <note...>     # 0 if ANY note looks like a crashed worker
 # CRASH SIGNATURE: a project note that is in_progress with a STALE live-session-*
 # claim on an UNFINISHED step = a live worker that died mid-step and never
