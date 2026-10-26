@@ -817,6 +817,16 @@ def _op_pending(as_json=False):
             print(f"\nreview: {tool} diff <id>")
             print(f"apply : {tool} approve <id>")
             print(f"drop  : {tool} reject <id>")
+            # The reader of this listing is usually in a chat, not a shell --
+            # the digest gate announces it to a channel. Asking the agent by
+            # number is the path they can actually take from there, and it
+            # runs the SAME gated commands above. Stated in words rather than
+            # rendered as buttons on purpose: interactive controls are a
+            # per-channel capability (measured: they silently render as
+            # NOTHING on a channel that has them disabled, leaving an owner
+            # staring at an instruction to press a control that is not there),
+            # while a sentence degrades to a sentence everywhere.
+            print("\nor just ask by number (\"approve 2\") -- same commands, same gate.")
     return 0 if rows else 1
 
 
