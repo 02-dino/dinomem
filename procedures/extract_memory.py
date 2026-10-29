@@ -1883,9 +1883,12 @@ def _log_git_provenance():
     if _gh is None:
         return
     try:
-        mem_dir = SESSIONS_DIR.parent.parent / "workspace-analyst" / "memory"
-        # Resolve the memory dir robustly from the module's known MEMORY_DIR if set.
-        repo = MEMORY_DIR if "MEMORY_DIR" in globals() else mem_dir
+        # MEMORY_DIR is assigned at module level (always in globals()), and it is
+        # derived from THIS file's own location -- so it is correct for whatever
+        # workspace the installer copied us into. The old fallback here hardcoded
+        # "workspace-analyst", which was both dead code and wrong for every other
+        # agent; removed 2026-10-29. Behavior is unchanged.
+        repo = MEMORY_DIR
         if not _gh.available(repo):
             return
         changes = _gh.diff_since(repo, "HEAD", pathspec="memory/")

@@ -31,7 +31,7 @@ loops on.
    ```bash
    bash scripts/verify.sh <the-file-you-just-edited>
    ```
-   (Live analyst path: `bash /root/.openclaw/workspace-analyst/scripts/verify.sh <file>`.)
+   (Live analyst path: `bash DINOMEM_WORKSPACE_PLACEHOLDER/scripts/verify.sh <file>`.)
 3. **Read the LAST stdout line.** It is always exactly one of:
    - `VERIFY: PASS <file> (<checker>)` → done, move on.
    - `VERIFY: SKIP <file> (<reason>)` → no checker for this type (or tool
@@ -102,7 +102,7 @@ behavior-sensitive change), run:
 bash scripts/test-target.sh <the-file-you-just-edited>
 ```
 
-(Live analyst path: `bash /root/.openclaw/workspace-analyst/scripts/test-target.sh <file>`.)
+(Live analyst path: `bash DINOMEM_WORKSPACE_PLACEHOLDER/scripts/test-target.sh <file>`.)
 
 Read the LAST stdout line. It is always exactly one of:
 - `TEST_TARGET: <command>` → run that command from the repo root as the deeper proof.
@@ -141,7 +141,7 @@ After the edited file has passed its own narrowest proof, run:
 bash scripts/dependency-check.sh <the-file-you-just-edited>
 ```
 
-(Live analyst path: `bash /root/.openclaw/workspace-analyst/scripts/dependency-check.sh <file>`.)
+(Live analyst path: `bash DINOMEM_WORKSPACE_PLACEHOLDER/scripts/dependency-check.sh <file>`.)
 
 Read the LAST stdout line. It is always exactly one of:
 - `DEPENDENCY_CHECK: <command> || <command> ...` → run those command(s) from the repo root, in order. They are already deduped and narrowed through `test-target.sh`.

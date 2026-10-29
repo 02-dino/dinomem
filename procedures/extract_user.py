@@ -505,7 +505,7 @@ Rules:
 - A CORRECTION/contradiction of an existing line -> put it in "supersedes".
 - Theory-of-mind inferences ("prefers raw data", "low risk tolerance") go in "beat" with confidence, never as hard facts.
 - Never write facts about anyone OTHER than this person.
-- "relations" (NEURON): typed edges FROM this person TO a thing/asset/concept. verb = the relationship (e.g. "trades", "holds", "asks_about", "prefers", "distrusts"), object = the target (e.g. "ETH", "raw orderbook data", "leverage"). ONLY clear, non-trivial edges. Max 4. The subject is ALWAYS this person -- never emit an edge about anyone else. Skip if nothing clear.
+- "relations" (NEURON): typed edges FROM this person TO a thing/topic/concept. verb = the relationship (e.g. "works_on", "owns", "asks_about", "prefers", "distrusts"), object = the target (e.g. "the Q3 migration", "concise written summaries", "vendor pricing"). Use whatever domain the conversation is actually about; do NOT assume any particular industry. ONLY clear, non-trivial edges. Max 4. The subject is ALWAYS this person -- never emit an edge about anyone else. Skip if nothing clear.
 """
 
 

@@ -16,8 +16,9 @@ THE FRAME (this is the important part):
   legitimate user data and break personalization (the whole point of multi-user
   memory). Instead:
 
-    - A non-owner fact ABOUT THE PERSON ("prefers raw data", "trades ETH",
-      "low risk tolerance")  -> FULLY TRUSTED as data, stored as personalization.
+    - A non-owner fact ABOUT THE PERSON ("prefers raw data", "works on the Q3
+      migration", "low risk tolerance")  -> FULLY TRUSTED as data, stored as
+      personalization.
       It SHOULD change how the assistant treats THAT user.
 
     - A non-owner item that asserts a SYSTEM / WORKSPACE DIRECTIVE

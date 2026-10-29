@@ -1316,13 +1316,15 @@ upsert_cron() {
       # The old test was index(line, ws)>0, which asked "does this line mention my
       # workspace path anywhere?". That is true for EVERY agent on a box where the
       # installer itself lives under an agent workspace: cron lines invoke scripts
-      # from $SKILL_DIR, so a kttal line reads
-      #   python3 /root/.openclaw/workspace-analyst/github/dinomem/scripts/weekly_stats.py --workspace /root/.openclaw/workspace-kttal
-      # and contains the literal string "workspace-analyst" purely as the TOOL path.
-      # Installing analyst then stamped analyst tags onto kttal lines, and phase 2
-      # (replace-by-tag) deleted them. Simulated against this box 2026-10-12:
-      # 14 foreign lines carried the string, 3 lines got the analyst tag (one
-      # targeting workspace-kttal), crontab 827 -> 825.
+      # from $SKILL_DIR, so a line belonging to agent B reads
+      #   python3 <WS-of-A>/github/dinomem/scripts/weekly_stats.py --workspace <WS-of-B>
+      # and contains the workspace string of agent A purely as the TOOL path.
+      # Installing A then stamped tags for A onto lines owned by B, and phase 2
+      # (replace-by-tag) deleted them. Simulated against a 12-agent box 2026-10-12:
+      # 14 foreign lines carried the string, 3 lines got the wrong tag (one
+      # targeting a different workspace), crontab 827 -> 825.
+      # NOTE: no apostrophes anywhere in this comment -- see the terminator-set
+      # note below; a literal single quote cannot appear inside this awk program.
       #
       # Boundary check matters: a bare prefix test would let workspace-main claim
       # workspace-main2. The marker must end at a path separator or whitespace.

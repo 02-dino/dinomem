@@ -260,7 +260,13 @@ def review_file_with_llm(filepath, age):
     file_date = filepath.stem
     git_line = _git_timeline_hint(filepath)
 
-    prompt = f"""You are reviewing a memory file for a market analyst AI that covers ALL asset classes (crypto, equities, macro, commodities, forex).
+    # PROMPT NEUTRALITY (fixed 2026-10-29): this prompt used to pin the reviewer
+    # to one specific industry persona and prune anything not useful to THAT
+    # vertical. This is the DELETION path, run daily on EVERY agent, so the
+    # persona silently graded sales/support/event memory against the wrong bar.
+    # Keep every line below domain-neutral: the agent's own subject matter must
+    # be INFERRED from the file, never assumed by this prompt.
+    prompt = f"""You are reviewing a memory file for an AI assistant. Infer the assistant's domain from the memory itself; do NOT assume any particular industry or subject matter.
 
 File date: {file_date}
 Review date: {today}
@@ -278,7 +284,7 @@ Instructions:
    - [uncertain] — cannot verify. Keep as [uncertain] with original text.
    - [noise] — low-signal, vague, no actionable insight, or just chitchat. REMOVE it (do not include in output).
 
-2. Be AGGRESSIVE about noise removal. If an entry is not useful to a market analyst, remove it.
+2. Be AGGRESSIVE about noise removal. If an entry would not help this assistant do its job or answer a future question, remove it.
    Examples of noise: generic commentary, vague predictions without specifics, restatements of known facts without new insight, social chat, "interesting" observations that don't affect decisions.
 
 3. If ALL entries are redundant or noise, return exactly: ALL_REDUNDANT
@@ -286,11 +292,11 @@ Instructions:
 4. Return ONLY the reviewed entries. One per line. Format:
    - [status] original text
 
-5. For invalidated market claims: include the outcome (e.g., "pump did not sustain, dropped 40% from $X to $Y"; "earnings beat but stock sold off"; "rate cut priced in, no further move").
+5. For invalidated claims: include what actually happened (e.g., "the deal closed at half the quoted value"; "the launch slipped two quarters"; "the fix held, issue did not recur").
 
 6. For expired predictions or time-sensitive calls: note the expiry and what actually happened if known.
 
-7. For framework/workflow facts (e.g. workflow_market, analysis_template) that appear in newer files: they are redundant. Omit them.
+7. For framework/workflow facts (e.g. a workflow block or response template) that also appear in newer files: they are redundant. Omit them.
 
 8. Be concise. Do not add commentary outside the tagged lines.
 
