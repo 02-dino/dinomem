@@ -217,9 +217,42 @@ MEMORY_DIR.mkdir(exist_ok=True)
 # OPENCLAW CONFIG HELPERS
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _openclaw_config_path():
+    """Path of the openclaw.json THIS agent actually runs on.
+
+    BUG FIXED 2026-10-29: every reader below hardcoded ~/.openclaw/openclaw.json
+    and ignored OPENCLAW_CONFIG_PATH. Each dinomem cron is launched with
+    OPENCLAW_CONFIG_PATH=/root/.openclaw-<agent>/openclaw.json, so on a
+    multi-instance host these read the WRONG instance -- one whose providers
+    carry no apiKey. The direct-API fallback then found no key and the caller
+    silently degraded. Measured: the file being read exposed providers
+    ['tei-embed'] while the agent's real config held the LLM keys.
+
+    Delegates to _cheap_model.config_path(), the resolver that already fixed this
+    exact class of bug on 2026-10-04, so there is ONE precedence ladder rather
+    than a second copy that can drift. Inline fallback keeps this working if the
+    helper is ever absent.
+    """
+    try:
+        import importlib.util as _ilu
+        _hp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_cheap_model.py")
+        _spec = _ilu.spec_from_file_location("_cheap_model", _hp)
+        _mod = _ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(_mod)
+        if hasattr(_mod, "config_path"):
+            return Path(_mod.config_path())
+    except Exception:
+        pass
+    for _var in ("OPENCLAW_CONFIG_PATH", "OPENCLAW_CONFIG"):
+        _env = os.environ.get(_var, "").strip()
+        if _env:
+            return Path(_env)
+    return _openclaw_config_path()
+
+
 def get_openclaw_default_model():
     """Get the default model from OpenClaw configuration."""
-    openclaw_config = Path.home() / ".openclaw" / "openclaw.json"
+    openclaw_config = _openclaw_config_path()
     if openclaw_config.exists():
         try:
             with open(openclaw_config, 'r') as f:
@@ -245,7 +278,7 @@ def get_api_key_from_openclaw(model):
     """Auto-extract API key from OpenClaw config based on model."""
     if not model:
         return None
-    openclaw_config = Path.home() / ".openclaw" / "openclaw.json"
+    openclaw_config = _openclaw_config_path()
     if not openclaw_config.exists():
         return None
     try:
@@ -294,7 +327,7 @@ def get_api_base_from_model(model):
     """Auto-detect API base URL from OpenClaw config."""
     if not model:
         return None
-    openclaw_config = Path.home() / ".openclaw" / "openclaw.json"
+    openclaw_config = _openclaw_config_path()
     if not openclaw_config.exists():
         return None
     try:
@@ -325,7 +358,7 @@ def get_api_format_from_model(model):
     """Get the API format type from OpenClaw config."""
     if not model:
         return "openai"
-    openclaw_config = Path.home() / ".openclaw" / "openclaw.json"
+    openclaw_config = _openclaw_config_path()
     if not openclaw_config.exists():
         return "openai"
     try:
@@ -369,7 +402,7 @@ def get_fallback_config():
         if key and base:
             return LLM_MODEL, key, base
     # 2) Last resort: OpenRouter, only if the user actually has a key for it.
-    openclaw_config = Path.home() / ".openclaw" / "openclaw.json"
+    openclaw_config = _openclaw_config_path()
     if openclaw_config.exists():
         try:
             with open(openclaw_config, 'r') as f:

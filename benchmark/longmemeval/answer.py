@@ -202,6 +202,10 @@ def _resolve_openclaw() -> str:
     return shutil.which("openclaw") or "/home/linuxbrew/.linuxbrew/bin/openclaw"
 
 
+# Ceiling on the retrieved-memory block we put in one prompt. Sits under the
+# 131072-byte argv limit with room for ANSWER_SYS, the question, and framing.
+MAX_CTX_CHARS = 100_000
+
 ANSWER_SYS = (
     "You are answering a question using ONLY the retrieved memory below. "
     "The memory is what an assistant remembered from earlier conversations. "
@@ -237,10 +241,27 @@ def compose_answer(question: str, contexts: list[dict], model: str,
                    max_tokens: int, timeout: int) -> tuple[str, dict]:
     if model == "stub":
         return _stub_answer(question, contexts)
-    ctx_block = "\n\n".join(
+    # BOUNDED (2026-10-29): the prompt below is passed to `openclaw ... model
+    # run --prompt <text>` as ONE argv value, and Linux caps a single argv string
+    # at MAX_ARG_STRLEN = 131072 bytes (separate from total ARG_MAX, so no host
+    # tuning avoids it). --topk bounds the NUMBER of contexts but not their size,
+    # so a few long units could still blow the limit and fail the run with
+    # errno 7 before any provider is reached. Truncating is safe here: this text
+    # only feeds one answer attempt and is never written back to disk.
+    _ctx_lines = [
         f"[memory {i+1}] ({c.get('source','?')})\n{c['text']}"
         for i, c in enumerate(contexts)
-    ) or "(no memory retrieved)"
+    ]
+    _kept, _used = [], 0
+    for _ln in _ctx_lines:
+        if _used + len(_ln) + 2 > MAX_CTX_CHARS:
+            break
+        _kept.append(_ln)
+        _used += len(_ln) + 2
+    if len(_kept) < len(_ctx_lines):
+        print(f"  [warn] context trimmed to {len(_kept)}/{len(_ctx_lines)} "
+              f"units ({MAX_CTX_CHARS} char prompt budget)", file=sys.stderr)
+    ctx_block = "\n\n".join(_kept) or "(no memory retrieved)"
     prompt = (
         f"{ANSWER_SYS}\n\n=== RETRIEVED MEMORY ===\n{ctx_block}\n\n"
         f"=== QUESTION ===\n{question}\n\n=== ANSWER ==="

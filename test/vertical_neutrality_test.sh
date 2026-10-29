@@ -41,10 +41,27 @@ _candidates() {
   done
 }
 
+# SANITY GATE: a scan of zero files reports "5 passed" and exits 0 — a green that
+# means "nothing was checked", not "nothing is wrong". That is the exact
+# false-confidence class this test exists to kill, so it must not be possible
+# here. Trips if the surface dirs get renamed/moved, if the file is run from
+# outside the repo, or if a future refactor breaks _candidates.
+_candidate_count="$(_candidates | tr -dc '\0' | wc -c | tr -d ' ')"
+if [ "${_candidate_count:-0}" -eq 0 ]; then
+  echo "vertical_neutrality_test: ABORT — 0 candidate files under $REPO" >&2
+  echo "  expected runtime surfaces (${SURFACES[*]}) to contain scannable files." >&2
+  echo "  refusing to report a pass on an unscanned repo." >&2
+  exit 2
+fi
+
 # _ck LABEL PATTERN — fail if PATTERN (ERE, case-insensitive) appears in any candidate.
+# -r: with zero candidates, xargs must NOT run grep at all — a bare grep would
+#     read STDIN and either hang or silently "pass" an unscanned repo.
+# -H: force the filename prefix; grep omits it on a single-file batch, which
+#     would print a bare "12:<line>" with no path in the FAIL report.
 _ck() {
   local label="$1" pat="$2" hits
-  hits="$(_candidates | xargs -0 grep -nIiE "$pat" 2>/dev/null \
+  hits="$(_candidates | xargs -0r grep -nHIiE "$pat" 2>/dev/null \
           | grep -v 'vertical_neutrality' || true)"
   if [ -z "$hits" ]; then
     echo "  ok   $label"; pass=$((pass+1))

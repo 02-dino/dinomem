@@ -54,6 +54,25 @@ def _config_path() -> str:
     return str(Path.home() / ".openclaw" / "openclaw.json")
 
 
+# PUBLIC alias of the resolver above. Added 2026-10-29 because the SAME bug the
+# 2026-10-04 note describes was still live in every other config reader:
+# get_openclaw_config() in generate_topic_index.py / extract_memory.py /
+# docs_ingest.py each hardcoded ~/.openclaw/openclaw.json and ignored
+# OPENCLAW_CONFIG_PATH. On a multi-instance host they therefore read the WRONG
+# instance and found no provider apiKey, so the direct-API fallback returned
+# None and the caller silently degraded -- the exact failure that let a broken
+# gateway call go unnoticed for weeks.
+#
+# Exported so those callers REUSE this one resolver instead of each growing a
+# second copy that can drift. Same precedence, no new behaviour.
+def config_path() -> str:
+    """Path of the openclaw.json this process should read.
+
+    OPENCLAW_CONFIG_PATH -> OPENCLAW_CONFIG -> ~/.openclaw/openclaw.json.
+    """
+    return _config_path()
+
+
 def _compaction_model(config_path: str = "") -> str:
     """Read agents.defaults.compaction.model. Empty string on any failure."""
     path = config_path or _config_path()

@@ -248,12 +248,43 @@ def _git_timeline_hint(filepath):
     except Exception:
         return ""
 
+# Largest file we will hand to the reviewer in one prompt.
+#
+# WHY (measured 2026-10-29): the prompt goes to `openclaw ... model run
+# --prompt <text>` as ONE argv entry, and Linux caps a single argv string at
+# MAX_ARG_STRLEN = 32 pages = 131072 bytes -- a SEPARATE limit from total
+# ARG_MAX, so no box tuning avoids it. Two real memory files were ALREADY over
+# it (248,827 and 209,255 bytes), so those reviews died with errno 7 every run.
+#
+# WHY WE SKIP INSTEAD OF TRUNCATING: this function's return value REPLACES the
+# file on disk (see the writer in review_memory_files). Sending a truncated file
+# would make the LLM return only the entries it saw, and the write-back would
+# then DELETE every entry past the cut. Silent, unrecoverable data loss on the
+# deletion path. Skipping is the only safe failure here.
+#
+# 120_000 sits just under the ceiling, leaving room for the instruction text
+# wrapped around the content.
+MAX_REVIEW_CONTENT_CHARS = 120_000
+
+
 def review_file_with_llm(filepath, age):
     """Send file to LLM for full review. Returns reviewed content or None if failed."""
     with open(filepath, "r", encoding="utf-8") as f:
         content = f.read()
 
     if not content.strip():
+        return None
+
+    # Oversize guard. Returning None routes this file to the caller's existing
+    # failure branch, which does NOT write and does NOT record it in the tracker
+    # -- so nothing is lost and it is retried later. Logged explicitly because
+    # the old behaviour was an opaque errno 7 that looked like a flaky LLM call.
+    if len(content) > MAX_REVIEW_CONTENT_CHARS:
+        print(
+            f"   SKIP {filepath.name}: {len(content)} chars exceeds the "
+            f"{MAX_REVIEW_CONTENT_CHARS} prompt budget (argv limit). Not reviewed, "
+            f"not modified. Split this file to get it reviewed."
+        )
         return None
 
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
