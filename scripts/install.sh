@@ -3258,21 +3258,28 @@ fi
 # alone, so a legitimate write is never silently undone. Non-fatal: the feature
 # self-tests on a fake file and refuses to arm if the restore would not have
 # fired, and a box without systemd just gets the script.
+#
+# --all-homes, NOT dirname(workspace): a box can run many gateways, each with
+# its OWN config home (measured 2026-11-02: 14 live gateways under
+# /root/.openclaw-<agent>/, while dirname(WS) resolves to /root/.openclaw for
+# every one of them). Pointing the guard at dirname(WS) would install it N
+# times at the WRONG file and leave 13 gateways unguarded while each install
+# still reported "armed" — the exact failure mode this feature exists to stop.
 if [ "$DO_CONFIG_GUARD" = 1 ]; then
   hr "config-guard (openclaw.json crash-loop protection)"
   CG_INSTALLER="$SKILL_DIR/features/config-guard/install.sh"
   if [ ! -f "$CG_INSTALLER" ]; then
     warn "features/config-guard/install.sh not found — skipping"
   elif [ "$DRY_RUN" = 1 ]; then
-    plan "run config-guard installer (systemd .path watch on $OPENCLAW_DIR/openclaw.json)"
+    plan "run config-guard installer --all-homes (one systemd .path instance per OpenClaw config home)"
   else
-    CG_ARGS=(--openclaw-dir "$OPENCLAW_DIR")
+    CG_ARGS=(--openclaw-dir "$OPENCLAW_DIR" --all-homes)
     # root usually has no systemd --user manager; a system unit is the one that
     # actually arms there. Non-root keeps the rootless user unit.
     [ "$(id -u 2>/dev/null || echo 1)" = "0" ] && CG_ARGS+=(--system)
     [ "$FORCE" = 1 ] && CG_ARGS+=(--force)
     if bash "$CG_INSTALLER" "${CG_ARGS[@]}"; then
-      ok "config-guard installed (uninstall: bash features/config-guard/install.sh --uninstall)"
+      ok "config-guard installed per config home (uninstall: bash features/config-guard/install.sh --uninstall --all-homes)"
     else
       warn "config-guard installer returned non-zero — dinomem install continues"
     fi

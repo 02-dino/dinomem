@@ -1,0 +1,17 @@
+[Unit]
+Description=Guard %f/openclaw.json: restore last-good snapshot on an invalid write
+
+[Service]
+Type=oneshot
+# TEMPLATE UNIT — one instance per OpenClaw config home, because a box can run
+# many gateways and each has its OWN openclaw.json. The instance name is the
+# home path escaped with `systemd-escape --path`, so %I expands back to the
+# absolute home (e.g. /root/.openclaw-analyst) and N guards coexist instead of
+# overwriting each other under one fixed unit name.
+#
+# OPENCLAW_DIR is what actually points the guard at the right file: without it
+# the script falls back to ~/.openclaw, so every instance would watch the SAME
+# config while reporting "armed" (measured 2026-11-02: 14 gateways, 14 homes,
+# 1 watched).
+Environment=OPENCLAW_DIR=%f
+ExecStart=%f/scripts/config-guard.sh

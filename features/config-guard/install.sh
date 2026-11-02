@@ -14,6 +14,10 @@
 #
 # Options:
 #   --openclaw-dir DIR  OpenClaw home holding openclaw.json (default: $OPENCLAW_HOME or ~/.openclaw)
+#   --all-homes         install/uninstall for EVERY OpenClaw home found next to the
+#                       default one (~/.openclaw and ~/.openclaw-*). A box can run
+#                       many gateways, each with its OWN openclaw.json; guarding one
+#                       leaves the rest unprotected while still reporting "armed".
 #   --system            install as a SYSTEM unit (/etc/systemd/system) instead of --user
 #   --force             overwrite an existing guard script / units (default: skip if present)
 #   --dry-run           preview only, write nothing
@@ -29,10 +33,12 @@ USE_SYSTEM=0
 FORCE=0
 DRY_RUN=0
 UNINSTALL=0
+ALL_HOMES=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --openclaw-dir) OPENCLAW_DIR="$2"; shift 2 ;;
+    --all-homes)    ALL_HOMES=1; shift ;;
     --system)       USE_SYSTEM=1; shift ;;
     --force)        FORCE=1; shift ;;
     --dry-run)      DRY_RUN=1; shift ;;
@@ -41,6 +47,40 @@ while [ $# -gt 0 ]; do
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
+
+# ── multi-home fan-out ───────────────────────────────────────────────────────
+# A box can run MANY gateways, each with its own config home (measured
+# 2026-11-02: 14 live gateways, 14 homes, only 1 guarded). Guarding one home
+# while the operator believes the box is covered is the failure this flag
+# closes. Re-exec once per discovered home; each child does the normal
+# single-home install, so there is exactly ONE install code path.
+if [ "$ALL_HOMES" = 1 ]; then
+  _base_parent="$(dirname "$OPENCLAW_DIR")"
+  _base_name="$(basename "$OPENCLAW_DIR")"
+  _homes=()
+  for _h in "$OPENCLAW_DIR" "$_base_parent/$_base_name"-*; do
+    [ -d "$_h" ] || continue
+    [ -f "$_h/openclaw.json" ] || continue
+    _homes+=("$_h")
+  done
+  if [ "${#_homes[@]}" -eq 0 ]; then
+    echo "no OpenClaw home with an openclaw.json found under $_base_parent" >&2
+    exit 1
+  fi
+  printf '\033[1m== config-guard: %d home(s) ==\033[0m\n' "${#_homes[@]}"
+  _rc=0
+  for _h in "${_homes[@]}"; do
+    _args=(--openclaw-dir "$_h")
+    [ "$USE_SYSTEM" = 1 ] && _args+=(--system)
+    [ "$FORCE" = 1 ]      && _args+=(--force)
+    [ "$DRY_RUN" = 1 ]    && _args+=(--dry-run)
+    [ "$UNINSTALL" = 1 ]  && _args+=(--uninstall)
+    # Never abort the fan-out on one bad home: a single unwritable or
+    # half-provisioned home must not leave the remaining gateways unguarded.
+    bash "${BASH_SOURCE[0]}" "${_args[@]}" || { _rc=1; printf '  \033[33m[warn]\033[0m %s failed — continuing with the remaining homes\n' "$_h"; }
+  done
+  exit "$_rc"
+fi
 
 ok()   { printf '  \033[32m[ok]\033[0m   %s\n' "$*"; }
 skip() { printf '  \033[33m[skip]\033[0m %s\n' "$*"; }
@@ -63,8 +103,26 @@ else
   UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
   SYSTEMCTL="systemctl --user"
 fi
-SVC="openclaw-config-guard.service"
-PATHUNIT="openclaw-config-guard.path"
+# INSTANCE NAME = this home's path, escaped. A box can run many gateways, each
+# with its OWN openclaw.json (measured 2026-11-02: 14 live gateways, 14 homes).
+# With the old FIXED unit names a second install did not widen coverage, it
+# OVERWROTE the first — so every extra home sat unguarded while systemd still
+# reported one happy "active" unit. Template units let N homes coexist.
+if command -v systemd-escape >/dev/null 2>&1; then
+  INSTANCE="$(systemd-escape --path "$OPENCLAW_DIR")"
+else
+  # No systemd-escape (no systemd at all): any stable string will do, because
+  # without systemd we never emit units anyway.
+  INSTANCE="$(printf '%s' "${OPENCLAW_DIR#/}" | tr '/' '-')"
+fi
+SVC="openclaw-config-guard@${INSTANCE}.service"
+PATHUNIT="openclaw-config-guard@${INSTANCE}.path"
+SVC_TMPL="openclaw-config-guard@.service"
+PATH_TMPL="openclaw-config-guard@.path"
+# Pre-template installs left these behind; they watch ONE hardcoded path and
+# would keep firing alongside the new instances.
+LEGACY_SVC="openclaw-config-guard.service"
+LEGACY_PATH="openclaw-config-guard.path"
 
 echo
 hr "config-guard -> $OPENCLAW_DIR"
@@ -75,6 +133,15 @@ if [ "$UNINSTALL" = 1 ]; then
   hr "Uninstall"
   $SYSTEMCTL disable --now "$PATHUNIT" 2>/dev/null || true
   rm -f "$UNIT_DIR/$PATHUNIT" "$UNIT_DIR/$SVC" 2>/dev/null || true
+  # Legacy (pre-template) units watched ONE hardcoded path. Leaving them armed
+  # after an upgrade means a stale guard keeps firing on a home nobody asked for.
+  $SYSTEMCTL disable --now "$LEGACY_PATH" 2>/dev/null || true
+  rm -f "$UNIT_DIR/$LEGACY_PATH" "$UNIT_DIR/$LEGACY_SVC" 2>/dev/null || true
+  # Templates are shared by every instance — only remove them once no instance
+  # is left, otherwise uninstalling one home disarms all the others.
+  if ! ls "$UNIT_DIR"/openclaw-config-guard@*.path >/dev/null 2>&1; then
+    rm -f "$UNIT_DIR/$SVC_TMPL" "$UNIT_DIR/$PATH_TMPL" 2>/dev/null || true
+  fi
   $SYSTEMCTL daemon-reload 2>/dev/null || true
   rm -f "$SCRIPT_DST" "${CFG}.guard-good" 2>/dev/null || true
   ok "config-guard removed (units + script + good-snapshot). Any .broken-* forensic copies kept."
@@ -123,29 +190,38 @@ else
   cp "$SELF_DIR/config-guard.sh" "$SCRIPT_DST" && chmod +x "$SCRIPT_DST" && ok "config-guard.sh -> $SCRIPT_DST"
 fi
 
-# ── install units (DUP-AWARE), rewriting %h to the resolved absolute paths ────
-# The templates use %h for the default ~/.openclaw layout; we always emit absolute
-# paths so a non-default --openclaw-dir (or --system, where %h is unreliable) works.
+# ── install the TEMPLATE units ───────────────────────────────────────────────
+# Copied verbatim: %I is expanded by systemd at runtime to this instance's home,
+# so ONE pair of template files serves every home on the box. Nothing is
+# rewritten per home anymore — that rewriting is exactly what forced a single
+# fixed unit name and capped the feature at one gateway.
 hr "systemd units ($([ "$USE_SYSTEM" = 1 ] && echo system || echo user))"
-emit_unit() {
-  # $1 = template basename, $2 = destination
-  local tmpl="$SELF_DIR/units/$1" dst="$2"
-  if [ -f "$dst" ] && [ "$FORCE" = 0 ]; then
-    skip "$(basename "$dst") (exists, --force to overwrite)"
+emit_tmpl() {
+  # $1 = template basename (shared by all instances)
+  local src="$SELF_DIR/units/$1" dst="$UNIT_DIR/$1"
+  [ -f "$src" ] || { warn "missing template $1 — cannot arm"; return 1; }
+  # Templates are SHARED, so refresh whenever content differs: skipping here
+  # would pin every home to the first-installed version.
+  if [ -f "$dst" ] && cmp -s "$src" "$dst"; then
+    skip "$1 (up-to-date)"
     return 0
   fi
-  # Rewrite %h/.openclaw/... placeholders to the real absolute paths.
-  sed -e "s#%h/.openclaw/scripts/config-guard.sh#$SCRIPT_DST#g" \
-      -e "s#%h/.openclaw/openclaw.json#$CFG#g" \
-      "$tmpl" > "$dst"
-  ok "$(basename "$dst")"
+  cp "$src" "$dst" && ok "$1"
 }
 if [ "$DRY_RUN" = 1 ]; then
-  plan "write $UNIT_DIR/{$SVC,$PATHUNIT} (abs paths: ExecStart=$SCRIPT_DST, watch=$CFG)"
+  plan "install templates $PATH_TMPL + $SVC_TMPL into $UNIT_DIR"
+  plan "enable instance $PATHUNIT (watch=$CFG, OPENCLAW_DIR=$OPENCLAW_DIR)"
 else
   mkdir -p "$UNIT_DIR"
-  emit_unit "$SVC" "$UNIT_DIR/$SVC"
-  emit_unit "$PATHUNIT" "$UNIT_DIR/$PATHUNIT"
+  emit_tmpl "$SVC_TMPL"
+  emit_tmpl "$PATH_TMPL"
+  # Retire a pre-template install: it watches ONE hardcoded path and would keep
+  # firing next to the new instances, so an upgrade must disarm it explicitly.
+  if [ -f "$UNIT_DIR/$LEGACY_PATH" ] || [ -f "$UNIT_DIR/$LEGACY_SVC" ]; then
+    $SYSTEMCTL disable --now "$LEGACY_PATH" >/dev/null 2>&1 || true
+    rm -f "$UNIT_DIR/$LEGACY_PATH" "$UNIT_DIR/$LEGACY_SVC" 2>/dev/null || true
+    ok "retired legacy fixed-name units (replaced by per-home instances)"
+  fi
 fi
 
 # ── seed the good snapshot ONLY if the current config is valid ────────────────

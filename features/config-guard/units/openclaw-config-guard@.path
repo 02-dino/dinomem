@@ -1,0 +1,13 @@
+[Unit]
+Description=Watch %f/openclaw.json for invalid writes (triggers config-guard)
+
+[Path]
+# Fire the guard whenever THIS home's config is modified/replaced. %I is the
+# instance name (a `systemd-escape --path` encoded home) expanded back to an
+# absolute path, which is how one box guards many gateways at once.
+PathModified=%f/openclaw.json
+PathChanged=%f/openclaw.json
+Unit=openclaw-config-guard@%i.service
+
+[Install]
+WantedBy=default.target
