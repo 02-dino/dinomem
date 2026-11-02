@@ -1090,13 +1090,52 @@ else
 fi
 
 # ── 2e) Wire copied skills into agent allowlist ─────────────────────────────
+#
+# A LOUD failure, on purpose (owner 2026-11-02: "beri warning keras kalau
+# skill2 tsb harus dimasukkin ke allowlist").
+#
+# WHY THIS DESERVES SHOUTING: an unwired skill fails in the worst possible
+# way — SILENTLY and LATER. The files are on disk, `skills check` lists them,
+# the install says OK, and the only symptom is that the agent never uses a
+# capability it appears to have. Measured on this box 2026-11-02: a skill sat
+# installed-but-excluded and was only caught by chance. So when wiring fails
+# we print the exact manual fix rather than a one-line warn that scrolls past.
+_loud_skill_warning() {
+  local rc="$1" cfg="$2" agent="$3" sdir="$4" ids=""
+  [ -d "$sdir" ] && ids="$(find "$sdir" -mindepth 1 -maxdepth 1 -type d -exec test -f '{}/SKILL.md' ';' -printf '%f\n' 2>/dev/null | sort | tr '\n' ' ')"
+  printf '\n'
+  printf '  ############################################################\n'
+  printf '  ##  WARNING: SKILLS INSTALLED BUT *NOT* WIRED             ##\n'
+  printf '  ############################################################\n'
+  printf '  The skill files were copied, but adding them to the agent\n'
+  printf '  allowlist FAILED (rc=%s).\n\n' "$rc"
+  printf '  CONSEQUENCE: the agent will NOT see or use these skills.\n'
+  printf '  Nothing else will complain. This is the silent-failure case.\n\n'
+  printf '  Skills affected: %s\n\n' "${ids:-<none detected>}"
+  printf '  FIX MANUALLY — add each id to the agent skills allowlist:\n'
+  printf '    OPENCLAW_CONFIG_PATH=%s \\\n' "$cfg"
+  printf '      openclaw config get agents.list   # find the index of "%s"\n' "$agent"
+  printf '    then add the ids above to agents.list[<i>].skills and run:\n'
+  printf '    OPENCLAW_CONFIG_PATH=%s openclaw config validate\n\n' "$cfg"
+  printf '  VERIFY (must NOT appear under "not allowed to see/use"):\n'
+  printf '    openclaw skills check\n'
+  printf '  ############################################################\n\n'
+}
 # Skills in <workspace>/skills are auto-discovered, but agents with an explicit
 # skills allowlist will EXCLUDE them unless listed. Add the IDs we just shipped.
 # Exit 2 = wire_skills refused a destructive write (agent unresolved + defaults
 # unset); that is a config/arg problem the operator must fix, so HARD FAIL
 # instead of warning past it and reporting a green install with dead skills.
+# MEASURED 2026-11-02: wire_skills.py reads OPENCLAW_CONFIG, but this call site
+# did not pass it, so on a multi-gateway box it resolved to the DEFAULT
+# ~/.openclaw/openclaw.json while the installer itself was targeting a profile
+# config ($OPENCLAW_JSON). Symptom: "agent 'analyst' not found" -> exit 2 ->
+# hard fail, on a box where that agent DOES exist in the profile config. The
+# inverse is worse: if the default config happens to hold an unrelated agent,
+# the skills get wired into the WRONG gateway and the install reports green
+# while every shipped skill stays invisible. Pass the resolved path explicitly.
 if command -v python3 >/dev/null 2>&1; then
-  python3 "$SKILL_DIR/scripts/wire_skills.py" \
+  OPENCLAW_CONFIG="$OPENCLAW_JSON" python3 "$SKILL_DIR/scripts/wire_skills.py" \
     --workspace "$WS" \
     --agent-id "$AGENT_ID" \
     --skills-dir "$SKILL_DIR/skills"
@@ -1104,10 +1143,10 @@ if command -v python3 >/dev/null 2>&1; then
   if [ "$_ws_rc" = 2 ]; then
     fail "skill allowlist wiring REFUSED (see above): agent '$AGENT_ID' unresolved and agents.defaults.skills unset. Fix --agent-id or register the agent, then re-run."
   elif [ "$_ws_rc" != 0 ]; then
-    warn "skill allowlist wiring failed (rc=$_ws_rc); skills may be excluded"
+    _loud_skill_warning "$_ws_rc" "$OPENCLAW_JSON" "$AGENT_ID" "$SKILL_DIR/skills"
   fi
 else
-  warn "python3 not found; skill allowlist wiring skipped"
+  _loud_skill_warning "no-python3" "$OPENCLAW_JSON" "$AGENT_ID" "$SKILL_DIR/skills"
 fi
 
 # ── 3) TEI Docker setup ────────────────────────────────────────────────────────
