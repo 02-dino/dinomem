@@ -178,6 +178,28 @@ else
   else
     TEST_OK=0
   fi
+  # Leg 2: run it the way SYSTEMD will — with a stripped environment. The shell
+  # test above inherits HOME/PATH, so it passed on a box where the real unit
+  # died instantly on `HOME: unbound variable` and the installer still reported
+  # "armed" (measured 2026-11-02). A guard that only works in an interactive
+  # shell is not a guard; test the env the service actually gets.
+  if [ "$TEST_OK" = 1 ] && command -v env >/dev/null 2>&1; then
+    echo '{"ok":true}' > "$T/bare.json"
+    env -i GUARD_CFG="$T/bare.json" GUARD_GOOD="$T/bare.json.guard-good" \
+           GUARD_LOG="$T/log2" GUARD_LOCK="$T/lock2" GUARD_SETTLE=0 \
+           /bin/bash "$SCRIPT_DST" >/dev/null 2>"$T/bare.err" || true
+    printf '%s' '{"ok":true,,}' > "$T/bare.json"
+    env -i GUARD_CFG="$T/bare.json" GUARD_GOOD="$T/bare.json.guard-good" \
+           GUARD_LOG="$T/log2" GUARD_LOCK="$T/lock2" GUARD_SETTLE=0 \
+           /bin/bash "$SCRIPT_DST" >/dev/null 2>>"$T/bare.err" || true
+    if jq empty "$T/bare.json" 2>/dev/null; then
+      ok "self-test PASSED under a stripped env (systemd-like: no HOME/PATH)"
+    else
+      TEST_OK=0
+      warn "guard FAILED with a stripped environment — this is exactly what the systemd unit gets:"
+      sed -n '1,5p' "$T/bare.err" 2>/dev/null | while IFS= read -r _l; do warn "  $_l"; done
+    fi
+  fi
   # cleanup the throwaway test dir (best-effort; /tmp is auto-reaped regardless)
   rm -rf "$T" 2>/dev/null || true
   [ "${TEST_OK:-0}" = 1 ] || fail "self-test FAILED — NOT arming the watcher. Guard would not have restored a broken config. Inspect config-guard.sh."

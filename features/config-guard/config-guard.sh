@@ -29,6 +29,15 @@ set -uo pipefail
 
 # Wide PATH so tools resolve when launched by systemd (minimal env). Adjust if
 # your jq/flock/openclaw live elsewhere (see `command -v jq flock openclaw`).
+# HOME IS NOT GUARANTEED. A systemd *system* unit starts with a minimal
+# environment that does not set HOME, so under `set -u` every $HOME below was a
+# hard exit-1 before a single line of guard logic ran — the unit reported
+# "armed" while never actually working (measured 2026-11-02: "HOME: unbound
+# variable"). Resolve it from the passwd DB instead of trusting the env.
+HOME="${HOME:-$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)}"
+HOME="${HOME:-/root}"
+export HOME
+
 export PATH="/usr/local/bin:/usr/bin:/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/.linuxbrew/bin:$HOME/.local/bin:$HOME/.nvm/current/bin:$PATH"
 
 OPENCLAW_DIR="${OPENCLAW_DIR:-$HOME/.openclaw}"
