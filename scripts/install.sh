@@ -35,6 +35,14 @@
 #                     info/exclude, no .gitignore dropped in your tree.
 #                     (--git-snapshot still accepted; it's the default now.)
 #                     See features/git-autosnapshot/README.md.
+#   --no-config-guard Skip the openclaw.json crash-loop watchdog (default: ON).
+#                     When on, an independent systemd .path unit snapshots the
+#                     last-good config and reverts a SYNTAX-broken write within
+#                     ~2-4s, so a stray trailing comma cannot crash-loop the
+#                     gateway. Schema-invalid (but parseable) writes are only
+#                     WARN-logged, never reverted, so a legitimate edit is never
+#                     undone. Self-tests before arming; degrades gracefully with
+#                     no systemd. See features/config-guard/README.md.
 #   --no-worker-guard Disable the orphaned-worker janitor (default: ON).
 #                     When on, a 5-min cron trims `openclaw-infer` workers that
 #                     were reparented to init (ppid=1) and are older than 3m —
@@ -80,6 +88,7 @@ DO_GIT_SNAPSHOT=1   # default-ON: ISOLATED git snapshot store (.dinomem-snap.git
 DO_GREP_GUARD=1     # default-ON (ANNOUNCED at install): PATH-ahead shim blocking ONLY broad recursive greps over large trees. Opt out with --no-grep-guard. See features/grep-guard
 DO_WORKER_GUARD=1   # default-ON: 5-min cron trimming ORPHANED openclaw-infer workers (ppid=1 only). Opt out with --no-worker-guard. See features/worker-leak-guard
 DO_REA=1            # default-ON (NETWORK): REA reverse-engineering capability via 02-dino/rea-installer --harness openclaw. Opt out with --no-rea. See features/rea
+DO_CONFIG_GUARD=1   # default-ON: systemd watchdog reverting SYNTAX-broken openclaw.json (schema errors only WARN-logged). Opt out with --no-config-guard. See features/config-guard
 FORCE=0
 DRY_RUN=0
 # ── Topology-aware auto-restart (owner-requested UX) ─────────────────────────
@@ -131,6 +140,7 @@ while [ $# -gt 0 ]; do
     --no-grep-guard)   DO_GREP_GUARD=0; shift ;;
     --no-worker-guard) DO_WORKER_GUARD=0; shift ;;
     --no-rea)          DO_REA=0; shift ;;
+    --no-config-guard) DO_CONFIG_GUARD=0; shift ;;
     --restart)         AUTO_RESTART=always; shift ;;
     --no-restart)      AUTO_RESTART=never; shift ;;
     --health-cron)     DO_HEALTH_CRON=1; shift ;;
@@ -3237,6 +3247,40 @@ else
   skip "REA (disabled via --no-rea)"
 fi
 
+# ── 5f) config-guard (default-ON; --no-config-guard to skip) ─────────────────
+# openclaw.json is the ONE file a bad write can crash-loop the whole gateway on,
+# and dinomem's own prevention (config patch) only helps a writer that obeys it —
+# a hand edit, a plugin, or a cron bypasses it entirely. This is the enforcement
+# half: an independent systemd .path unit, outside OpenClaw, so it still works
+# while OpenClaw is the thing crashing. Default-ON because the failure it blocks
+# is total (every channel dies) while its own blast radius is bounded by design:
+# it reverts SYNTAX breakage only, leaving schema-invalid-but-parseable edits
+# alone, so a legitimate write is never silently undone. Non-fatal: the feature
+# self-tests on a fake file and refuses to arm if the restore would not have
+# fired, and a box without systemd just gets the script.
+if [ "$DO_CONFIG_GUARD" = 1 ]; then
+  hr "config-guard (openclaw.json crash-loop protection)"
+  CG_INSTALLER="$SKILL_DIR/features/config-guard/install.sh"
+  if [ ! -f "$CG_INSTALLER" ]; then
+    warn "features/config-guard/install.sh not found — skipping"
+  elif [ "$DRY_RUN" = 1 ]; then
+    plan "run config-guard installer (systemd .path watch on $OPENCLAW_DIR/openclaw.json)"
+  else
+    CG_ARGS=(--openclaw-dir "$OPENCLAW_DIR")
+    # root usually has no systemd --user manager; a system unit is the one that
+    # actually arms there. Non-root keeps the rootless user unit.
+    [ "$(id -u 2>/dev/null || echo 1)" = "0" ] && CG_ARGS+=(--system)
+    [ "$FORCE" = 1 ] && CG_ARGS+=(--force)
+    if bash "$CG_INSTALLER" "${CG_ARGS[@]}"; then
+      ok "config-guard installed (uninstall: bash features/config-guard/install.sh --uninstall)"
+    else
+      warn "config-guard installer returned non-zero — dinomem install continues"
+    fi
+  fi
+else
+  skip "config-guard (disabled via --no-config-guard)"
+fi
+
 # ── 6) Wire AGENTS.md ──────────────────────────────────────────────
 hr "AGENTS.md"
 AGENTS="$WS/AGENTS.md"
@@ -3279,7 +3323,7 @@ DINOMEM_BODY=$(cat <<'DINOMEM_AGENTS_BODY'
     backup_restore: when user asks to undo/restore a file or memory change, or what backups exist → read skill "backup-restore"
     safe_file_ops: BEFORE any file edit, large write (>~6KB), or multi-step exec → read skill "safe-file-ops" (read-first/exact-oldText/verify-after, atomic-batch rollback trap, incremental large-write, exec single-command discipline). Pre-edit hygiene half; edit_verify_loop below is the post-edit syntax-gate half.
     edit_verify_loop: AFTER editing any CODE file (py/sh/js/ts/json or a shebang script) → read skill "edit-verify-loop" (run scripts/verify.sh on it, loop edit→verify→fix IN THE SAME TURN; never end a turn on an unverified code edit waiting for a cron or the user to catch the break).
-    openclaw_config_edit: BEFORE any openclaw.json / gateway-config change (tools, plugins, agent fields, channels, nonOwner allowlists) → read skill "openclaw-config-edit" (validate schema before restart; config patch/set, never a raw edit). Applies to THIS session too, not only subagents — subagent_build_discipline covers delegated work only.
+    openclaw_config_edit: BEFORE any openclaw.json / gateway-config change (tools, plugins, agent fields, channels, nonOwner allowlists) OR before restarting more than one gateway after an extension/engine change → read skill "openclaw-config-edit" (validate schema before restart; canary one service before the fleet; config patch/set, never a raw edit). Applies to THIS session too, not only subagents — subagent_build_discipline covers delegated work only.
 
   durability_tripwire:
     fires_on: own_draft pre_send

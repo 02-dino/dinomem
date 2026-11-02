@@ -76,6 +76,13 @@ def _backup(path):
             return None
     return backup_file(path, workspace=WORKSPACE)
 
+def _sections(text):
+    """Markdown '## ' headings in a skill body. WHY: scaffold REPLACES SKILL.md
+    wholesale, so two proposals aimed at ONE slug make the second silently eat the
+    first. Comparing headings old-vs-new turns that clobber from invisible into
+    reported; the caller then merges instead of discovering the loss later."""
+    return [ln.strip() for ln in text.splitlines() if ln.startswith("## ")]
+
 def _valid(text):
     return "\x00" not in text and len(text) <= 50_000
 
@@ -115,8 +122,13 @@ def scaffold(slug, name, desc, body, trigger=None, confirmed=False):
                 "preview": {"slug": slug, "name": name, "desc": desc, "trigger": trigger},
                 "note": "Skills change agent capability. Re-run with --confirmed to install."}
     d.mkdir(parents=True, exist_ok=True)
+    replaced, backup_path, dropped = False, None, []
     if skill_md.exists():
-        _backup(skill_md)
+        old = skill_md.read_text(encoding="utf-8", errors="replace")
+        backup_path = _backup(skill_md)
+        replaced = True
+        keep = set(_sections(body))
+        dropped = [s for s in _sections(old) if s not in keep]
     content = f"---\nname: {name}\ndescription: {desc.strip()}\n---\n\n{body.strip()}\n"
     skill_md.write_text(content, encoding="utf-8")
 
@@ -127,8 +139,19 @@ def scaffold(slug, name, desc, body, trigger=None, confirmed=False):
     # Apply natively (best-effort; scaffolding on disk already makes it discoverable).
     applied, apply_msg = _install(d)
     _drop_reason("skill", f"scaffold {slug} ({name})")
-    return {"ok": True, "slug": slug, "path": str(skill_md), "action": "scaffold",
-            "trigger_written": trigger_written, "installed": applied, "apply": apply_msg}
+    out = {"ok": True, "slug": slug, "path": str(skill_md), "action": "scaffold",
+           "trigger_written": trigger_written, "installed": applied, "apply": apply_msg}
+    if replaced:
+        out["replaced"] = True
+        out["backup"] = str(backup_path) if backup_path else None
+        if dropped:
+            out["sections_dropped"] = dropped
+            out["warning"] = (
+                "OVERWRITE dropped %d section(s) the previous SKILL.md had: %s. "
+                "If two proposals target one slug, MERGE them \u2014 approving both in "
+                "sequence keeps only the last. Previous version: %s"
+                % (len(dropped), "; ".join(dropped), backup_path or "NO BACKUP SAVED"))
+    return out
 
 def _append_trigger(slug, trigger):
     """Add ONE line to AGENTS.md when_to_use pointing at the skill. Idempotent."""
