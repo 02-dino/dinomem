@@ -28,6 +28,8 @@
 #                     single- or multi-agent hosts. See README "How do I know
 #                     it's working?" for wiring it manually instead.
 #   --no-git-snapshot Disable the git snapshot safety net (default: ON).
+#   --all-workspaces  Install git-autosnapshot for EVERY workspace on the box,
+#                     not just this one (default: this workspace only).
 #                     When on, an ISOLATED snapshot store (.dinomem-snap.git)
 #                     commits all non-ignored changes every 15 min
 #                     (disk-aware cleanup, lfs media handling, history retention).
@@ -85,6 +87,15 @@ DO_CRON=1
 DO_BACKUP_CRON=1
 DO_SMART_CACHE=1
 DO_GIT_SNAPSHOT=1   # default-ON: ISOLATED git snapshot store (.dinomem-snap.git — never touches your own repo). Opt out with --no-git-snapshot. See features/git-autosnapshot
+# Scope of the snapshot fan-out. Default = THIS workspace only.
+# WHY (user report 2026-11-02): this used to always pass --all-workspaces, so
+# installing dinomem for ONE agent silently created a timer + snapshot store for
+# EVERY workspace-* dir on the box (measured here: 20 timers). A single-agent
+# user never asked for 19 extra timers, and they are invisible until someone
+# runs `systemctl list-timers`. Installing for one agent must touch one agent.
+# Opt in to the fan-out with --all-workspaces when you really do want fleet-wide
+# coverage.
+GS_ALL_WORKSPACES=0
 DO_GREP_GUARD=1     # default-ON (ANNOUNCED at install): PATH-ahead shim blocking ONLY broad recursive greps over large trees. Opt out with --no-grep-guard. See features/grep-guard
 DO_WORKER_GUARD=1   # default-ON: 5-min cron trimming ORPHANED openclaw-infer workers (ppid=1 only). Opt out with --no-worker-guard. See features/worker-leak-guard
 DO_REA=1            # default-ON (NETWORK): REA reverse-engineering capability via 02-dino/rea-installer --harness openclaw. Opt out with --no-rea. See features/rea
@@ -136,6 +147,8 @@ while [ $# -gt 0 ]; do
     --no-smart-cache)  DO_SMART_CACHE=0; shift ;;
     --git-snapshot)    DO_GIT_SNAPSHOT=1; shift ;;
     --no-git-snapshot) DO_GIT_SNAPSHOT=0; shift ;;
+    --all-workspaces)  GS_ALL_WORKSPACES=1; shift ;;
+    --skip-version-check) SKIP_VERSION_CHECK=1; shift ;;
     --grep-guard)      DO_GREP_GUARD=1; shift ;;
     --no-grep-guard)   DO_GREP_GUARD=0; shift ;;
     --no-worker-guard) DO_WORKER_GUARD=0; shift ;;
@@ -338,6 +351,98 @@ resolve_memory_db() {
 SUDO=""; [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1 && SUDO="sudo"
 # plan: in --dry-run, print what WOULD happen instead of doing it.
 plan() { printf '  \033[36m[plan]\033[0m %s\n' "$*"; }
+
+# ── OpenClaw version compat gate ────────────────────────────────────
+# WHY THIS EXISTS: every bug in the 2026-11-02 user report traces back to this
+# installer ASSUMING an OpenClaw version instead of checking one. It hardcoded
+# "2026.6.6+" expectations, ran happily on 2026.9.9, reported success, and the
+# damage only surfaced later — a dead 3am cron, a config the gateway rejected,
+# an embedding index it could not read. An installer that cannot say which
+# versions it was tested against should not silently claim to support all of
+# them.
+#
+# POLICY: STOP by default on an untested major, because the failure mode we are
+# guarding against is EXACTLY "it looked like it worked". The message names the
+# detected version and the override, so an informed user is never stuck:
+#   --skip-version-check   (or DINOMEM_SKIP_VERSION_CHECK=1)
+# An unreadable version is NOT treated as unsupported — missing evidence is not
+# evidence of incompatibility, so that path warns and proceeds.
+#
+# MAINTENANCE: this list is the single source of truth. Add a major only after
+# an install has actually been exercised on it.
+DINOMEM_SUPPORTED_OC_MAJORS="${DINOMEM_SUPPORTED_OC_MAJORS:-2026.6 2026.7}"
+SKIP_VERSION_CHECK="${DINOMEM_SKIP_VERSION_CHECK:-0}"
+_oc_version_gate() {
+  [ "$SKIP_VERSION_CHECK" = 1 ] && { skip "OpenClaw version gate (--skip-version-check)"; return 0; }
+  command -v openclaw >/dev/null 2>&1 || { warn "openclaw CLI not found — skipping version gate"; return 0; }
+  local _raw _ver _major
+  _raw="$(timeout 60 openclaw --version 2>/dev/null | head -1)" || _raw=""
+  # Accept any "<year>.<minor>" token, so a future numbering scheme degrades to
+  # "cannot parse" (warn) rather than a false "unsupported" (stop).
+  _ver="$(printf '%s' "$_raw" | grep -oE '[0-9]{4}\.[0-9]+(\.[0-9]+)?(-[0-9]+)?' | head -1)"
+  if [ -z "$_ver" ]; then
+    warn "could not read the OpenClaw version — proceeding unchecked (reported: ${_raw:-<nothing>})"
+    return 0
+  fi
+  _major="$(printf '%s' "$_ver" | cut -d. -f1-2)"
+  case " $DINOMEM_SUPPORTED_OC_MAJORS " in
+    *" $_major "*) ok "OpenClaw $_ver — supported (tested majors: $DINOMEM_SUPPORTED_OC_MAJORS)"; return 0 ;;
+  esac
+  printf '\n'
+  warn "OpenClaw $_ver is NOT a tested version for this installer."
+  warn "  Tested majors: $DINOMEM_SUPPORTED_OC_MAJORS"
+  warn "  Installing anyway can appear to succeed while leaving things broken:"
+  warn "    - config keys this OpenClaw no longer accepts (gateway refuses to start)"
+  warn "    - an embedding index this build stores in a format the graph cannot read"
+  warn "  Nothing has been changed. To proceed anyway, re-run with:"
+  warn "    --skip-version-check     (or DINOMEM_SKIP_VERSION_CHECK=1)"
+  printf '\n'
+  exit 1
+}
+
+# ── OpenClaw capability probe: plugins.bundledDiscovery (memoized) ──────────
+# WHY THIS EXISTS (user report, OpenClaw 2026.9.9, 2026-11-02): this installer
+# used to write plugins.bundledDiscovery UNCONDITIONALLY. That key is
+# VERSION-COUPLED, not universal:
+#   * OpenClaw 2026.6.x-2026.7.x : REQUIRED companion to plugins.allow. Omit it
+#     and the schema rejects the WHOLE config -> gateway refuses to start.
+#   * OpenClaw 2026.9.x          : key no longer exists. Writing it makes the
+#     config INVALID until a human removes it by hand.
+# The same line that RESCUES one version BREAKS the other, so the only correct
+# move is to ASK the installed OpenClaw rather than assume either way.
+#
+# Verified on the reference box (2026.7.1-2): `openclaw config schema` emits the
+# literal "bundledDiscovery" exactly once, so presence in the schema is a sound
+# detector.
+#
+# COST: measured 38s for `config schema` on the reference box. Hence memoized
+# AND exported: ONE probe per install run, inherited by every python3
+# config-editing block below through the environment. Probing per call site
+# (four of them here) would add minutes of pure wait to every install.
+#
+# Values: yes = schema knows it | no = schema does not | unknown = cannot tell.
+OC_BD_SUPPORTED=""
+_oc_probe_bundled_discovery() {
+  [ -n "$OC_BD_SUPPORTED" ] && return 0      # memoized: probe at most once
+  if ! command -v openclaw >/dev/null 2>&1; then
+    OC_BD_SUPPORTED="unknown"; export OC_BD_SUPPORTED; return 0
+  fi
+  local _schema=""
+  _schema="$(timeout "${DINOMEM_SCHEMA_PROBE_TIMEOUT_S:-120}" openclaw config schema 2>/dev/null)" || _schema=""
+  if [ -z "$_schema" ]; then
+    OC_BD_SUPPORTED="unknown"
+  elif printf '%s' "$_schema" | grep -q '"bundledDiscovery"'; then
+    OC_BD_SUPPORTED="yes"
+  else
+    OC_BD_SUPPORTED="no"
+  fi
+  export OC_BD_SUPPORTED
+  case "$OC_BD_SUPPORTED" in
+    yes) ok   "OpenClaw schema knows plugins.bundledDiscovery — will keep it set" ;;
+    no)  ok   "OpenClaw schema does NOT know plugins.bundledDiscovery — will strip it if present" ;;
+    *)   warn "could not read the OpenClaw config schema — leaving plugins.bundledDiscovery as-is (no add, no remove)" ;;
+  esac
+}
 
 # subst FILE PLACEHOLDER VALUE  — portable in-place placeholder replacement.
 # WHY not `sed -i`: BSD sed (macOS) requires an explicit backup suffix
@@ -667,6 +772,10 @@ printf '\033[2m  mostly-stdlib core · idempotent · safe to re-run on failure (
 
 # ── 0) Pre-flight compatibility checks ───────────────────────────────────────────
 hr "Pre-flight checks"
+# FIRST check of the whole install: refuse an untested OpenClaw BEFORE anything
+# is written. Placed here deliberately — a gate that fires after files/config
+# have already been touched is not a gate, it is a post-mortem.
+_oc_version_gate
 # Python version check
 if ! command -v python3 &>/dev/null; then
   warn "python3 not found — attempting install..."
@@ -2637,6 +2746,12 @@ if [ "$REPAIR_CRON" = 0 ]; then
 hr "OpenClaw config"
 OPENCLAW_JSON="${OPENCLAW_JSON:-$HOME/.openclaw/openclaw.json}"
 [ -f "$OPENCLAW_JSON" ] || OPENCLAW_JSON="$OPENCLAW_DIR/openclaw.json"
+# Probe ONCE, here, BEFORE the first config-editing python block. Every such
+# block below reads the verdict from the environment, so this single call is
+# what makes all four bundledDiscovery decisions in this installer informed
+# rather than blind. Omitting the call is not a no-op: the blocks would all see
+# "unknown" and silently stop managing the key at all.
+_oc_probe_bundled_discovery
 # P2 anti-race: serialize the whole config-patch section on a per-config lockfile.
 # WHY: parallel installs (multi-agent on one shared openclaw.json) each read-modify-
 # write the SAME file; interleaved writes corrupt it (real incident: 9-way parallel
@@ -3096,13 +3211,31 @@ elif ent.get("enabled") is not True:
 allow = plugins.get("allow")
 if isinstance(allow, list) and "smart-cache-pro" not in allow:
     allow.append("smart-cache-pro"); changed.append("plugins.allow += smart-cache-pro")
-# bundledDiscovery is a REQUIRED companion to plugins.allow on OpenClaw 2026.6.x+.
-# An allow list WITHOUT bundledDiscovery makes the new schema reject the whole
-# config ("plugins: Invalid input") -> gateway won't start -> total bot silence.
-# "compat" preserves legacy bundled provider/channel discovery (won't kill chat
-# channels). Only stamp it when an allow list is actually present.
-if isinstance(allow, list) and plugins.get("bundledDiscovery") not in ("compat", "allowlist"):
-    plugins["bundledDiscovery"] = "compat"; changed.append('plugins.bundledDiscovery -> "compat"')
+# bundledDiscovery — VERSION-COUPLED, so NEVER written blind.
+#   OpenClaw 2026.6.x-2026.7.x: REQUIRED companion to plugins.allow. An allow
+#     list WITHOUT it makes the schema reject the whole config ("plugins:
+#     Invalid input") -> gateway won't start -> total bot silence.
+#   OpenClaw 2026.9.x: the key does not exist, and writing it breaks the config
+#     in exactly the same fatal way.
+# Same line, opposite effect, so the verdict comes from ONE memoized probe of
+# the live schema (_oc_probe_bundled_discovery, top of this installer),
+# inherited here through the environment.
+#   yes     -> stamp it ("compat" keeps legacy bundled provider/channel
+#              discovery, so existing chat channels keep working). Still only
+#              when an allow list is actually present.
+#   no      -> REMOVE it. This is the REINSTALL path: an older installer may
+#              have written the key, and reinstalling does not drop it by
+#              itself, so the config stays invalid until someone strips it by
+#              hand. That hand-repair is exactly what the 2026.9.9 user had to do.
+#   unknown -> touch nothing. Never guess on a boot-critical key.
+_bd = os.environ.get("OC_BD_SUPPORTED", "unknown")
+if _bd == "yes":
+    if isinstance(allow, list) and plugins.get("bundledDiscovery") not in ("compat", "allowlist"):
+        plugins["bundledDiscovery"] = "compat"; changed.append('plugins.bundledDiscovery -> "compat"')
+elif _bd == "no":
+    if "bundledDiscovery" in plugins:
+        plugins.pop("bundledDiscovery", None)
+        changed.append("plugins.bundledDiscovery REMOVED (not in this OpenClaw's schema)")
 with open(path, "w") as f:
     json.dump(cfg, f, indent=2)
 if changed:
@@ -3142,16 +3275,31 @@ if [ "$DO_GIT_SNAPSHOT" = 1 ]; then
   if [ ! -f "$GS_INSTALLER" ]; then
     warn "features/git-autosnapshot/install.sh not found — skipping"
   elif [ "$DRY_RUN" = 1 ]; then
-    plan "run git-autosnapshot --all-workspaces under $GS_ROOT (one small store per workspace, every 15 min)"
+    if [ "$GS_ALL_WORKSPACES" = 1 ]; then
+      plan "run git-autosnapshot --all-workspaces under $GS_ROOT (one small store per workspace, every 15 min)"
+    else
+      plan "run git-autosnapshot for THIS workspace only: $WS (one store, every 15 min; use --all-workspaces for the whole box)"
+    fi
     plan "run git-autosnapshot scoped root store for agents/ + shared/ (session history + shared knowledge)"
   else
     # (1a+3c) PER-WORKSPACE fan-out: many small isolated stores, not one giant.
-    GS_ARGS=(--repo "$GS_ROOT" --all-workspaces)
+    # SCOPE (user report 2026-11-02): default to THIS workspace only. Passing
+    # --all-workspaces unconditionally meant installing for one agent created a
+    # timer + store for every workspace-* on the box (20 timers measured here),
+    # which nobody asked for and which is invisible without systemctl
+    # list-timers. Fleet-wide fan-out is now an explicit opt-in.
+    if [ "$GS_ALL_WORKSPACES" = 1 ]; then
+      GS_ARGS=(--repo "$GS_ROOT" --all-workspaces)
+      _gs_scope_desc="per-workspace stores under $GS_ROOT (all workspaces)"
+    else
+      GS_ARGS=(--repo "$WS")
+      _gs_scope_desc="single store for this workspace ($WS)"
+    fi
     [ "$FORCE" = 1 ] && GS_ARGS+=(--force)
     if bash "$GS_INSTALLER" "${GS_ARGS[@]}"; then
-      ok "git-autosnapshot installed (per-workspace stores under $GS_ROOT)"
+      ok "git-autosnapshot installed ($_gs_scope_desc)"
     else
-      warn "git-autosnapshot per-workspace install returned non-zero — check output above"
+      warn "git-autosnapshot install returned non-zero — check output above"
     fi
     # (Opsi X) SCOPED ROOT store: cover agents/ (session history) + shared/ only,
     # which sit outside every workspace. --include-only keeps its `git add` small.
@@ -3705,10 +3853,18 @@ if PID not in allow:
     allow.append(PID)
     changed.append(f"plugins.allow += {PID}")
 
-# 1b) bundledDiscovery — REQUIRED companion to plugins.allow on OpenClaw 2026.6.x+.
-if plugins.get("bundledDiscovery") not in ("compat", "allowlist"):
-    plugins["bundledDiscovery"] = "compat"
-    changed.append('plugins.bundledDiscovery -> "compat"')
+# 1b) bundledDiscovery — VERSION-COUPLED; set when this OpenClaw's schema knows
+#     it, REMOVED when it does not (the reinstall path), untouched when the
+#     probe failed. Full reasoning at the first occurrence of this block above.
+_bd = os.environ.get("OC_BD_SUPPORTED", "unknown")
+if _bd == "yes":
+    if plugins.get("bundledDiscovery") not in ("compat", "allowlist"):
+        plugins["bundledDiscovery"] = "compat"
+        changed.append('plugins.bundledDiscovery -> "compat"')
+elif _bd == "no":
+    if "bundledDiscovery" in plugins:
+        plugins.pop("bundledDiscovery", None)
+        changed.append("plugins.bundledDiscovery REMOVED (not in this OpenClaw's schema)")
 
 # 2) load.paths -> abs plugin dir (dedup) + PRUNE stale workspace-relative paths.
 load = plugins.setdefault("load", {})
@@ -3797,10 +3953,18 @@ if not isinstance(allow, list):
 if PID not in allow:
     allow.append(PID)
     changed.append(f"plugins.allow += {PID}")
-# 1b) bundledDiscovery — REQUIRED companion to plugins.allow on OpenClaw 2026.6.x+.
-if plugins.get("bundledDiscovery") not in ("compat", "allowlist"):
-    plugins["bundledDiscovery"] = "compat"
-    changed.append("plugins.bundledDiscovery -> compat")
+# 1b) bundledDiscovery — VERSION-COUPLED; set when this OpenClaw's schema knows
+#     it, REMOVED when it does not (the reinstall path), untouched when the
+#     probe failed. Full reasoning at the first occurrence of this block above.
+_bd = os.environ.get("OC_BD_SUPPORTED", "unknown")
+if _bd == "yes":
+    if plugins.get("bundledDiscovery") not in ("compat", "allowlist"):
+        plugins["bundledDiscovery"] = "compat"
+        changed.append("plugins.bundledDiscovery -> compat")
+elif _bd == "no":
+    if "bundledDiscovery" in plugins:
+        plugins.pop("bundledDiscovery", None)
+        changed.append("plugins.bundledDiscovery REMOVED (not in this OpenClaw's schema)")
 # 2) load.paths (dedupe stale copies of THIS plugin id, then add current dst)
 load = plugins.setdefault("load", {})
 if not isinstance(load, dict):
@@ -3893,10 +4057,18 @@ if not isinstance(allow, list):
 if PID not in allow:
     allow.append(PID)
     changed.append(f"plugins.allow += {PID}")
-# 1b) bundledDiscovery — REQUIRED companion to plugins.allow on OpenClaw 2026.6.x+.
-if plugins.get("bundledDiscovery") not in ("compat", "allowlist"):
-    plugins["bundledDiscovery"] = "compat"
-    changed.append("plugins.bundledDiscovery -> compat")
+# 1b) bundledDiscovery — VERSION-COUPLED; set when this OpenClaw's schema knows
+#     it, REMOVED when it does not (the reinstall path), untouched when the
+#     probe failed. Full reasoning at the first occurrence of this block above.
+_bd = os.environ.get("OC_BD_SUPPORTED", "unknown")
+if _bd == "yes":
+    if plugins.get("bundledDiscovery") not in ("compat", "allowlist"):
+        plugins["bundledDiscovery"] = "compat"
+        changed.append("plugins.bundledDiscovery -> compat")
+elif _bd == "no":
+    if "bundledDiscovery" in plugins:
+        plugins.pop("bundledDiscovery", None)
+        changed.append("plugins.bundledDiscovery REMOVED (not in this OpenClaw's schema)")
 # 2) load.paths (dedupe stale copies of THIS plugin id, then add current dst)
 load = plugins.setdefault("load", {})
 if not isinstance(load, dict):

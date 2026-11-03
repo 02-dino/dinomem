@@ -206,6 +206,104 @@ else
   _warn "openclaw CLI not on PATH — skipped config validate"
 fi
 
+# ── 8. 2026.9.x compat regressions (user report 2026-11-02) ─────────────────
+# WHY THIS SECTION EXISTS: every bug in that report was SILENT. The install
+# said OK; the damage showed up later as a cron that never ran, a graph that
+# could not read its own index, or a gateway that refused to start. None of
+# them were detectable by "is the file present", which is all this script used
+# to ask. These checks assert the FIX IS ACTUALLY IN THE INSTALLED COPY, so a
+# stale or half-upgraded workspace fails LOUD instead of reporting success.
+
+# 8a. L3 cron chain. Two independent regressions, so two assertions.
+#   * `&&` meant contradiction_check's exit 1 (it is a per-candidate guard; bare
+#     invocation prints help and exits 1) killed the rest of the chain, so
+#     confidence_engine NEVER ran and its log was never even created.
+#   * `--report` is that script's only no-argument batch mode.
+# Checked against the SYSTEM CRONTAB because that is the surface upsert_cron
+# writes to (same rationale as section 2).
+if [ "$LAYER" = "base+neuron" ]; then
+  _l3line="$(crontab -l 2>/dev/null | grep -F 'dinomem-managed:memory_synthesis.py' | head -1)"
+  if [ -z "$_l3line" ]; then
+    _warn "L3 synthesis cron not in the system crontab — skipped chain checks"
+  else
+    case "$_l3line" in
+      *"contradiction_check.py --report"*)
+        _pass "L3 cron: contradiction_check called with --report" ;;
+      *)
+        _fail "L3 cron: contradiction_check called WITHOUT --report (prints help, exits 1 — chain dies)" ;;
+    esac
+    # The chain must not be && -joined. Look only at the part that chains the
+    # three stages, so an unrelated && elsewhere in the line cannot false-fail.
+    case "$_l3line" in
+      *"memory_synthesis.log 2>&1 &&"*|*"contradiction_check.log 2>&1 &&"*)
+        _fail "L3 cron: stages joined with && (one no-op stage silently skips confidence_engine)" ;;
+      *)
+        _pass "L3 cron: stages joined with ; (a no-op stage cannot skip the next)" ;;
+    esac
+  fi
+fi
+
+# 8b. Embedding decode. OpenClaw 2026.7.x stores chunk vectors as JSON TEXT;
+# 2026.9.x stores a raw float32 BLOB. A bare json.loads() on the BLOB dies with
+# UnicodeDecodeError (reported: byte 0xc5), which reads like a corrupt DB but is
+# just the other valid format. The decoder lives in _schema_adapter.py so the
+# "how do I read this index" rule has ONE home.
+if [ "$LAYER" = "base+neuron" ]; then
+  _adapter="$WS/procedures/_schema_adapter.py"
+  _graph="$WS/procedures/memory_graph.py"
+  if [ -f "$_adapter" ] && grep -q 'def decode_embedding' "$_adapter"; then
+    _pass "_schema_adapter.py: decode_embedding present (handles BLOB + JSON)"
+  else
+    _fail "_schema_adapter.py: decode_embedding MISSING (2026.9.x BLOB vectors will crash memory_graph)"
+  fi
+  if [ -f "$_graph" ]; then
+    if grep -q '_decode_embedding' "$_graph"; then
+      _pass "memory_graph.py: decodes via _schema_adapter"
+    else
+      _fail "memory_graph.py: still decodes embeddings inline (UnicodeDecodeError on 2026.9.x)"
+    fi
+  fi
+fi
+
+# 8c. Embedding model cache. With git-lfs absent, a git clone of the HF repo
+# leaves a ~134-byte TEXT POINTER where the weights should be. The file exists,
+# so a presence-only check calls it "cached" — then docs_ingest dies much later
+# with "header too large". Advisory (WARN): the cache is outside the workspace
+# and a fresh box legitimately has no model yet.
+_hf_root="${HF_HOME:-$HOME/.cache/huggingface}"
+_e5_snaps="$_hf_root/hub/models--intfloat--multilingual-e5-small/snapshots"
+if [ -d "$_e5_snaps" ]; then
+  _e5_ok=0
+  for _snap in "$_e5_snaps"/*/; do
+    for _wf in model.safetensors pytorch_model.bin; do
+      [ -f "$_snap/$_wf" ] || continue
+      # stat follows symlinks on purpose: HF keeps real bytes in blobs/.
+      _sz=$(stat -Lc %s "$_snap/$_wf" 2>/dev/null || stat -f %z "$_snap/$_wf" 2>/dev/null || echo 0)
+      [ "${_sz:-0}" -ge 1048576 ] && _e5_ok=1
+    done
+  done
+  [ "$_e5_ok" = 1 ] \
+    && _pass "embedding model cache holds real weights (not a git-lfs pointer)" \
+    || _warn "embedding model cache looks like a git-lfs POINTER (<1MB) — docs_ingest will fail 'header too large'; install git-lfs or let sentence-transformers re-download"
+fi
+
+# 8d. bundledDiscovery coherence. The key is VERSION-COUPLED: required on
+# 2026.6/2026.7, unknown (and therefore config-invalidating) on 2026.9.x. The
+# installers now probe the live schema instead of writing it blind. Here we only
+# check the END STATE agrees with THIS OpenClaw, which is what actually matters
+# to the user. Section 7 already catches a hard-invalid config; this names the
+# specific cause so the fix is obvious rather than a schema-error hunt.
+if command -v openclaw >/dev/null 2>&1; then
+  _cfg="$(openclaw config file 2>/dev/null | tr -d '\r')"
+  if [ -n "$_cfg" ] && [ -f "$_cfg" ] && grep -q '"bundledDiscovery"' "$_cfg" 2>/dev/null; then
+    if openclaw config schema 2>/dev/null | grep -q '"bundledDiscovery"'; then
+      _pass "plugins.bundledDiscovery set and known to this OpenClaw"
+    else
+      _fail "plugins.bundledDiscovery is set but this OpenClaw's schema does not know it (config invalid — re-run the installer to strip it)"
+    fi
+  fi
+fi
+
 # ── verdict ────────────────────────────────────────────────────────────────────
 echo
 if [ "$FAILS" -eq 0 ]; then
