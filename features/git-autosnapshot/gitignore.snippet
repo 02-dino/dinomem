@@ -213,6 +213,15 @@ workspace-*/data/*.db
 *.sqlite
 *.sqlite3
 
+# Secrets live here, and a changelog store is the last place they belong. Also the
+# single biggest source of scan cost on a root-scoped install: MEASURED 2026-11-04 on
+# /root/.openclaw -> 89427 of 118387 untracked paths were under credentials/ (357MB).
+# Defence in depth only -- the real fix is that the ls-files scans now honour
+# AUTOSNAP_INCLUDE_ONLY (see SCOPE_PS in auto-commit.sh). Belt AND braces, because a
+# store installed with NO include-only still walks the whole repo by design.
+credentials/
+workspace-*/credentials/
+
 # Media work dirs: whole-directory ignores, because a render pipeline emits
 # hundreds of intermediate clips (183 .mp4 files in work/hype_video/ alone) and
 # per-extension rules still leave the churn of frames/manifests behind.

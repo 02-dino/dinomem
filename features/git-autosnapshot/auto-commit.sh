@@ -156,6 +156,29 @@ AUTOSNAP_PACK_WINDOW="${AUTOSNAP_PACK_WINDOW:-32}"
 AUTOSNAP_PACK_DEPTH="${AUTOSNAP_PACK_DEPTH:-24}"
 _PACKMEM=( -c "pack.windowMemory=$AUTOSNAP_PACK_WINDOW_MEM" -c "pack.threads=$AUTOSNAP_PACK_THREADS" -c "pack.window=$AUTOSNAP_PACK_WINDOW" -c "pack.depth=$AUTOSNAP_PACK_DEPTH" )
 gnice() { $_NICE $_IONICE git "${_PACKMEM[@]}" --git-dir="$GIT_DIR" --work-tree="$REPO" "$@"; }
+# BOUNDED twin of g(). The comment at the staging block has promised a `_to` timeout
+# wrap since the flock guard landed, but the function was NEVER defined (measured
+# 2026-11-04: `grep -c '_to()'` = 0 in this file) -- so the documented protection did
+# not exist and a wedged scan could only be killed by systemd's TimeoutStartSec, which
+# kills the WHOLE tick instead of letting it fall through and retry. Wraps the git
+# BINARY, not g(): `timeout` execs a program and cannot call a shell function.
+# Fail-open: no `timeout` on the host (busybox/mac) -> behaves exactly like g().
+_SCAN_TO_S="${AUTOSNAP_SCAN_TIMEOUT_S:-120}"
+if command -v timeout >/dev/null 2>&1; then
+  gto() { timeout "$_SCAN_TO_S" git --git-dir="$GIT_DIR" --work-tree="$REPO" "$@"; }
+else
+  gto() { git --git-dir="$GIT_DIR" --work-tree="$REPO" "$@"; }
+fi
+# Pathspec scope shared by EVERY tree-walking ls-files below. WHY: `git add` already
+# honoured AUTOSNAP_INCLUDE_ONLY, but the size_gate and self-heal scans did not, so a
+# SCOPED store still walked the entire box each tick. Measured on the root store
+# 2026-11-04: 118387 untracked paths unscoped (89427 of them under credentials/) vs
+# 1 in scope. Each path is stat(1)ed in a bash while-loop, so the slow reader starved
+# the pipe and `ls-files` parked in pipe_write until the 15min unit timeout killed it
+# -- the snapshot had not committed for 25h. The scan scope MUST track the add scope.
+# Bare `--` when unscoped = whole repo, and keeps the array non-empty under `set -u`.
+SCOPE_PS=( -- )
+[ "${#INCLUDE_ONLY_PS[@]}" -gt 0 ] && SCOPE_PS+=( "${INCLUDE_ONLY_PS[@]}" )
 # git-lfs prune resolves HEAD from the CWD, not from --git-dir/--work-tree flags,
 # so calling it via gnice() fails with "Git can't resolve ref HEAD" and leaks
 # orphaned LFS objects forever (observed: ~1GB of stale blobs never pruned despite
@@ -287,7 +310,7 @@ if [ -n "$(g status --porcelain 2>/dev/null | head -c1)" ]; then
   }
   # (a) NEW untracked files.
   while IFS= read -r f; do size_gate "$f"; done \
-    < <(g ls-files --others --exclude-standard 2>/dev/null)
+    < <(gto ls-files --others --exclude-standard "${SCOPE_PS[@]}" 2>/dev/null)
   # (b) ALREADY-TRACKED files that CHANGED this tick and have since grown past
   # the limit. WHY: the original guard only checked --others, so a file tracked
   # once while small (e.g. chroma.sqlite3) that later rewrites to 580MB every
@@ -297,7 +320,7 @@ if [ -n "$(g status --porcelain 2>/dev/null | head -c1)" ]; then
   # from THIS commit (stays on disk); ignore it permanently via info/exclude or
   # allowlist it via .dinomem-keep-large if you truly want it versioned.
   while IFS= read -r f; do size_gate "$f"; done \
-    < <(g ls-files --modified 2>/dev/null)
+    < <(gto ls-files --modified "${SCOPE_PS[@]}" 2>/dev/null)
 
   # -- Self-heal: evict already-tracked paths that info/exclude NOW matches ---
   # WHY: git ignore rules only stop UNtracked files from being added; a path
@@ -310,7 +333,7 @@ if [ -n "$(g status --porcelain 2>/dev/null | head -c1)" ]; then
   # files on disk. Generalizes the one-off .dinomem-snap.git self-untrack the
   # installer already does to "anything the exclude now matches". -z/xargs-0 is
   # NUL-safe for paths with spaces/newlines. Fail-open: no matches -> no-op.
-  g ls-files -z -i -c --exclude-standard 2>/dev/null \
+  gto ls-files -z -i -c --exclude-standard "${SCOPE_PS[@]}" 2>/dev/null \
     | xargs -0 --no-run-if-empty git --git-dir="$GIT_DIR" --work-tree="$REPO" rm --cached -q -- 2>/dev/null || true
 
   # -- Stage everything not ignored, minus oversized new files ---------------
