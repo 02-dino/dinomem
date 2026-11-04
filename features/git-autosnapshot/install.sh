@@ -304,7 +304,15 @@ else
   mkdir -p "$GIT_DIR/info" 2>/dev/null || true
   if grep -qF "$MARKER" "$EXC" 2>/dev/null; then
     # Excise the previous block so repeated installs cannot stack duplicates.
-    sed -i "\|$MARKER|,\|$END_MARKER|d" "$EXC" 2>/dev/null || true
+    # THE CKSUM LINE IS NOT IN THAT RANGE: it is appended AFTER the end marker
+    # (see below), so the range above leaves it behind and each refresh adds one
+    # more. Measured 2026-11-04 while refreshing all 20 stores on a fleet box --
+    # every refreshed file would have carried N cksum lines after N refreshes.
+    # Not cosmetic: the skip test is `grep -qF "$VER_LINE"`, so once a file
+    # accumulates several, a snippet that is reverted to an EARLIER content hash
+    # matches a leftover line and the refresh is skipped -- leaving the file
+    # holding a DIFFERENT block than the cksum claims. Drop both together.
+    sed -i -e "\|$MARKER|,\|$END_MARKER|d" -e '/^# dinomem-ignores-cksum: /d' "$EXC" 2>/dev/null || true
     ok "removed stale info/exclude block (was out of date)"
   fi
   cat "$SELF_DIR/gitignore.snippet" >> "$EXC"
@@ -441,7 +449,26 @@ After=network.target
 Type=oneshot
 Environment=${ENVLINE}${ENV_INCLUDE_SYSTEMD}${ENV_CFG_SYSTEMD}
 ExecStart=${BIN_DIR}/auto-commit.sh
-Nice=10
+# ── RESOURCE CEILING — the OUTER kill-switch the script cannot provide ──────
+# gto() bounds the SCANS, but housekeeping (gc/repack/lfs prune) has no
+# in-script timeout: git-lfs-prune walks all history via git-log-G and can
+# wedge. A oneshot with no TimeoutStartSec inherits systemd's infinity, so a
+# wedged tick stays ACTIVATING FOREVER and that store's timer never fires again.
+# NOTE: no backticks in this block -- the heredoc is unquoted (<<EOF), so a
+# backtick here would be COMMAND-SUBSTITUTED into the generated unit file.
+# MEASURED 2026-11-03, 20-store box: 5 units stuck, 16 git procs, load 33 on 8
+# cores. MemoryMax stops a runaway repack OOM-killing the gateway (the kernel
+# picks the biggest proc — the gateway, not this niced tick). Nice/IOSchedulingClass
+# mirror the in-script gnice(). These live HERE, not in a drop-in: per-host
+# drop-ins drift (observed: 4 of 20 units silently had no cap at all).
+TimeoutStartSec=900
+TimeoutStopSec=60
+MemoryMax=1536M
+MemoryHigh=1280M
+MemorySwapMax=256M
+OOMPolicy=stop
+Nice=19
+IOSchedulingClass=idle
 EOF
     cat > "/etc/systemd/system/${SVC}.timer" <<EOF
 [Unit]
