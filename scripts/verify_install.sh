@@ -176,6 +176,23 @@ fi
 # hardcoded-roster convention this file already uses for crons/procedures.
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd || echo '')"
 skills_shipped="backup-restore build-quality cron-config edit-verify-loop hook-config memory-pinning openclaw-config-edit safe-file-ops self-config skill-config"
+
+# NOT EVERY SKILL IS REACHED THROUGH AGENTS.md. A skill whose ONLY caller is a
+# cron payload (the job prompt names skills/<x>/SKILL.md directly) is reached
+# without any AGENTS.md trigger, so judging it by the AGENTS.md rule reports a
+# healthy install as broken. Its real liveness test is "does the cron exist",
+# which is what we check below instead.
+#
+# WHY THIS SET HAD TO BECOME EXPLICIT (measured 2026-11-04): the roster above
+# already omits auto-improve on purpose and matches the 10 triggers the
+# installer writes — but the checkout branch below REPLACES the roster with
+# `ls skills/`, which re-adds it. Same script, two run modes, opposite verdicts:
+# from an installed workspace auto-improve was silently (and correctly) skipped,
+# from a checkout it was flagged "it will never be opened" while its cron was
+# sitting right there. The intent lived only in a hand-maintained list, so the
+# other mode could not honour it. Naming the set fixes both modes at once.
+skills_cron_driven="auto-improve"
+
 if [ -n "$SELF_DIR" ] && [ "$SELF_DIR" != "$WS" ] && [ -f "$SELF_DIR/VERSION" ] && [ -d "$SELF_DIR/skills" ]; then
   skills_shipped="$(cd "$SELF_DIR/skills" && ls -d */ 2>/dev/null | tr -d '/' | tr '\n' ' ')"
 fi
@@ -185,6 +202,48 @@ if [ -f "$WS/AGENTS.md" ]; then
     # Only judge skills actually INSTALLED here — an opt-out/partial install must
     # not be reported as an orphaned trigger.
     [ -f "$WS/skills/$sk/SKILL.md" ] || continue
+
+    # Cron-driven skill: an AGENTS.md trigger is not expected. Report on the
+    # door it ACTUALLY has. A missing cron is a WARN, not a FAIL: the gateway
+    # cron store is a separate surface and may legitimately be unreachable here.
+    case " $skills_cron_driven " in
+      *" $sk "*)
+        # Match on the cron NAME, which is prose ("Auto Improve"), while the skill
+        # id is a slug ("auto-improve"). Measured 2026-11-04: a literal grep for
+        # the slug returns 0 hits against a cron store that plainly contains the
+        # job, i.e. a false "nothing will open it" on a healthy install. Compare
+        # with hyphens folded to spaces so neither spelling has to be guessed.
+        # `--all` is what includes DISABLED jobs, and this worker is disabled BY
+        # DESIGN (gate-driven, never self-fires) — without it the one job we are
+        # looking for is exactly the one hidden. There is no --include-disabled.
+        # NO PIPE INTO `grep -q` HERE — this is a correctness requirement, not style.
+        # The file runs under `set -o pipefail`; `grep -q` exits at the FIRST match
+        # and SIGPIPEs whatever is still writing upstream, so the pipeline reports
+        # 141 and a cron that is plainly present reads as ABSENT.
+        # MEASURED 2026-11-04, and the result is counter-intuitive enough to write
+        # down: `openclaw cron list | grep -q` did NOT reproduce it (10/10 exit 0 —
+        # the CLI finishes writing into the pipe buffer before grep returns), while
+        # `printf "$var" | grep -q` reproduced it 5/5 at exit 141. So the fragile
+        # shape is the one that looks most harmless. Both are avoided below:
+        # capture once, then match with pure bash — no second process, no pipe, no
+        # exit code to misread.
+        _sk_words="$(printf '%s' "$sk" | tr '-' ' ')"
+        _cron_dump="$(openclaw cron list --all 2>/dev/null | tr '-' ' ')"
+        # Case-fold both sides so cron prose ("Auto Improve") matches a slug
+        # ("auto-improve") without depending on either one's capitalisation.
+        _cron_lc="$(printf '%s' "$_cron_dump" | tr '[:upper:]' '[:lower:]')"
+        _sk_lc="$(printf '%s' "$_sk_words" | tr '[:upper:]' '[:lower:]')"
+        if ! command -v openclaw >/dev/null 2>&1; then
+          _warn "skill $sk is cron-driven — openclaw CLI not on PATH, could not confirm its cron"
+        elif case "$_cron_lc" in *"$_sk_lc"*) true ;; *) false ;; esac; then
+          _pass "skill $sk reached via its cron (no AGENTS.md trigger expected)"
+        else
+          _warn "skill $sk is installed and cron-driven, but no matching cron was found — nothing will open it (re-run the installer)"
+        fi
+        continue
+        ;;
+    esac
+
     if grep -qF "\"$sk\"" "$WS/AGENTS.md" 2>/dev/null; then
       _pass "skill trigger present: $sk"
     else
