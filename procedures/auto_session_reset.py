@@ -75,7 +75,20 @@ SKIP_EXIT_CODE = 3
 # runs unserialized exactly as before. A lock must never become an outage.
 HEAVY_EMBED_STAGES = {"session_ingest.py"}
 HEAVY_LLM_STAGES = {"extract_memory.py"}
-LLM_LOCK_WAIT_SECS = int(os.environ.get("DINOMEM_LLM_LOCK_WAIT_SECS", "900"))
+# BUG FIXED 2026-11-05 (convoy): this defaulted to 900s while install.sh writes the
+# cron as `timeout 840`. A lane that lost the race therefore waited 900s for a lock
+# its own 840s SIGTERM could never let it reach -- every queued lane was guaranteed
+# to die holding nothing. Measured on a 13-agent host: 10 extract_memory processes
+# blocked at once, the oldest 787s deep, each one a ~14-minute Python that booted,
+# waited, and was killed having done ZERO work. Per agent that is 4 wasted boots an
+# hour, forever (one workspace had logged 622 such runs).
+#
+# The wait MUST stay strictly below the cron timeout, otherwise waiting is pure
+# loss. 600s leaves >=240s of headroom to actually run after acquiring. Keep this
+# invariant if either number is ever retuned: LLM_LOCK_WAIT_SECS < cron timeout.
+# Losing the race is NOT a failure -- `--conflict-exit-code 3` maps to SKIP_EXIT_CODE
+# and the lane self-heals on the next 15-minute tick.
+LLM_LOCK_WAIT_SECS = int(os.environ.get("DINOMEM_LLM_LOCK_WAIT_SECS", "600"))
 
 LOCK_WAIT_SECS = int(os.environ.get("DINOMEM_EMBED_LOCK_WAIT_SECS", "600"))
 

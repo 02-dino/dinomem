@@ -39,6 +39,27 @@ FORCE_COMPACTION_THRESHOLD = 5
 FORCE_MODE = False  # set True by --force (compaction hook path); lowers grace to 0 at depth>=FORCE_COMPACTION_THRESHOLD
 SESSIONS_DIR = Path("DINOMEM_AGENT_SESSIONS_PLACEHOLDER")
 SESSIONS_FILE = SESSIONS_DIR / "sessions.json"
+
+# BUG FIXED 2026-11-05: the two session-key filters below used to hardcode the
+# literal "agent:analyst:" -- the id of the workspace dinomem was first written
+# in. install.sh never rewrote it (session_reset.py carried no AGENT_ID token),
+# so on EVERY other agent both filters matched zero keys. Measured on a 13-agent
+# host: workspace cs had 96 session keys, all "agent:cs:", and 0 matched. Effect
+# was silent and two-fold -- (1) no session was ever eligible for reset (archived
+# "reset" files: analyst 238 vs cs 1, sales 2, modul 3), and (2) get_tracked_files()
+# returned an EMPTY set, which is the guard cleanup_old_archives() relies on to
+# never unlink a transcript still referenced in sessions.json. A dead guard reads
+# exactly like a passing one, which is what made this worth fixing before adding
+# any new prune path.
+#
+# SESSIONS_DIR already ends in .../agents/<agent-id>/sessions, so the id is
+# derivable from the path we were handed. We prefer the installer-substituted
+# token and fall back to the parent dir name, so a workspace installed by an
+# older installer (token left raw) still self-heals instead of silently
+# filtering everything out again.
+_AGENT_ID_TOKEN = "DINOMEM_AGENT_ID_PLACEHOLDER"
+AGENT_ID = _AGENT_ID_TOKEN if not _AGENT_ID_TOKEN.startswith("DINOMEM_") else SESSIONS_DIR.parent.name
+SESSION_KEY_PREFIX = f"agent:{AGENT_ID}:"
 LOG_FILE = Path(__file__).parent.parent / "logs" / "session_reset.log"
 
 # Ensure log dir exists
@@ -291,7 +312,7 @@ def get_lineage_compaction_count(session_file):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def get_all_sessions():
-    """Get all sessions for analysis agent from sessions.json"""
+    """Get this agent's own sessions from sessions.json."""
     if not SESSIONS_FILE.exists():
         log("⚠️  sessions.json not found")
         return {}
@@ -299,7 +320,7 @@ def get_all_sessions():
         sessions = json.load(f)
     return {
         key: value for key, value in sessions.items()
-        if key.startswith("agent:analyst:")
+        if key.startswith(SESSION_KEY_PREFIX)
     }
 
 
@@ -311,7 +332,7 @@ def get_tracked_files():
         sessions = json.load(f)
     tracked = set()
     for key, data in sessions.items():
-        if not key.startswith("agent:analyst:"):
+        if not key.startswith(SESSION_KEY_PREFIX):
             continue
         if "sessionFile" in data:
             tracked.add(Path(data["sessionFile"]).resolve())
@@ -453,6 +474,35 @@ def adopt_core_reset_archives():
     return adopted_count, adopt_info
 
 
+def _archive_candidates():
+    """Every archived transcript under SESSIONS_DIR, BOTH layouts.
+
+    BUG FIXED 2026-11-05: this used a single non-recursive
+    SESSIONS_DIR.glob("*.archived.*.jsonl"), which silently matched only the
+    files dinomem itself writes (flat, "<id>.archived.<reason>.<ts>.jsonl").
+    OpenClaw core archives into a NESTED subdir with the suffix order REVERSED
+    ("sessions/archive/<id>.jsonl.archived"), so those were invisible to the
+    pruner twice over -- wrong directory AND a pattern that cannot match
+    (fnmatch("x.jsonl.archived", "*.archived.*.jsonl") is False).
+
+    Measured on a 13-agent host: 249 such files were older than the retention
+    window with nothing able to remove them, the oldest dating to September.
+    Nothing reads that directory (verified against extract_memory.py and
+    session_ingest.py, which both glob the flat layout only), so retention is
+    the only thing that should ever touch it.
+    """
+    seen = {}
+    for p in SESSIONS_DIR.glob("*.archived.*.jsonl"):
+        if p.is_file():
+            seen[p.resolve()] = p
+    nested = SESSIONS_DIR / "archive"
+    if nested.is_dir():
+        for p in nested.glob("*.archived"):
+            if p.is_file():
+                seen[p.resolve()] = p
+    return list(seen.values())
+
+
 def cleanup_old_archives():
     """Delete archived JSONL files older than ARCHIVE_MAX_AGE_DAYS."""
     log("🗑️  Checking for old archived files...")
@@ -467,7 +517,7 @@ def cleanup_old_archives():
     total_referenced = 0
     deleted_files = []
     kept_files = []
-    for file in SESSIONS_DIR.glob("*.archived.*.jsonl"):
+    for file in _archive_candidates():
         if file.resolve() in tracked:
             kept_files.append(file.name)
             total_kept += 1

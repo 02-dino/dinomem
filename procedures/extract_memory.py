@@ -324,7 +324,26 @@ def get_api_key_from_openclaw(model):
 
 
 def get_api_base_from_model(model):
-    """Auto-detect API base URL from OpenClaw config."""
+    """Auto-detect API base URL from OpenClaw config.
+
+    BUG FIXED 2026-11-05: the family-name branches below test a SUBSTRING
+    ("/gemini" in model), so a routed proxy id like
+        ninerouter-cs/ag/gemini-3.8-flash-medium
+    matched the gemini branch and looked up providers['google'] -- a provider
+    that on a routed install carries only an apiKey and no baseUrl. The real
+    provider ('ninerouter-cs') sits in the FIRST path segment and its branch
+    was unreachable, so this returned None.
+
+    Why that was expensive and silent: call_llm() treats a missing base as
+    "provider-direct not configured" and falls through to the gateway CLI,
+    which cold-boots ~600MB of Node per call and dies at the 120s timeout.
+    Measured on this host: 0 provider-direct calls across 4 workspaces, and
+    one workspace stuck re-processing the same 1628 archives since Oct 31
+    because every cheap call timed out.
+
+    Fix: a ROUTED id (>=2 segments) resolves by its provider prefix first;
+    the family-name branches now serve only bare ids ("gemini-2.5-flash").
+    """
     if not model:
         return None
     openclaw_config = _openclaw_config_path()
@@ -334,20 +353,27 @@ def get_api_base_from_model(model):
         with open(openclaw_config, 'r') as f:
             config = json.load(f)
         providers = config.get('models', {}).get('providers', {})
-        if model.startswith("kimi") or "/kimi" in model:
-            provider = providers.get('kimi-coding', providers.get('kimi-code', {}))
-            return provider.get('baseUrl')
-        if model.startswith("gemini") or "/gemini" in model or model.startswith("google"):
-            provider = providers.get('google', {})
-            return provider.get('baseUrl')
-        if model.startswith("openrouter"):
-            provider = providers.get('openrouter', {})
-            return provider.get('baseUrl')
+        # Routed form (provider/.../name): the first segment IS the provider.
+        # Checked BEFORE the family-name branches so a model NAME containing
+        # "gemini"/"kimi" can never hijack the lookup.
         if "/" in model:
             prefix = model.split("/", 1)[0]
             provider = providers.get(prefix, {})
             if provider.get('baseUrl'):
                 return provider['baseUrl']
+        if model.startswith("kimi") or "/kimi" in model:
+            provider = providers.get('kimi-coding', providers.get('kimi-code', {}))
+            if provider.get('baseUrl'):
+                return provider['baseUrl']
+        if model.startswith("gemini") or "/gemini" in model or model.startswith("google"):
+            provider = providers.get('google', {})
+            if provider.get('baseUrl'):
+                return provider['baseUrl']
+        if model.startswith("openrouter"):
+            provider = providers.get('openrouter', {})
+            if provider.get('baseUrl'):
+                return provider['baseUrl']
+        if "/" in model:
             return providers.get('openrouter', {}).get('baseUrl')
     except Exception:
         pass
