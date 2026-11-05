@@ -274,6 +274,57 @@ def get_openclaw_default_model():
     return None
 
 
+def _resolve_secret(value, env_block=None):
+    """Resolve an OpenClaw credential value to a plain string.
+
+    BUG FIXED 2026-11-05: OpenClaw does not have to store a credential as a
+    string. It commonly stores a SECRET-REF OBJECT:
+        {"source": "env", "provider": "default", "id": "GEMINI_API_KEY"}
+    The callers below used `if provider.get('apiKey'): return provider['apiKey']`,
+    and a dict is TRUTHY -- so the ref object was returned verbatim, the
+    `env.get(...)` fallback on the next line was never reached even though the
+    key was sitting right there in the environment, and the dict got formatted
+    into an `Authorization: Bearer {...}` header.
+
+    Measured on a 13-agent host: a probe read the key as "len=3" -- that was the
+    number of DICT KEYS, not a key length, which is exactly how this stayed
+    invisible. Net effect: the provider-direct fast path never fired once
+    (0 hits across 4 workspaces) and every cheap call fell back to the gateway
+    CLI at ~600MB of Node per call.
+
+    Returns a non-empty str, or None. Never logs the value (S0).
+    """
+    if not value:
+        return None
+    if isinstance(value, str):
+        v = value.strip()
+        # Unexpanded shell-style refs are not usable credentials.
+        if not v or v.startswith("${") or "__OPENCLAW" in v:
+            return None
+        return v
+    if isinstance(value, dict):
+        ref_id = (value.get("id") or value.get("name") or "").strip()
+        if not ref_id:
+            return None
+        source = (value.get("source") or "env").strip().lower()
+        if source in ("env", "environment", "default", ""):
+            got = os.environ.get(ref_id, "")
+            if not got and env_block:
+                got = env_block.get(ref_id, "") or ""
+            got = got.strip() if isinstance(got, str) else ""
+            return got or None
+    return None
+
+
+# Public Google Generative Language endpoint. Used ONLY when the configured
+# google provider omits baseUrl -- OpenClaw stores just an apiKey for it, which
+# left get_api_base_from_model() returning None and silently disabled the
+# provider-direct path for every Gemini model. This is Google's documented
+# address, identical for every install, so it is a safe default rather than a
+# host-specific guess.
+_GOOGLE_DEFAULT_BASE = "https://generativelanguage.googleapis.com/v1beta"
+
+
 def get_api_key_from_openclaw(model):
     """Auto-extract API key from OpenClaw config based on model."""
     if not model:
@@ -286,38 +337,41 @@ def get_api_key_from_openclaw(model):
             config = json.load(f)
         env = config.get('env', {})
         providers = config.get('models', {}).get('providers', {})
+        # Every provider lookup goes through _resolve_secret so a secret-REF
+        # object resolves instead of being returned as a dict (see its docstring).
         if model.startswith("kimi") or "/kimi" in model:
             for provider_name in ['kimi-coding', 'kimi-code']:
-                provider = providers.get(provider_name, {})
-                if provider.get('apiKey'):
-                    return provider['apiKey']
-            return env.get('KIMI_API_KEY')
+                got = _resolve_secret(providers.get(provider_name, {}).get('apiKey'), env)
+                if got:
+                    return got
+            return _resolve_secret(env.get('KIMI_API_KEY'), env)
         if model.startswith("gemini") or "/gemini" in model or model.startswith("google"):
-            provider = providers.get('google', {})
-            if provider.get('apiKey'):
-                return provider['apiKey']
-            return env.get('GEMINI_API_KEY')
+            got = _resolve_secret(providers.get('google', {}).get('apiKey'), env)
+            if got:
+                return got
+            return _resolve_secret(env.get('GEMINI_API_KEY'), env) or os.environ.get('GEMINI_API_KEY') or None
         if model.startswith("openrouter"):
-            provider = providers.get('openrouter', {})
-            if provider.get('apiKey'):
-                return provider['apiKey']
-            return env.get('OPENROUTER_API_KEY')
+            got = _resolve_secret(providers.get('openrouter', {}).get('apiKey'), env)
+            if got:
+                return got
+            return _resolve_secret(env.get('OPENROUTER_API_KEY'), env)
         # Generic provider/model form (e.g. ninerouter/..., anthropic/...):
         # resolve the real provider from the first path segment instead of
         # assuming OpenRouter. Falls back to OpenRouter only if that provider
         # has no key but OpenRouter does.
         if "/" in model:
             prefix = model.split("/", 1)[0]
-            provider = providers.get(prefix, {})
-            if provider.get('apiKey'):
-                return provider['apiKey']
-            env_key = env.get(f"{prefix.upper().replace('-', '_')}_API_KEY")
-            if env_key:
-                return env_key
-            or_provider = providers.get('openrouter', {})
-            if or_provider.get('apiKey'):
-                return or_provider['apiKey']
-            return env.get('OPENROUTER_API_KEY')
+            got = _resolve_secret(providers.get(prefix, {}).get('apiKey'), env)
+            if got:
+                return got
+            env_name = f"{prefix.upper().replace('-', '_')}_API_KEY"
+            got = _resolve_secret(env.get(env_name), env) or os.environ.get(env_name) or None
+            if got:
+                return got
+            got = _resolve_secret(providers.get('openrouter', {}).get('apiKey'), env)
+            if got:
+                return got
+            return _resolve_secret(env.get('OPENROUTER_API_KEY'), env)
     except Exception:
         pass
     return None
@@ -369,6 +423,15 @@ def get_api_base_from_model(model):
             provider = providers.get('google', {})
             if provider.get('baseUrl'):
                 return provider['baseUrl']
+            # OpenClaw stores google as apiKey-only, so without this the Gemini
+            # provider-direct path is unreachable. Scope it to a BARE id
+            # ("gemini-2.5-flash"): a ROUTED id like
+            # "someproxy/ag/gemini-3.8-flash" only matches here on a substring,
+            # and sending it to Google would POST a model id Google does not know
+            # -> 404 -> wasted hop before the gateway fallback. A routed id must
+            # resolve from its own provider or not at all.
+            if "/" not in model:
+                return _GOOGLE_DEFAULT_BASE
         if model.startswith("openrouter"):
             provider = providers.get('openrouter', {})
             if provider.get('baseUrl'):
