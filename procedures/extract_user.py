@@ -76,6 +76,11 @@ TEMPLATE_FILE = _HERE.parent / "templates" / "peer_rep.md.tmpl"
 
 # Rich-derive gate: stub on 1st contact, only derive on >= this many interactions.
 DERIVE_MIN_INTERACTIONS = 2
+# GROUP ATTRIBUTION (see _group_sender_slices): a group archive is multi-person,
+# so cost is per-SENDER, not per-archive. These two bounds keep an active group
+# from turning one archive into a dozen LLM derives.
+GROUP_MAX_PEERS_PER_ARCHIVE = 5   # top senders by own-text volume
+GROUP_MIN_CHARS = 200             # below this a sender is noise ("ok", "👍")
 # Batch of archives per run (inherit extract_memory cadence).
 BATCH_SIZE = 3
 # Confidence decay applied to untouched facts per compaction pass (staleness).
@@ -712,18 +717,101 @@ def parse_derive_json(raw):
 
 
 # ═══ PER-ARCHIVE PIPELINE ══════════════════════════════════
-def process_archive(filename):
-    """Full per-archive flow. Fail-open: returns True (processed) even on skip so
-    the archive is not retried forever; logs the reason. Only a genuine
-    infrastructure error returns False (retry next run)."""
-    session_key, text = read_archive_meta_and_text(filename)
-    platform, platform_id = parse_peer_key(session_key)
-    if not platform or not platform_id:
-        log(f"   ⏭️  {filename}: no DM peer key (group/unattributable) — skip")
-        return True
+# ═══ GROUP-CHAT SENDER ATTRIBUTION ═══════════════════════════════════════════
+# WHY THIS EXISTS: a group session key (agent:...:telegram:group:-100...:topic:N)
+# names the ROOM, not a person, so parse_peer_key returns (None, None) and every
+# group archive used to be dropped whole. But the archive DOES carry per-message
+# authorship — OpenClaw stamps each inbound user message with
+#   message.__openclaw = {senderId, senderName, senderUsername, senderIsOwner}
+# (verified on live analyst group archives 2026-11-07). So the room is
+# unattributable while the MESSAGES are not: slicing by senderId recovers exactly
+# the per-person signal DMs already get.
+#
+# PRIVACY INVARIANT: one slice = one sender's own lines (+ the assistant turns
+# answering them). Another member's text NEVER enters a slice, because the rep is
+# a representation OF that person and cross-contamination would write facts about
+# A into B's file — the one failure mode worse than skipping the archive.
+_GROUP_PLATFORM_RE = re.compile(r"([a-z0-9_-]+):group:", re.IGNORECASE)
 
+
+def _group_sender_slices(filename):
+    """Per-sender transcript slices from a GROUP archive.
+    Returns {(platform, sender_id): {"name", "handle", "text"}}, capped by
+    GROUP_MAX_PEERS_PER_ARCHIVE (top senders by own-text volume) and filtered by
+    GROUP_MIN_CHARS. Empty dict when the archive is not a group / carries no
+    authorship. Fail-open: any error returns {}."""
+    slices = {}
+    try:
+        fp = SESSIONS_DIR / filename
+        if not fp.exists():
+            return {}
+        platform = None
+        entries = []
+        with open(fp, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                if platform is None:
+                    m = _GROUP_PLATFORM_RE.search(line)
+                    if m and m.group(1).lower() not in ("final", "agent"):
+                        platform = m.group(1).lower()
+                try:
+                    entries.append(json.loads(line))
+                except Exception:
+                    continue
+        if not platform:
+            return {}  # not a group archive — DM path owns it
+
+        # Only the live window: mirror extract_memory and start at last compaction.
+        comp = [i for i, e in enumerate(entries) if e.get("type") == "compaction"]
+        if comp:
+            entries = entries[comp[-1]:]
+
+        buffers = {}
+        current = None  # sender an assistant reply should be attributed to
+        for e in entries:
+            msg = e.get("message") or {}
+            role = msg.get("role")
+            if role not in ("user", "assistant"):
+                continue
+            body = _em.extract_message_content(msg) if _EM_OK else ""
+            if not body:
+                continue
+            if role == "user":
+                oc = msg.get("__openclaw") or e.get("__openclaw") or {}
+                sid = oc.get("senderId")
+                if not sid:
+                    current = None  # unattributable turn: drop, never guess
+                    continue
+                sid = str(sid)
+                current = sid
+                b = buffers.setdefault(sid, {"name": oc.get("senderName"),
+                                             "handle": oc.get("senderUsername"),
+                                             "parts": [], "own": 0})
+                b["parts"].append(f"[USER] {body}")
+                b["own"] += len(body)
+            elif current and current in buffers:
+                buffers[current]["parts"].append(f"[ASSISTANT] {body}")
+
+        ranked = sorted(buffers.items(), key=lambda kv: kv[1]["own"], reverse=True)
+        for sid, b in ranked[:GROUP_MAX_PEERS_PER_ARCHIVE]:
+            if b["own"] < GROUP_MIN_CHARS:
+                continue
+            slices[(platform, sid)] = {"name": b["name"], "handle": b["handle"],
+                                       "text": "\n".join(b["parts"])}
+    except Exception as e:
+        log(f"   ⚠️  group slice failed ({filename}): {e}")
+        return {}
+    return slices
+
+
+def _derive_for_peer(platform, platform_id, text, name=None, handle=None):
+    """Stub -> interaction gate -> stage-0 gate -> stage-1 derive -> apply, for ONE
+    person. Shared by the DM path and every group slice so the two can never drift
+    apart (a second copy would be where group reps quietly stop getting gated).
+    Fail-open: always returns True; never raises into the pipeline."""
     # Stub-always: cheap creation on first contact (no LLM).
-    ensure_stub(platform, platform_id)
+    ensure_stub(platform, platform_id, name=name, handle=handle)
     interactions = bump_interactions(platform, platform_id)
 
     # Derive-gated: only pay for a rich derive on 2nd+ meaningful interaction.
@@ -748,6 +836,27 @@ def process_archive(filename):
         log(f"   ∅ {composite_key(platform, platform_id)}: derive returned nothing salient (valid)")
         return True
     apply_derive(platform, platform_id, derived)
+    return True
+
+
+def process_archive(filename):
+    """Full per-archive flow. Fail-open: returns True (processed) even on skip so
+    the archive is not retried forever; logs the reason. Only a genuine
+    infrastructure error returns False (retry next run)."""
+    session_key, text = read_archive_meta_and_text(filename)
+    platform, platform_id = parse_peer_key(session_key)
+    if platform and platform_id:
+        return _derive_for_peer(platform, platform_id, text)
+
+    # No DM key -> the archive names a ROOM, not a person. Recover authorship
+    # per message instead of dropping the whole archive (see _group_sender_slices).
+    slices = _group_sender_slices(filename)
+    if not slices:
+        log(f"   ⏭️  {filename}: no DM peer key and no attributable senders — skip")
+        return True
+    log(f"   👥 {filename}: group archive — {len(slices)} attributable sender(s)")
+    for (plat, sid), s in slices.items():
+        _derive_for_peer(plat, sid, s["text"], name=s.get("name"), handle=s.get("handle"))
     return True
 
 
