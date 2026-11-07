@@ -1808,7 +1808,24 @@ if [ "$DO_CRON" = 1 ]; then
   upsert_cron "memory_cache_prune.py" "dinomem: weekly embedding-cache prune + VACUUM (no LLM)" "$CACHE_PRUNE_CRON" "memory_cache_prune cron (Sunday 03:${_CACHE_PRUNE_MIN} UTC, staggered)"
 
   # weekly_stats — Sunday 09:00 local, zero LLM, sends stats card to Telegram
-  STATS_CRON="$_SMIN 9 * * 0 python3 $SKILL_DIR/scripts/weekly_stats.py --workspace $WS >> $WS/logs/weekly_stats.log 2>&1"
+  #
+  # PATH OWNERSHIP (fixed 2026-11-07): this used to write $SKILL_DIR/scripts/
+  # weekly_stats.py into the cron line. $SKILL_DIR is where the INSTALLER lives,
+  # which on a multi-agent box is some OTHER agent's workspace -- so every agent's
+  # weekly_stats cron depended on one agent's git checkout. Measured on this box:
+  # 11 of 12 fleet crons ran workspace-analyst/github/dinomem/scripts/weekly_stats.py,
+  # i.e. moving or deleting that one checkout would have killed weekly_stats for the
+  # whole fleet at once. Install the script into the agent's OWN scripts/ dir and
+  # point the cron there, so each agent owns every file its crons touch.
+  _STATS_SRC="$SKILL_DIR/scripts/weekly_stats.py"
+  _STATS_DST="$WS/scripts/weekly_stats.py"
+  if [ -f "$_STATS_SRC" ]; then
+    mkdir -p "$WS/scripts"
+    cp "$_STATS_SRC" "$_STATS_DST" 2>/dev/null && ok "weekly_stats.py installed to scripts/"
+  fi
+  # Fail-open: never write a cron pointing at a file that does not exist.
+  [ -f "$_STATS_DST" ] || _STATS_DST="$_STATS_SRC"
+  STATS_CRON="$_SMIN 9 * * 0 python3 $_STATS_DST --workspace $WS >> $WS/logs/weekly_stats.log 2>&1"
   upsert_cron "weekly_stats.py" "dinomem: weekly stats card (Sunday 09:00, no LLM)" "$STATS_CRON" "weekly_stats cron (Sunday 09:${_SMIN}, staggered)"
 
   # ── Note-janitor crons: Daily Note Review + Pending Note Reminder ────────────
