@@ -495,9 +495,42 @@ elif [ "$DISK_PCT" -ge 80 ]; then
   AUTOSNAP_RETAIN_DAYS="$RETAIN_DAYS" AUTOSNAP_REPO="$REPO" AUTOSNAP_GIT_DIR="$GIT_DIR" AUTOSNAP_BRANCH="$BRANCH" \
     $_NICE $_IONICE bash "$SELF_DIR/git-retention.sh" 2>/dev/null || true
 else
-  # HEALTHY (<80%): light housekeeping ~hourly (the :00-:14 tick only).
-  if [ "$(( $(date +%-M) / 15 ))" -eq 0 ]; then
-    gnice gc --quiet --auto 2>/dev/null || true
+  # HEALTHY (<80%): light housekeeping, one 15-min window per hour.
+  # WHICH window is a per-store hash (0..3), not a hardcoded :00-:14 -- a
+  # fixed window meant every store on the box attempted the shared
+  # non-blocking gc lock (_GC_LOCK above) in the SAME 15 minutes each hour.
+  # Measured on a 20-store box: 223-308 "SKIP housekeeping (global gc lock
+  # busy)" lines per store, i.e. roughly half of every store's hourly
+  # attempt lost the race. Spreading across all 4 quarter-hours quarters the
+  # simultaneous contention. Same cksum-hash technique install.sh already
+  # uses for timer phase offset, applied to GIT_DIR instead of REPO_TAG.
+  _HK_SLOT=$(( $(printf '%s' "$GIT_DIR" | cksum | cut -d' ' -f1) % 4 ))
+  if [ "$(( $(date +%-M) / 15 ))" -eq "$_HK_SLOT" ]; then
+    # `gc --auto` decides whether to pack by SAMPLING one fanout dir
+    # (objects/17) * 256, not by counting. When loose objects cluster
+    # unevenly across the 256 fanout dirs -- observed: sample=4 files ->
+    # estimate=1024, while the REAL loose count was 65681 (64x off) -- that
+    # estimate never crosses gc.auto's threshold (default 6700) and gc
+    # silently no-ops forever: verified EXIT=0, zero bytes freed, no gc.log
+    # written, on a store that still had 65681 loose objects untouched.
+    # Count the real loose total (cheap, <1s) and compare to the SAME
+    # threshold git would use, so the sampling blind spot can't mask
+    # unbounded growth; fall through to plain `gc --auto` otherwise so the
+    # common small-repo case keeps git's normal (cheaper) heuristic.
+    _GC_AUTO_THRESH="$(git --git-dir="$GIT_DIR" config --get gc.auto 2>/dev/null || echo 6700)"
+    case "$_GC_AUTO_THRESH" in ''|*[!0-9]*) _GC_AUTO_THRESH=6700 ;; esac
+    if [ "$_GC_AUTO_THRESH" -gt 0 ]; then
+      _LOOSE_N="$(git --git-dir="$GIT_DIR" count-objects -v 2>/dev/null | awk '/^count:/{print $2}')"
+      case "$_LOOSE_N" in ''|*[!0-9]*) _LOOSE_N=0 ;; esac
+      if [ "$_LOOSE_N" -ge "$_GC_AUTO_THRESH" ]; then
+        echo "$(date '+%F %T') HEALTHY loose=${_LOOSE_N} >= gc.auto(${_GC_AUTO_THRESH}) -> gc prune=now (sampling estimate would have missed this)" >> "$LOG" 2>/dev/null || true
+        gnice gc --quiet --prune=now 2>/dev/null || true
+      else
+        gnice gc --quiet --auto 2>/dev/null || true
+      fi
+    else
+      gnice gc --quiet --auto 2>/dev/null || true
+    fi
     command -v git-lfs >/dev/null 2>&1 && lfsnice prune 2>/dev/null || true
   fi
 fi
