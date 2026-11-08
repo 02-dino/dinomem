@@ -1774,7 +1774,7 @@ if [ "$DO_CRON" = 1 ]; then
   # fires if the actual run hangs past the procedure's own 120s-per-call HTTP timeout
   # for an implausibly long time. Daily cadence means no overlap risk; this is a
   # pure infinite-hang guard so a stuck job can't hold the heavy-llm lock forever.
-  CLEANUP_CRON="$_SMIN 5 * * * DINOMEM_AGENT_ID=$AGENT_ID timeout 7200 bash $WS/scripts/dinomem_run.sh heavy-llm $WS ${EMBED_ENV}python3 procedures/memory_cleanup.py >> logs/memory_cleanup.log 2>&1"
+  CLEANUP_CRON="$_SMIN 5 * * * DINOMEM_AGENT_ID=$AGENT_ID timeout 7200 bash $WS/scripts/dinomem_run.sh heavy-llm $WS ${EMBED_ENV}python3 procedures/memory_cleanup.py >> $WS/logs/memory_cleanup.log 2>&1"
   upsert_cron "memory_cleanup.py" "dinomem: daily memory deduplication" "$CLEANUP_CRON" "memory_cleanup cron (daily 05:${_SMIN} UTC, staggered)"
 
   # memory_review — daily at 5:30 UTC (batched, full cycle ~7 days)
@@ -1782,7 +1782,7 @@ if [ "$DO_CRON" = 1 ]; then
   _REVIEW_MIN=$(( (30 + _SMIN) % 60 ))
   # RUNAWAY BACKSTOP: `timeout 7200` — same rationale as memory_cleanup (above 5400s
   # flock wait, pure infinite-hang guard on the heavy-llm lock; daily = no overlap).
-  REVIEW_CRON="$_REVIEW_MIN 5 * * * DINOMEM_AGENT_ID=$AGENT_ID timeout 7200 bash $WS/scripts/dinomem_run.sh heavy-llm $WS ${EMBED_ENV}${CHEAP_ENV}python3 procedures/memory_review.py >> logs/memory_review.log 2>&1"
+  REVIEW_CRON="$_REVIEW_MIN 5 * * * DINOMEM_AGENT_ID=$AGENT_ID timeout 7200 bash $WS/scripts/dinomem_run.sh heavy-llm $WS ${EMBED_ENV}${CHEAP_ENV}python3 procedures/memory_review.py >> $WS/logs/memory_review.log 2>&1"
   upsert_cron "memory_review.py" "dinomem: daily batched memory review (LLM)" "$REVIEW_CRON" "memory_review cron (daily 05:${_REVIEW_MIN} UTC, batched, staggered)"
 
   # cleanup_startup_daily — daily at 2:05 UTC. Prunes bare YYYY-MM-DD.md files

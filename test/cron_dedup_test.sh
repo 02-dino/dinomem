@@ -33,11 +33,11 @@ ck(){ if [ "$2" = "$3" ]; then echo "  ok: $1"; pass=$((pass+1)); else echo "  F
 cE(){ local n; n=$(grep -cE "$1" "$FAKE" 2>/dev/null); echo "${n:-0}"; }
 cF(){ local n; n=$(grep -cF "$1" "$FAKE" 2>/dev/null); echo "${n:-0}"; }
 
-CANON="0 5 * * * DINOMEM_AGENT_ID=$AGENT_ID bash $WS/scripts/dinomem_run.sh heavy-llm $WS python3 procedures/memory_cleanup.py >> logs/memory_cleanup.log 2>&1"
+CANON="0 5 * * * DINOMEM_AGENT_ID=$AGENT_ID bash $WS/scripts/dinomem_run.sh heavy-llm $WS python3 procedures/memory_cleanup.py >> $WS/logs/memory_cleanup.log 2>&1"
 TAG="# dinomem-managed:memory_cleanup.py:$AGENT_ID"
 LEGACY="20 5 * * * DINOMEM_AGENT_ID=$AGENT_ID bash $WS/scripts/dinomem_run.sh heavy-llm $WS python3 procedures/memory_cleanup.py >> $WS/logs/memory_cleanup.log 2>&1"
 USER="0 18 * * * cd $WS && python3 procedures/memory_cleanup.py --deep-audit >> logs/my_audit.log 2>&1"
-OTHER="0 5 * * * DINOMEM_AGENT_ID=other bash /ws/other/scripts/dinomem_run.sh heavy-llm /ws/other python3 procedures/memory_cleanup.py >> logs/memory_cleanup.log 2>&1"
+OTHER="0 5 * * * DINOMEM_AGENT_ID=other bash /ws/other/scripts/dinomem_run.sh heavy-llm /ws/other python3 procedures/memory_cleanup.py >> /ws/other/logs/memory_cleanup.log 2>&1"
 
 : > "$FAKE"
 upsert_cron memory_cleanup.py "dinomem: dedup" "$CANON" cleanup
