@@ -36,7 +36,10 @@ import json
 import os
 import subprocess
 import sys
+import hashlib
 import tarfile
+import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -195,16 +198,56 @@ def _export_openclaw_config():
     exports = WORKSPACE / "exports"
     exports.mkdir(exist_ok=True)
     out = exports / "openclaw-config.json"
+    # WHY NO CLI CALL: `openclaw config get --json` WITHOUT a path has always
+    # exited 1 ("Missing required argument path", measured 2026-11-08 on
+    # 2026.7.1-2). Every run paid ~16s + ~245MB RSS for a call that never
+    # succeeded, then fell through to this raw-file copy anyway. Same bytes,
+    # same secret surface (the raw openclaw.json is also tarred below), zero CLI.
+    # Honors OPENCLAW_CONFIG_PATH: before this, split instances (marketing,
+    # editor, kaka689, modul) silently exported the MAIN instance's config.
     try:
-        r = subprocess.run(["openclaw", "config", "get", "--json"],
-                           capture_output=True, text=True, timeout=15)
-        if r.returncode == 0 and r.stdout.strip():
-            out.write_text(r.stdout)
-        elif OPENCLAW_JSON.exists():
-            out.write_text(OPENCLAW_JSON.read_text())
-        log(f"exported: exports/openclaw-config.json")
+        src = _instance_config_path()
+        if src.exists():
+            out.write_text(src.read_text())
+        log(f"exported: exports/openclaw-config.json ({src})")
     except Exception as e:
         log(f"openclaw config export: skipped ({e})")
+
+def _instance_config_path() -> Path:
+    p = os.environ.get("OPENCLAW_CONFIG_PATH") or os.environ.get("OPENCLAW_CONFIG")
+    return Path(p) if p else OPENCLAW_JSON
+
+# One `openclaw cron list --json` costs ~13s + ~280MB RSS (measured 2026-11-08).
+# Several agents share ONE gateway instance, and their weekly snapshots all fire
+# inside the same Sunday 02:xx window, so they used to ask the same gateway the
+# same question back-to-back. Cache the answer per INSTANCE (config path + state
+# dir + gateway port) for a few hours: first agent pays, the rest reuse.
+# Instances never share a cache entry, so a split instance always gets its own.
+CRON_CACHE_TTL_SEC = 3 * 3600
+
+def _cron_list_json():
+    ident = "|".join(os.environ.get(k, "") for k in
+                     ("OPENCLAW_CONFIG_PATH", "OPENCLAW_STATE_DIR", "OPENCLAW_GATEWAY_PORT"))
+    key = hashlib.sha1(ident.encode()).hexdigest()[:12]
+    cache = Path(tempfile.gettempdir()) / f"openclaw-cron-list-{key}.json"
+    try:
+        st = cache.stat()
+        if st.st_size > 0 and time.time() - st.st_mtime < CRON_CACHE_TTL_SEC:
+            return cache.read_text(), True
+    except OSError:
+        pass
+    r = subprocess.run(["openclaw", "cron", "list", "--json"],
+                       capture_output=True, text=True, timeout=30)
+    if r.returncode != 0 or not r.stdout.strip():
+        return None, False
+    try:
+        tmp = cache.with_name(f"{cache.name}.{os.getpid()}.tmp")
+        tmp.write_text(r.stdout)
+        os.chmod(tmp, 0o600)  # job prompts can carry private text
+        os.replace(tmp, cache)
+    except OSError:
+        pass  # cache is an optimisation only; never fail the backup over it
+    return r.stdout, False
 
 # ── Cron Backup ───────────────────────────────────────────────────────────────
 CRON_BACKUP_DIR = BACKUP_DIR  # same folder as snapshots
@@ -212,11 +255,10 @@ CRON_BACKUP_DIR = BACKUP_DIR  # same folder as snapshots
 def _backup_crons(ts: str):
     out = CRON_BACKUP_DIR / f"openclaw-cron-jobs-{ts}.json"
     try:
-        r = subprocess.run(["openclaw", "cron", "list", "--json"],
-                           capture_output=True, text=True, timeout=30)
-        if r.returncode == 0 and r.stdout.strip():
-            out.write_text(r.stdout)
-            log(f"cron backup: {out.name}")
+        text, cached = _cron_list_json()
+        if text:
+            out.write_text(text)
+            log(f"cron backup: {out.name}" + (" (shared instance cache)" if cached else ""))
         else:
             log("cron backup: skipped (CLI unavailable)")
     except Exception as e:
