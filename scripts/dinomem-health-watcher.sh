@@ -34,12 +34,15 @@
 #   bash scripts/dinomem-health-watcher.sh --force    # send regardless of state
 #   bash scripts/dinomem-health-watcher.sh --always   # notify every run (legacy)
 #   bash scripts/dinomem-health-watcher.sh --stdout   # force stdout, skip Telegram
-#   bash scripts/dinomem-health-watcher.sh --auto-heal     # also run safe fixes (scripts/lib/watcher_heal.sh)
+#   bash scripts/dinomem-health-watcher.sh --no-auto-heal  # report only, touch nothing
 #   bash scripts/dinomem-health-watcher.sh --approve-heal  # approve the pending gateway restart + apply now
 #
-# AUTO-HEAL is OFF unless --auto-heal or DINOMEM_WATCHER_AUTO_HEAL=1. TEI / retrieval
-# rollup / memory graph fixes then run directly; a gateway restart waits for
-# --approve-heal unless DINOMEM_HEAL_GATEWAY=auto. Full contract: scripts/lib/watcher_heal.sh
+# AUTO-HEAL is ON by default (owner decision 2026-11-09: a watcher that only reports
+# leaves the fix to a human who is asleep). Opt out: --no-auto-heal or
+# DINOMEM_WATCHER_AUTO_HEAL=0. TEI / retrieval rollup / memory graph fixes run
+# directly (idempotent); a gateway restart still waits for --approve-heal unless
+# DINOMEM_HEAL_GATEWAY=auto. --dry-run plans heals without acting.
+# Full contract: scripts/lib/watcher_heal.sh
 #
 # Env overrides (all optional):
 #   OPENCLAW_HOME                 default ~/.openclaw
@@ -87,7 +90,7 @@ DRY_RUN=false
 FORCE=false
 FORCE_STDOUT=false
 NOTIFY_MODE="smart"
-case "${DINOMEM_WATCHER_AUTO_HEAL:-0}" in 1|true|yes) AUTO_HEAL=true ;; *) AUTO_HEAL=false ;; esac
+case "${DINOMEM_WATCHER_AUTO_HEAL:-1}" in 0|false|no|off) AUTO_HEAL=false ;; *) AUTO_HEAL=true ;; esac
 APPROVE_HEAL=false
 declare -A GW_DOWN=()
 HEAL_LINES=()   # filled by lib/watcher_heal.sh; declared here so set -u never trips
@@ -98,7 +101,8 @@ for arg in "$@"; do
     --stdout) FORCE_STDOUT=true ;;
     --smart|--only-on-change) NOTIFY_MODE="smart" ;;
     --always) NOTIFY_MODE="always" ;;
-    --auto-heal) AUTO_HEAL=true ;;
+    --auto-heal) AUTO_HEAL=true ;;          # kept for old cron lines; already the default
+    --no-auto-heal) AUTO_HEAL=false ;;
     --approve-heal) AUTO_HEAL=true; APPROVE_HEAL=true ;;
     -h|--help) sed -n '2,45p' "$0"; exit 0 ;;
   esac

@@ -25,7 +25,9 @@
 #   --health-cron     Wire scripts/dinomem-health-watcher.sh into crontab (default:
 #                     OFF — opt-in). Per-agent gateway/DB/cron health report,
 #                     sent to Telegram if configured, else stdout/log. Safe on
-#                     single- or multi-agent hosts. See README "How do I know
+#                     single- or multi-agent hosts. Auto-heal is ON in the watcher
+#                     (TEI/rollup/graph fixed directly, gateway restart approve-first);
+#                     add DINOMEM_WATCHER_AUTO_HEAL=0 to the cron line to report only. See README "How do I know
 #                     it's working?" for wiring it manually instead.
 #   --no-git-snapshot Disable the git snapshot safety net (default: ON).
 #   --all-workspaces  Install git-autosnapshot for EVERY workspace on the box,
@@ -4331,12 +4333,12 @@ if [ "$DO_HEALTH_CRON" = 1 ]; then
   if [ -f "$_hwatch" ]; then
     _hwatch_cron_line="0 7 * * * bash $_hwatch >> $WS/logs/dinomem-health-watcher.log 2>&1"
     if [ "$DRY_RUN" = 1 ]; then
-      plan "register cron: dinomem-health-watcher (daily 07:00, --smart notify)"
+      plan "register cron: dinomem-health-watcher (daily 07:00, --smart notify, auto-heal on)"
     elif crontab -l 2>/dev/null | grep -qF "dinomem-health-watcher.sh"; then
       ok "dinomem-health-watcher cron already present"
     else
       ( crontab -l 2>/dev/null; echo "$_hwatch_cron_line" ) | crontab - \
-        && ok "dinomem-health-watcher cron added (daily 07:00; smart notify — no spam)" \
+        && ok "dinomem-health-watcher cron added (daily 07:00; smart notify; auto-heal on, gateway restart approve-first)" \
         || warn "crontab add failed — add manually: $_hwatch_cron_line"
     fi
   else
