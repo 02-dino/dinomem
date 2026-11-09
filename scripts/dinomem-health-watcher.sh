@@ -34,6 +34,12 @@
 #   bash scripts/dinomem-health-watcher.sh --force    # send regardless of state
 #   bash scripts/dinomem-health-watcher.sh --always   # notify every run (legacy)
 #   bash scripts/dinomem-health-watcher.sh --stdout   # force stdout, skip Telegram
+#   bash scripts/dinomem-health-watcher.sh --auto-heal     # also run safe fixes (scripts/lib/watcher_heal.sh)
+#   bash scripts/dinomem-health-watcher.sh --approve-heal  # approve the pending gateway restart + apply now
+#
+# AUTO-HEAL is OFF unless --auto-heal or DINOMEM_WATCHER_AUTO_HEAL=1. TEI / retrieval
+# rollup / memory graph fixes then run directly; a gateway restart waits for
+# --approve-heal unless DINOMEM_HEAL_GATEWAY=auto. Full contract: scripts/lib/watcher_heal.sh
 #
 # Env overrides (all optional):
 #   OPENCLAW_HOME                 default ~/.openclaw
@@ -81,6 +87,10 @@ DRY_RUN=false
 FORCE=false
 FORCE_STDOUT=false
 NOTIFY_MODE="smart"
+case "${DINOMEM_WATCHER_AUTO_HEAL:-0}" in 1|true|yes) AUTO_HEAL=true ;; *) AUTO_HEAL=false ;; esac
+APPROVE_HEAL=false
+declare -A GW_DOWN=()
+HEAL_LINES=()   # filled by lib/watcher_heal.sh; declared here so set -u never trips
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=true ;;
@@ -88,6 +98,8 @@ for arg in "$@"; do
     --stdout) FORCE_STDOUT=true ;;
     --smart|--only-on-change) NOTIFY_MODE="smart" ;;
     --always) NOTIFY_MODE="always" ;;
+    --auto-heal) AUTO_HEAL=true ;;
+    --approve-heal) AUTO_HEAL=true; APPROVE_HEAL=true ;;
     -h|--help) sed -n '2,45p' "$0"; exit 0 ;;
   esac
 done
@@ -618,6 +630,9 @@ PY
 
 # ── Report assembly ───────────────────────────────────────────────
 _common_sections() {
+  local heal=""
+  declare -F build_heal_block >/dev/null && heal="$(build_heal_block)"
+  [ -n "$heal" ] && printf '%s\n\n' "$heal"
   printf '%s\n\n%s\n\n%s' \
     "$(build_resource_block)" "$(build_recall_block)" "$(build_memory_integrity_block)"
 }
@@ -757,7 +772,7 @@ for agent in "${AGENTS[@]}"; do
   sev="OK"; problems=()
   IFS='|' read -r gw_sev gw_msg <<< "$(check_gateway "$agent")"
   sev="$(max_severity "$sev" "$gw_sev")"
-  [ "$gw_sev" != "OK" ] && { problems+=("$gw_msg"); record_problem_issue "${agent}:gateway:${gw_sev}"; }
+  [ "$gw_sev" != "OK" ] && { problems+=("$gw_msg"); record_problem_issue "${agent}:gateway:${gw_sev}"; GW_DOWN[$agent]=1; }
   IFS='|' read -r db_sev db_msg <<< "$(check_db "${AGENT_DB[$agent]:-}")"
   sev="$(max_severity "$sev" "$db_sev")"
   [ "$db_sev" != "OK" ] && { problems+=("$db_msg"); record_problem_issue "${agent}:db:${db_sev}"; }
@@ -783,9 +798,26 @@ for agent in "${AGENTS[@]}"; do
   log "${agent}: ${sev}" >>"$LOG_FILE"
 done
 
+# Heal AFTER checks (it acts on what they found) and BEFORE the notify decision,
+# so the report says both what broke and what was done about it.
+_HEAL_LIB="$(cd "$(dirname "$0")" && pwd)/lib/watcher_heal.sh"
+if [ "$AUTO_HEAL" = true ]; then
+  if [ -f "$_HEAL_LIB" ]; then
+    # shellcheck source=/dev/null
+    . "$_HEAL_LIB"
+    [ "$APPROVE_HEAL" = true ] && heal_approve_pending
+    heal_run
+  else
+    log "auto-heal requested but $_HEAL_LIB missing — report only" >>"$LOG_FILE"
+  fi
+fi
 problem_signature="$(build_problem_signature)"
 report_hash="$(hash_signature "$problem_signature")"
 IFS='|' read -r action kind <<< "$(decide "$report_hash" "$problem_signature")"
+# A heal line is news even when the problem set is unchanged (smart-notify would skip).
+if [ "$action" = "skip" ] && [ "${#HEAL_LINES[@]}" -gt 0 ]; then
+  action="send"; has_problems && kind="problem" || kind="ok"
+fi
 
 if [ "$action" = "skip" ]; then
   log "Skipping notify: ${kind} (hash=${report_hash:0:12})" >>"$LOG_FILE"

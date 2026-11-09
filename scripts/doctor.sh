@@ -91,7 +91,7 @@ fi
 # ── Restart=on-failure check ─────────────────────────────────────────────────
 _restart_fail=0
 while IFS= read -r _unit; do
-  _frag=$(systemctl show "$_unit" -p FragmentPath 2>/dev/null | cut -d= -f2)
+  _frag=$(systemctl show "$_unit" -p FragmentPath 2>/dev/null | cut -d= -f2) || _frag=""  # template units (foo@.service) fail under pipefail+set -e -> killed the script before RESULT
   [ -z "$_frag" ] || [ ! -f "$_frag" ] && continue
   if ! grep -q "^Restart=on-failure" "$_frag" 2>/dev/null; then
     say "  [warn] $_unit missing Restart=on-failure in $_frag"
