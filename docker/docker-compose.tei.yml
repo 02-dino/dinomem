@@ -83,6 +83,12 @@ services:
     # TEI_RAYON_THREADS raises resident memory too -- give it room in the same
     # .env (measured 1.44GiB/2GiB at 2 threads before this change).
     mem_limit: ${TEI_MEM_LIMIT:-2048m}
+    # memswap_limit == mem_limit => ZERO swap. Docker's default when only
+    # mem_limit is set is memswap = 2x mem, i.e. the container may push as much
+    # again into host swap. Measured 2026-11-09: tei-embed sat at 1.0GiB swapped
+    # with mem 3g/memswap 6g, and memory_search timed out at 15s while it paged
+    # back in. A swapped embed server is slower than an OOM-restarted one.
+    memswap_limit: ${TEI_MEM_LIMIT:-2048m}
     pids_limit: 64
     # GPU support (uncomment if you have nvidia-docker):
     # image: ghcr.io/huggingface/text-embeddings-inference:1.6

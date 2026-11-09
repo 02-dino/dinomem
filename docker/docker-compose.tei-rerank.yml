@@ -37,6 +37,7 @@ services:
       - "32"
     cpus: 1.0
     mem_limit: 512m
+    memswap_limit: 512m   # == mem_limit -> no swap; see docker-compose.tei.yml
     pids_limit: 32
     restart: unless-stopped
     healthcheck:
