@@ -846,6 +846,7 @@ for agent in "${AGENTS[@]}"; do
   if declare -F check_memory_graph_artifact >/dev/null; then
     for chk in "check_memory_graph_artifact $ws" "check_graph_db_json_sync $ws" \
                "check_memory_index_freshness $ws" "check_retrieval_health $ws" \
+               "check_memory_index_lag $ws ${AGENT_DB[$agent]:-}" \
                "check_cron_gate $agent $ws"; do
       # shellcheck disable=SC2086
       IFS='|' read -r x_sev x_msg x_cls <<< "$($chk)"

@@ -26,11 +26,43 @@ check_memory_graph_artifact() {
   local graph_json="$ws/kb/memory_neuron/l2_graph/memory_graph.json"
   [ -f "$ws/procedures/memory_graph.py" ] || { echo "SKIP||na"; return; }
   [ -f "$graph_json" ] || { echo "WARN|memory_graph: memory_graph.json missing|missing"; return; }
+  local max_min=$(( ${DINOMEM_GRAPH_MAX_AGE_H:-36} * 60 ))
   local age_min=$(( ($(date +%s) - $(_mtime "$graph_json")) / 60 ))
-  if [ "$age_min" -gt $(( ${DINOMEM_GRAPH_MAX_AGE_H:-36} * 60 )) ]; then
-    echo "WARN|memory_graph: artifact is $(format_age_friendly "$age_min") old|stale"; return
+  [ "$age_min" -le "$max_min" ] && { echo "OK||ok"; return; }
+  # An old artifact is NORMAL when memory_graph.py ran recently and skipped the
+  # rebuild because the indexed memory content was unchanged (signature match).
+  # Only an old artifact WITHOUT a recent "unchanged" run is a real stall.
+  local glog="$ws/logs/memory_graph.log"
+  if [ -f "$glog" ] && [ $(( ($(date +%s) - $(_mtime "$glog")) / 60 )) -le "$max_min" ] \
+     && tail -n 6 "$glog" 2>/dev/null | grep -q 'memory unchanged'; then
+    echo "OK||ok"; return
   fi
-  echo "OK||ok"
+  echo "WARN|memory_graph: artifact is $(format_age_friendly "$age_min") old and no recent unchanged-skip run|stale"
+}
+
+# OpenClaw's memory index (memory_index_sources in the agent sqlite) must cover
+# memory/*.md. The builtin file watcher can silently miss files (seen: 4 files
+# un-indexed for 2-4 weeks while status said dirty=false), and then the graph
+# job keeps skipping as "unchanged" forever. Files younger than the grace window
+# are ignored (normal debounce / not-yet-synced). Fix: openclaw memory index --agent <id>.
+check_memory_index_lag() {
+  local ws="$1" db="$2"
+  [ -n "$db" ] && [ -f "$db" ] && [ -d "$ws/memory" ] || { echo "SKIP||na"; return; }
+  python3 - "$ws" "$db" "${DINOMEM_INDEX_LAG_GRACE_H:-24}" <<'PY' 2>/dev/null || echo "SKIP||na"
+import glob, os, sqlite3, sys, time
+ws, db, grace_h = sys.argv[1], sys.argv[2], float(sys.argv[3])
+con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+if not con.execute("select 1 from sqlite_master where name='memory_index_sources'").fetchone():
+    print("SKIP||na"); sys.exit()
+indexed = {r[0] for r in con.execute("select path from memory_index_sources")}
+cutoff = time.time() - grace_h * 3600
+lag = sorted(os.path.basename(f) for f in glob.glob(os.path.join(ws, "memory", "*.md"))
+             if os.path.getmtime(f) < cutoff and os.path.relpath(f, ws) not in indexed)
+if lag:
+    print(f"WARN|memory_index: {len(lag)} memory file(s) not indexed (e.g. {lag[0]}); run openclaw memory index|index_lag")
+else:
+    print("OK||ok")
+PY
 }
 
 # graph.db and memory_graph.json are written by the same job; a large mtime gap
