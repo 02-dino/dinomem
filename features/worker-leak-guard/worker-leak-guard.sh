@@ -99,5 +99,5 @@ for pat in $PATTERNS; do
 done
 
 wait 2>/dev/null || true
-log "done scanned=$scanned ${DRY_RUN:+dry_run=1 }killed=$killed min_age=${ORPHAN_MIN_MIN}m patterns='$PATTERNS'"
+log "done scanned=$scanned dry_run=$DRY_RUN killed=$killed min_age=${ORPHAN_MIN_MIN}m patterns='$PATTERNS'"
 exit 0

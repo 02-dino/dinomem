@@ -118,6 +118,15 @@ else
 fi
 
 # ── 2) register cron (replace-in-place on the tag) ──────────────────────────
+# Opt-out marker: a box that already runs an equivalent orphan guard (e.g. a
+# local fix-openclaw-worker-leak-guard.sh) comments our line out and renames the
+# tag to DISABLED_TAG. Re-adding it would make two guards race on the same pids,
+# so a re-install must respect that choice instead of "repairing" it.
+DISABLED_TAG="dinomem-managed-disabled:worker-leak-guard"
+if crontab -l 2>/dev/null | grep -qF "$DISABLED_TAG"; then
+  ok "cron registration skipped: operator disabled this guard ($DISABLED_TAG present)"
+  exit 0
+fi
 LINE="*/$EVERY_MIN * * * * /bin/bash $DEST --min-age-min $MIN_AGE_MIN >> $LOG 2>&1 $TAG"
 
 if crontab -l 2>/dev/null | grep -qF "$TAG"; then
