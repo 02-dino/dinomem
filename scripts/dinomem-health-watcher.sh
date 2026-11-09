@@ -53,6 +53,8 @@
 #   DINOMEM_WATCHER_TARGET       channel target, e.g. +6281..., 1203...@g.us, channel:123, -100..:topic:9
 #   DINOMEM_WATCHER_ACCOUNT      channel account id (optional)
 #   DINOMEM_WATCHER_PROFILE      openclaw --profile whose gateway owns that channel (optional)
+#   DINOMEM_WATCHER_SERVICES     extra services "name|health_url|restart_cmd;..." (restart runs as heal)
+#   DINOMEM_WATCHER_ENV          box-local KEY=value file (default $OPENCLAW_HOME/dinomem-watcher.env)
 #   DINOMEM_WATCHER_CONFIG       openclaw.json path (default $OPENCLAW_HOME/openclaw.json)
 #   DINOMEM_ALERT_COOLDOWN_SEC   reminder cooldown for unchanged problems (default 21600)
 #   DINOMEM_WATCHER_GRACE_H      suppress never-ran flags on fresh installs (default 48)
@@ -75,6 +77,20 @@ PRIMARY_AGENT="DINOMEM_AGENT_ID_PLACEHOLDER"
 case "$PRIMARY_AGENT" in *_PLACEHOLDER) PRIMARY_AGENT="main" ;; esac
 case "$_TEMPLATED_WS" in *_PLACEHOLDER) _TEMPLATED_WS="" ;; esac
 
+# Box-local config: plain KEY=value lines (any DINOMEM_WATCHER_* / DINOMEM_* var
+# documented above). Lets a box set channel, services, thresholds without
+# editing this file or the cron line. Env already set by the caller wins.
+WATCHER_ENV_FILE="${DINOMEM_WATCHER_ENV:-$OC/dinomem-watcher.env}"
+if [ -f "$WATCHER_ENV_FILE" ]; then
+  while IFS= read -r _line || [ -n "$_line" ]; do
+    case "$_line" in ''|'#'*) continue ;; esac
+    _k="${_line%%=*}"; _v="${_line#*=}"
+    case "$_k" in DINOMEM_*|OPENCLAW_HOME|NINE_ROUTER_PORT) ;; *) continue ;; esac
+    [ -n "${!_k+x}" ] && continue
+    _v="${_v#\"}"; _v="${_v%\"}"; _v="${_v#\'}"; _v="${_v%\'}"
+    export "$_k=$_v"
+  done < "$WATCHER_ENV_FILE"
+fi
 LOG_FILE="${DINOMEM_HEALTH_LOG:-$OC/logs/dinomem-health-watcher.log}"
 STATE_FILE="${DINOMEM_HEALTH_STATE:-$OC/logs/dinomem-health-watcher.state}"
 ALERT_COOLDOWN_SEC="${DINOMEM_ALERT_COOLDOWN_SEC:-21600}"
@@ -646,6 +662,7 @@ _common_sections() {
   local heal=""
   declare -F build_heal_block >/dev/null && heal="$(build_heal_block)"
   [ -n "$heal" ] && printf '%s\n\n' "$heal"
+  [ ${#SERVICE_LINES[@]} -gt 0 ] && printf '🔌 Services\n%s\n\n' "$(printf '%s\n' "${SERVICE_LINES[@]}")"
   printf '%s\n\n%s\n\n%s' \
     "$(build_resource_block)" "$(build_recall_block)" "$(build_memory_integrity_block)"
 }
@@ -799,6 +816,9 @@ if [ "${#AGENTS[@]}" -eq 0 ]; then
   exit 0
 fi
 
+_CHECKS_LIB="$(cd "$(dirname "$0")" && pwd)/lib/watcher_checks.sh"
+# shellcheck source=/dev/null
+[ -f "$_CHECKS_LIB" ] && . "$_CHECKS_LIB"
 # Per-agent checks (gateway + db + the 3 base crons). Staleness windows: 15-min
 # job -> 2h; daily jobs -> 30h (6h grace past the 24h cycle so only a genuinely
 # skipped day trips it).
@@ -822,6 +842,18 @@ for agent in "${AGENTS[@]}"; do
     sev="$(max_severity "$sev" "$c_sev")"
     [ "$c_sev" != "OK" ] && { problems+=("$c_msg"); record_problem_issue "${agent}:${jkey}:${c_sev}:${c_cls}"; }
   done
+  # Extra checks (lib/watcher_checks.sh). SKIP = feature not installed here.
+  if declare -F check_memory_graph_artifact >/dev/null; then
+    for chk in "check_memory_graph_artifact $ws" "check_graph_db_json_sync $ws" \
+               "check_memory_index_freshness $ws" "check_retrieval_health $ws" \
+               "check_cron_gate $agent $ws"; do
+      # shellcheck disable=SC2086
+      IFS='|' read -r x_sev x_msg x_cls <<< "$($chk)"
+      case "$x_sev" in OK|SKIP|"") continue ;; esac
+      sev="$(max_severity "$sev" "$x_sev")"
+      problems+=("$x_msg"); record_problem_issue "${agent}:${chk%% *}:${x_sev}:${x_cls}"
+    done
+  fi
   OVERALL[$agent]="$sev"
   block="$(agent_status_emoji "$sev") ${agent} — $([ "$sev" = OK ] && echo 'all normal' || echo 'needs a look')"
   if [ "$sev" = "OK" ]; then
@@ -832,6 +864,21 @@ for agent in "${AGENTS[@]}"; do
   REPORT_BLOCKS[$agent]="$block"
   log "${agent}: ${sev}" >>"$LOG_FILE"
 done
+
+# Box-local extra services (DINOMEM_WATCHER_SERVICES). Not agent-scoped.
+SERVICE_LINES=()
+if declare -F check_extra_services >/dev/null; then
+  # Run in THIS shell (redirect to a file, not $(...)/<(...)) so SVC_DOWN/SVC_URL
+  # set inside the function survive for the heal step.
+  _svc_out="$(mktemp 2>/dev/null || echo "/tmp/dinomem-svc.$$")"
+  check_extra_services > "$_svc_out"
+  while IFS='|' read -r s_sev s_msg s_cls s_name; do
+    [ -n "$s_sev" ] || continue
+    if [ "$s_sev" = OK ]; then SERVICE_LINES+=("  ✅ ${s_msg}")
+    else SERVICE_LINES+=("  🔴 ${s_msg}"); record_problem_issue "service:${s_name}:${s_sev}:${s_cls}"; fi
+  done < "$_svc_out"
+  rm -f "$_svc_out"
+fi
 
 # Heal AFTER checks (it acts on what they found) and BEFORE the notify decision,
 # so the report says both what broke and what was done about it.

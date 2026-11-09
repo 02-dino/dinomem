@@ -168,9 +168,33 @@ heal_approve_pending() {
   echo "Approved: $fp — applying now."
 }
 
+# Box-local services from DINOMEM_WATCHER_SERVICES (lib/watcher_checks.sh).
+# Restart runs DIRECTLY (same tier as TEI): the operator wrote the restart_cmd
+# into their own config, which is the consent. Empty cmd = report only.
+heal_services() {
+  declare -p SVC_DOWN >/dev/null 2>&1 || return 0
+  local name cmd url
+  for name in "${!SVC_DOWN[@]}"; do
+    cmd="${SVC_DOWN[$name]}"; url="${SVC_URL[$name]:-}"
+    if [ -z "$cmd" ]; then _heal_note "$name" "down, no restart_cmd configured -> report only"; continue; fi
+    if [ "$DRY_RUN" = true ]; then _heal_note "$name" "down -> would run: $cmd (dry-run)"; continue; fi
+    if bash -c "$cmd" >>"$LOG_FILE" 2>&1; then
+      sleep "${DINOMEM_WATCHER_SERVICE_SETTLE:-5}"
+      if [ -n "$url" ] && curl -fsS -m 8 -o /dev/null "$url" 2>/dev/null; then
+        _heal_note "$name" "was down -> restarted, healthy ✅"
+      else
+        _heal_note "$name" "restarted but health still failing ❌"
+      fi
+    else
+      _heal_note "$name" "restart command failed ❌ ($cmd)"
+    fi
+  done
+}
+
 heal_run() {
   local a
   heal_tei
+  heal_services
   for a in "${AGENTS[@]}"; do heal_rollup "$a"; heal_graph "$a"; done
   heal_gateways
   return 0
