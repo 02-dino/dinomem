@@ -140,7 +140,8 @@ while [ $# -gt 0 ]; do
     --workspace)  WS="$2"; WS_EXPLICIT=1; shift 2 ;;
     --agent-id)   AGENT_ID="$2"; AGENT_ID_EXPLICIT=1; shift 2 ;;
     --instance)   INSTANCE_ID="$2"; shift 2 ;;
-    --no-docker)  DO_DOCKER=0; shift ;;
+    --no-docker)  DO_DOCKER=0; NO_DOCKER_EXPLICIT=1; shift ;;
+    --restart-tei) TEI_RESTART=force; shift ;;
     --no-cron)         DO_CRON=0; shift ;;
     --repair-cron)     REPAIR_CRON=1; DO_CRON=1; DO_DOCKER=0; DO_SMART_CACHE=0; DO_GIT_SNAPSHOT=0; shift ;;
     --no-backup-cron)  DO_BACKUP_CRON=0; shift ;;
@@ -1428,28 +1429,19 @@ if [ "$DO_DOCKER" = 1 ]; then
     fi
   fi
 
-  # ZERO-SWAP CLAMP for TEI containers that ALREADY exist. The compose files and
-  # the docker-run line above only shape a container at CREATE time, and the
-  # reuse branch never recreates one -- so a box installed before memswap_limit
-  # shipped keeps Docker's default (swap = 2x memory) forever. Measured
-  # 2026-11-09: e5 held 1.0GiB in swap and memory_search timed out at 15s.
-  # `docker update` is live (no restart, no recall outage) and idempotent.
-  # Matched by IMAGE, not name, so hand-made containers (tei-rerank) are covered
-  # too, and by REPO not tag, so pre-1.9.4 boxes (cpu-1.6) are covered as well.
-  # Memory=0 (unbounded) is left alone: there is no limit to pin swap to.
-  if command -v docker >/dev/null 2>&1; then
-    for _tc in $(docker ps --format '{{.ID}} {{.Image}}' 2>/dev/null | awk '$2 ~ /text-embeddings-inference/ {print $1}'); do
-      read -r _tn _tm _ts <<<"$(docker inspect -f '{{.Name}} {{.HostConfig.Memory}} {{.HostConfig.MemorySwap}}' "$_tc" 2>/dev/null)"
-      [ "${_tm:-0}" -gt 0 ] 2>/dev/null || continue
-      [ "$_ts" = "$_tm" ] && { skip "TEI ${_tn#/} already swap-free"; continue; }
-      if [ "$DRY_RUN" = 1 ]; then plan "docker update --memory-swap ${_tm} ${_tn#/} (disable swap; now ${_ts})"
-      elif docker update --memory-swap "$_tm" "$_tc" >/dev/null 2>&1; then ok "TEI ${_tn#/}: swap disabled (memswap ${_ts} -> ${_tm})"
-      else warn "TEI ${_tn#/}: docker update --memory-swap failed (non-fatal)"; fi
-    done
-  fi
 fi
 
 fi  # end REPAIR-CRON FAST PATH (heavy phases)
+
+# ── 3b) TEI zero-swap reconcile (EXISTING containers) ────────────────────────
+# Outside the fast-path guard on purpose: --repair-cron must converge old boxes
+# too, or they only get fixed on a full reinstall. Explicit --no-docker = hands
+# off Docker entirely. Logic + why-conditional-restart: scripts/lib/tei_reconcile.sh
+if [ "${NO_DOCKER_EXPLICIT:-0}" != 1 ] && [ -f "$SKILL_DIR/scripts/lib/tei_reconcile.sh" ]; then
+  # shellcheck source=/dev/null
+  . "$SKILL_DIR/scripts/lib/tei_reconcile.sh"
+  tei_reconcile "${TEI_RESTART:-auto}"
+fi
 if [ "$REPAIR_CRON" = 1 ]; then
   hr "repair-cron mode"
   ok "skipping docker/TEI/copy/config/git-snapshot phases — re-registering crons only"
