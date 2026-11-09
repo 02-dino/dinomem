@@ -48,6 +48,11 @@
 #   OPENCLAW_HOME                 default ~/.openclaw
 #   DINOMEM_WATCHER_SKIP         space/comma agent ids to exclude
 #   DINOMEM_WATCHER_TELEGRAM_ACCOUNT / _CHAT_ID / _TOPIC_ID
+#   DINOMEM_WATCHER_CHANNEL      any OpenClaw channel (whatsapp|discord|slack|signal|telegram|...)
+#                                -> delivered via `openclaw message send`; unset = Telegram Bot API direct
+#   DINOMEM_WATCHER_TARGET       channel target, e.g. +6281..., 1203...@g.us, channel:123, -100..:topic:9
+#   DINOMEM_WATCHER_ACCOUNT      channel account id (optional)
+#   DINOMEM_WATCHER_PROFILE      openclaw --profile whose gateway owns that channel (optional)
 #   DINOMEM_WATCHER_CONFIG       openclaw.json path (default $OPENCLAW_HOME/openclaw.json)
 #   DINOMEM_ALERT_COOLDOWN_SEC   reminder cooldown for unchanged problems (default 21600)
 #   DINOMEM_WATCHER_GRACE_H      suppress never-ran flags on fresh installs (default 48)
@@ -77,6 +82,10 @@ TELEGRAM_CONFIG="${DINOMEM_WATCHER_CONFIG:-$OC/openclaw.json}"
 TELEGRAM_ACCOUNT="${DINOMEM_WATCHER_TELEGRAM_ACCOUNT:-}"
 TELEGRAM_CHAT_ID="${DINOMEM_WATCHER_TELEGRAM_CHAT_ID:-}"
 TELEGRAM_TOPIC_ID="${DINOMEM_WATCHER_TELEGRAM_TOPIC_ID:-}"
+NOTIFY_CHANNEL="${DINOMEM_WATCHER_CHANNEL:-}"
+NOTIFY_TARGET="${DINOMEM_WATCHER_TARGET:-}"
+NOTIFY_ACCOUNT="${DINOMEM_WATCHER_ACCOUNT:-}"
+NOTIFY_PROFILE="${DINOMEM_WATCHER_PROFILE:-}"
 
 # systemd --user from cron often lacks XDG_RUNTIME_DIR (false "gateway down").
 if [ -z "${XDG_RUNTIME_DIR:-}" ] && [ "$(id -u)" -eq 0 ]; then
@@ -708,6 +717,27 @@ print(f"telegram ok message_id={body.get('result', {}).get('message_id')}")
 PY
 }
 
+# ── Any-channel delivery via the OpenClaw CLI ────────────────────────────────
+# Why the CLI and not per-provider HTTP: `openclaw message send` already knows
+# every channel's auth, target syntax and chunk limit (WhatsApp, Discord, Slack,
+# Signal, Telegram, ...). Re-implementing each API here would fork that logic.
+# Cost: ~30s CLI cold start — fine for a once-a-day cron. Telegram keeps its
+# direct Bot API path when no channel is set (fast, no gateway dependency).
+_openclaw_send() {
+  local message="$1" bin
+  bin="$(command -v openclaw 2>/dev/null)" || return 6
+  [ -n "$NOTIFY_TARGET" ] || { echo "DINOMEM_WATCHER_TARGET not set for channel $NOTIFY_CHANNEL"; return 4; }
+  local -a cmd=("$bin")
+  [ -n "$NOTIFY_PROFILE" ] && cmd+=(--profile "$NOTIFY_PROFILE")
+  cmd+=(message send --channel "$NOTIFY_CHANNEL" --target "$NOTIFY_TARGET" --message "$message")
+  [ -n "$NOTIFY_ACCOUNT" ] && cmd+=(--account "$NOTIFY_ACCOUNT")
+  timeout "${DINOMEM_WATCHER_SEND_TIMEOUT:-180}" "${cmd[@]}"
+}
+
+_send_report() {
+  if [ -n "$NOTIFY_CHANNEL" ]; then _openclaw_send "$1"; else _telegram_send "$1"; fi
+}
+
 deliver() {
   local message="$1"
   if [ "$DRY_RUN" = true ]; then
@@ -715,12 +745,13 @@ deliver() {
     printf '%s\n' "$message"
     return 0
   fi
-  if [ "$FORCE_STDOUT" != true ] && _telegram_send "$message" >>"$LOG_FILE" 2>&1; then
-    log "Report sent to Telegram" >>"$LOG_FILE"
+  local via="${NOTIFY_CHANNEL:-telegram}"
+  if [ "$FORCE_STDOUT" != true ] && _send_report "$message" >>"$LOG_FILE" 2>&1; then
+    log "Report sent via $via" >>"$LOG_FILE"
     return 0
   fi
   # (A) Fallback: stdout + log so cron/mail captures it.
-  [ "$FORCE_STDOUT" = true ] || log "Telegram unavailable — falling back to stdout" >>"$LOG_FILE"
+  [ "$FORCE_STDOUT" = true ] || log "$via delivery unavailable — falling back to stdout" >>"$LOG_FILE"
   printf '%s\n' "$message"
   printf '%s\n' "$message" >>"$LOG_FILE"
   return 0
