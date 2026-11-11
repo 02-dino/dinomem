@@ -34,6 +34,14 @@ services:
       - --port
       - "80"
       - --auto-truncate
+      # CAPPED 16384 (TEI default) -> 4096. Warmup pre-allocates ONE batch of
+      # max-batch-tokens at the model's 8192 max seq len; for bge-v2-m3 on candle
+      # CPU that spike measured 6.23GiB anon-rss (kernel memcg OOM, exit 137,
+      # every ~60s, 62 restarts) -- the model itself is ~2.3GiB. Real traffic
+      # from _rerank.py is 8 x 400 chars ~ 1.2k tokens, so 4096 is 3x headroom
+      # on the request path and bounds warmup instead of chasing it with RAM.
+      - --max-batch-tokens
+      - "4096"
       # RAISED 2 -> 32 together with the 1.9.4 bump: 1.9.4 spends a permit PER
       # INPUT, so a depth of 2 would 429 any multi-document rerank. The embed
       # service hit exactly this and was moved 8 -> 16 on the same grounds.
@@ -45,9 +53,10 @@ services:
       # indistinguishable from "down" to _rerank.py and just fail-opens.
       - --max-concurrent-requests
       - "32"
-    # Sized for bge-v2-m3 on CPU, measured 2026-11-11 on an 8-core box: RSS
-    # 4.8GiB DURING WARMUP (docker stats), so 512m/1cpu (the MiniLM sizing)
-    # cannot even load the weights. 6g clears the measured peak with headroom.
+    # Sized for bge-v2-m3 on CPU (weights ~2.3GiB fp32). 512m/1cpu (the MiniLM
+    # sizing) cannot even load it. With --max-batch-tokens 4096 above, 6g is
+    # headroom, not a ceiling being chased: at the 16384 default the warmup
+    # alone OOMed a 6g cgroup (measured 2026-11-11, 8-core box).
     cpus: 2.5
     mem_limit: 6g
     memswap_limit: 6g   # == mem_limit -> no swap; see docker-compose.tei.yml
