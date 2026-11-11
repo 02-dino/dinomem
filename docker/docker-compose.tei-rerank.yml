@@ -1,7 +1,6 @@
 # TEI cross-encoder reranker for dinomem (semantic_search / session_search /
 # hybrid_recall memory_native leg, via dinomem-neuron tools/_rerank.py).
 # Recreate: docker compose -f docker-compose.tei-rerank.yml up -d --force-recreate
-version: "3.8"
 
 services:
   tei-rerank:
@@ -23,14 +22,18 @@ services:
       - RAYON_NUM_THREADS=1
     command:
       - --model-id
-      # SWAPPED 2026-11-11: cross-encoder/ms-marco-MiniLM-L-6-v2 -> bge-reranker-v2-m3.
-      # MiniLM is ENGLISH-ONLY. Controlled decoy test (see _rerank.py gotcha 2):
-      # EN query vs EN corpus spread 0.43, ID vs ID 0.19, EN vs ID 0.0002 --
-      # signal gone, so every mixed-language recall silently fail-opened to the
-      # unreranked order. bge-v2-m3 is multilingual (100+ langs incl. ID).
-      # COST: ~568M params vs ~22M. Limits below are sized for it, not MiniLM;
-      # dropping them back to 512m/1 cpu OOM-loops the container at warmup.
-      - BAAI/bge-reranker-v2-m3
+      # bge-reranker-BASE (278M), not v2-m3 (568M). MEASURED 2026-11-11 on an
+      # 8-core box at 2.5 cpus, 8x400 chars, 3 ground-truth probes (EN / ID /
+      # ID-query-on-EN-passage):
+      #   v2-m3  median 47.1s  max 64.2s  top1 2/3  spread 0.71
+      #   base   median  1.39s max  1.47s top1 3/3  spread 0.41
+      #   mmarco-mMiniLMv2-L12 (118M) median 0.41s top1 3/3 spread 0.16
+      # v2-m3 is the wrong size for a CPU box: every call blew the 6s client
+      # TIMEOUT, so recalls fail-opened to the LLM leg on EVERY request -- the
+      # opposite of a fallback. base clears the timeout 4x and still gets the
+      # cross-language probe; chosen over mmarco for 2.5x the score spread
+      # (a wider gap = more signal into fusion) at ~1s extra. Multilingual.
+      - BAAI/bge-reranker-base
       - --port
       - "80"
       - --auto-truncate
@@ -53,13 +56,14 @@ services:
       # indistinguishable from "down" to _rerank.py and just fail-opens.
       - --max-concurrent-requests
       - "32"
-    # Sized for bge-v2-m3 on CPU (weights ~2.3GiB fp32). 512m/1cpu (the MiniLM
-    # sizing) cannot even load it. With --max-batch-tokens 4096 above, 6g is
-    # headroom, not a ceiling being chased: at the 16384 default the warmup
-    # alone OOMed a 6g cgroup (measured 2026-11-11, 8-core box).
+    # Sized for bge-reranker-base on CPU (weights ~1.1GiB fp32; measured
+    # ~1.5GiB peak incl. warmup, 2026-11-11). 512m/1cpu (the MiniLM sizing)
+    # cannot load it; 3g is 2x the measured peak. If you swap in v2-m3, this
+    # must go to 6g AND --max-batch-tokens must stay capped: at the 16384
+    # default its warmup alone OOMed a 6g cgroup on this box.
     cpus: 2.5
-    mem_limit: 6g
-    memswap_limit: 6g   # == mem_limit -> no swap; see docker-compose.tei.yml
+    mem_limit: 3g
+    memswap_limit: 3g   # == mem_limit -> no swap; see docker-compose.tei.yml
     pids_limit: 64
     restart: unless-stopped
     healthcheck:
