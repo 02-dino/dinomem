@@ -504,6 +504,7 @@ python3 benchmark/run_all.py --source . \
 | `--agent-id ID` | Detected from workspace name | OpenClaw agent ID |
 | `--no-docker` | — | Skip TEI Docker setup. **Not recommended** — memory still auto-saves and `memory_search` works, but you lose fast local semantic recall/dedup (runs slower/weaker until TEI is available). Only use on a box that genuinely can't run Docker. |
 | `--no-cron` | — | Skip crontab registration |
+| `TEI_RERANK=0` (env) | — | Skip the TEI **reranker** (`:8081`, `BAAI/bge-reranker-base`). Optional: recall still works, just unreranked (or LLM-reranked if neuron's `_rerank.py` fallback is on). Both TEI services are started by the installer and **re-applied on `update.sh`** — a changed compose (model, limits, image) recreates the container the installer owns; an unchanged one is a no-op. |
 | `--repair-cron` | — | **Idempotent "just fix the crons" mode.** Skips every heavy/one-time phase (Docker, file copy, config wiring) and jumps straight to cron registration + self-check. Safe to re-run any time a prior install left the note-lifecycle crons unregistered. |
 | `--no-backup-cron` | — | Skip weekly backup cron (if you have your own backup system) |
 | `--force` | — | Overwrite existing scripts |
@@ -632,6 +633,7 @@ dinomem is designed for a default OpenClaw setup. If your agent is already custo
 |----------------|-------------|-------------|
 | Custom `session.reset` config | install.sh warns and keeps your existing value | Nothing — your config is preserved |
 | Custom `memorySearch.provider` | install.sh warns and skips TEI wiring | Wire TEI manually after install |
+| Port 8081 in use (non-TEI) | install.sh warns, reranker not started | Free port 8081, or `TEI_RERANK=0` |
 | Port 8080 in use | install.sh warns, copies docker-compose but does not start TEI | Change the port in `docker-compose.tei.yml` — keep the `127.0.0.1:` prefix (see [Security](#security-tei-is-bound-to-localhost-only)) — or use `--no-docker` |
 | Existing `kb/vector_db/` | install.sh warns — dinomem will write to this path | Back up first, or use a separate workspace |
 | Existing `memory_recall` in AGENTS.md | install.sh warns — block will be appended | Remove duplicate manually after install |
@@ -657,6 +659,7 @@ The installer automatically patches `~/.openclaw/openclaw.json`:
 | `compaction.memoryFlush.enabled` | `true` | Enabled as a guarded writer of the bare daily file `memory/YYYY-MM-DD.md` that feeds `startupContext`. A prompt override confines it to that file and forbids touching `MEMORY.md`. |
 | `memorySearch.provider` | `openai-compatible` | Use local TEI server |
 | `memorySearch.remote.baseUrl` | `http://localhost:8080/v1` | TEI Docker endpoint |
+| *(no config key)* | `http://localhost:8081` | TEI **reranker** endpoint — read by neuron's `tools/_rerank.py` (`DINOMEM_RERANK_URL` to override), not by OpenClaw itself |
 | `agents.defaults.contextInjection` | `always` | Root files (AGENTS.md, SOUL.md, etc) injected every turn — not skipped on continuation turns. (This is already the OpenClaw default; set explicitly to document intent. The valid key is `contextInjection` — earlier dinomem versions wrote an invalid `workspaceBootstrap` key that crashed the gateway; install/uninstall now strip that legacy key automatically.) |
 | `startupContext.enabled` | `true` (`dailyMemoryDays: 2`) | Injects the last 2 days of bare daily memory on `/new` and `/reset`. `memoryFlush` writes those bare `YYYY-MM-DD.md` files (separate namespace from dinomem's `_`-suffixed extraction files, so no clash); `cleanup_startup_daily.py` prunes them past the window. `memory_search` pull still handles deep recall. |
 | `agents.defaults.thinkingDefault` | `medium` floor (explicit low values only) | Ensures the agent genuinely internalizes and acts on instructions in root files (AGENTS.md, SOUL.md, MEMORY.md, etc.) rather than skimming past them. Without a minimum thinking floor, injected behavior rules and memory context may be acknowledged but not reliably followed. **True floor, raise-only, and only touches *explicit* below-floor values:** lifts to medium only if you have explicitly set `off`/`minimal`/`low`. `medium`/`high`/`xhigh`/`adaptive`/`max` are left untouched (never clobbered down). **Unset is deliberately left alone** — an unset `thinkingDefault` resolves to your *model's* default (per OpenClaw's thinking resolution: Claude 4.6 → `adaptive`, Opus 4.8/4.7 → `off`), and install.sh can't know your model, so forcing `medium` on unset would risk lowering a 4.6 user's `adaptive` default. We respect the model default instead. If you want the floor guaranteed, set `thinkingDefault` explicitly. |

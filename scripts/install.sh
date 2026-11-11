@@ -622,10 +622,24 @@ run() {
 # Lets us treat an already-running healthy TEI as reusable instead of a hard
 # port collision. TEI serves /health on its listen port; doctor.sh uses the same probe.
 tei_healthy() {
-  local url="http://localhost:${TEI_PORT:-8080}/health"
+  # $1 = port (default: embed on TEI_PORT/8080). The reranker probes 8081.
+  local url="http://localhost:${1:-${TEI_PORT:-8080}}/health"
   local code
   code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$url" 2>/dev/null)"
   [ "$code" = "200" ]
+}
+# tei_owned_by_ws <container> <compose-file-basename>
+# True when compose created <container> from $WS/<file>, i.e. THIS workspace
+# owns it. Compose stamps the file path as a label at create time, so a
+# hand-run container or another agent's copy (different $WS) never matches --
+# ownership is never inferred from the container NAME alone. This is what
+# lets `update.sh` re-apply a changed compose to a box that already has a
+# healthy container, without every agent on the box fighting over it.
+tei_owned_by_ws() {
+  local f
+  f="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project.config_files"}}' "$1" 2>/dev/null)" || return 1
+  case ",$f," in *",$WS/$2,"*) return 0 ;; esac
+  return 1
 }
 
 [ -d "$WS" ] || fail "Workspace not found: $WS  (pass --workspace DIR)"
@@ -1306,6 +1320,12 @@ if [ "$DO_DOCKER" = 1 ]; then
   # port 8080 with nothing to actually run.
   _TEI_OWNED=0
   if ! command -v docker >/dev/null 2>&1; then :
+  elif [ "${TEI_REUSE:-0}" != 1 ] && tei_healthy && tei_owned_by_ws tei-embed docker-compose.tei.yml; then
+    # UPDATE path (2026-11-11): the healthy container was created from THIS
+    # workspace's compose, so a changed file (model, limits, image) must reach
+    # it. Falls through to `compose up -d`, which is a no-op when unchanged.
+    _TEI_OWNED=1
+    ok "TEI on :8080 is owned by this workspace — re-applying compose (recreates only if config changed)"
   elif [ "${TEI_REUSE:-0}" = 1 ] || tei_healthy; then
     ok "Existing healthy TEI already answering on :8080 (/health 200) — reusing it, not starting a new container."
   elif lsof -i :8080 >/dev/null 2>&1 || ss -tlnp 2>/dev/null | grep -q ':8080 '; then
@@ -1313,6 +1333,8 @@ if [ "$DO_DOCKER" = 1 ]; then
     warn "Use --no-docker to skip TEI, or free port 8080 and re-run."
   else
     _TEI_OWNED=1
+  fi
+  if [ "$_TEI_OWNED" = 1 ]; then
     # AUTO-SIZE TEI to the host instead of shipping one hardcoded number.
       # RAYON_NUM_THREADS is the DRAIN rate (how many embeds are computed at
       # once); --max-concurrent-requests is only the QUEUE DEPTH (how many may
@@ -1397,12 +1419,15 @@ if [ "$DO_DOCKER" = 1 ]; then
     if docker compose version >/dev/null 2>&1; then
       run "copy docker-compose.tei.yml -> $WS/" cp "$SKILL_DIR/docker/docker-compose.tei.yml" "$WS/docker-compose.tei.yml"
       [ "$DRY_RUN" = 1 ] || ok "docker-compose.tei.yml copied"
-      if [ "$DRY_RUN" != 1 ] && docker compose -f "$WS/docker-compose.tei.yml" ps 2>/dev/null | grep -q "running"; then
-        skip "TEI container already running"
-      else
-        run "docker compose up -d (TEI embed server on :8080)" docker compose -f "$WS/docker-compose.tei.yml" up -d
-        [ "$DRY_RUN" = 1 ] || ok "TEI container started on port 8080 (compose)"
-      fi
+      # ALWAYS `up -d`, never "skip if running": compose compares the
+      # config-hash label it stamped at create time, so an unchanged file is a
+      # no-op and a changed one (model, limits, image) recreates. The old skip
+      # meant a model swap in the repo never reached a running box -- measured
+      # 2026-11-11: the reranker stayed on MiniLM after an update and
+      # _rerank.py fail-opened to the LLM leg on EVERY recall. The cost of a
+      # real change is one warmup (~1-2 min) during which recall fail-opens.
+      run "docker compose up -d (TEI embed on :8080; recreates only if config changed)" docker compose -f "$WS/docker-compose.tei.yml" up -d
+      [ "$DRY_RUN" = 1 ] || ok "TEI embed on port 8080 (compose; unchanged config = no-op)"
     else
       warn "docker compose plugin not found — using docker run fallback"
       if [ "$DRY_RUN" != 1 ] && docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^tei-embed$'; then
@@ -1429,6 +1454,35 @@ if [ "$DO_DOCKER" = 1 ]; then
         [ "$DRY_RUN" = 1 ] || ok "TEI container started on port 8080 (docker run)"
       fi
     fi
+  fi
+
+  # ── 3a-ii) TEI reranker (:8081) — second service of the same stack ──────────
+  # WHY wired here (2026-11-11): docker/docker-compose.tei-rerank.yml shipped
+  # in the repo but NO code path ever started it. Boxes that ran it did so from
+  # a hand-added @reboot line; everyone else had no reranker, so neuron's
+  # _rerank.py fail-opened to the LLM leg on EVERY recall -- the opposite of a
+  # fallback. Same ownership rule as embed. OPTIONAL: TEI_RERANK=0 skips it and
+  # recall still works (unreranked or LLM-reranked). No docker-run fallback:
+  # the compose file is the sizing contract and the reranker is not worth a
+  # second unbounded hand-run path.
+  _RERANK_OWNED=0
+  if ! command -v docker >/dev/null 2>&1 || [ "${TEI_RERANK:-1}" = 0 ]; then :
+  elif ! docker compose version >/dev/null 2>&1; then
+    warn "docker compose plugin not found — reranker not started (optional; recall still works)"
+  elif [ "${TEI_REUSE:-0}" != 1 ] && tei_healthy 8081 && tei_owned_by_ws tei-rerank docker-compose.tei-rerank.yml; then
+    _RERANK_OWNED=1
+    ok "TEI reranker on :8081 is owned by this workspace — re-applying compose (recreates only if config changed)"
+  elif [ "${TEI_REUSE:-0}" = 1 ] || tei_healthy 8081; then
+    ok "Existing healthy reranker already answering on :8081 — reusing it, not starting a new container."
+  elif lsof -i :8081 >/dev/null 2>&1 || ss -tlnp 2>/dev/null | grep -q ':8081 '; then
+    warn "Port 8081 in use by a non-TEI process — reranker not started. Check: lsof -i :8081"
+  else
+    _RERANK_OWNED=1
+  fi
+  if [ "$_RERANK_OWNED" = 1 ]; then
+    run "copy docker-compose.tei-rerank.yml -> $WS/" cp "$SKILL_DIR/docker/docker-compose.tei-rerank.yml" "$WS/docker-compose.tei-rerank.yml"
+    run "docker compose up -d (TEI reranker on :8081; recreates only if config changed)" docker compose -f "$WS/docker-compose.tei-rerank.yml" up -d
+    [ "$DRY_RUN" = 1 ] || ok "TEI reranker on port 8081 (compose; unchanged config = no-op; first start warms ~2 min)"
   fi
 
 fi
@@ -2717,6 +2771,12 @@ PYEOF
   fi
   TEI_CRON="$TEI_CRON" # assigned above
     upsert_cron "docker-compose.tei.yml" "dinomem: TEI auto-start on reboot" "$TEI_CRON" "TEI @reboot cron"
+  fi
+  # Reranker: compose file is self-contained (no autosize env to carry), so the
+  # reboot line is just the file. 45s > embed's 30s so they do not race for CPU.
+  if [ "$DO_DOCKER" = 1 ] && [ "${_RERANK_OWNED:-0}" = 1 ] && command -v docker >/dev/null 2>&1; then
+    upsert_cron "docker-compose.tei-rerank.yml" "dinomem: TEI reranker auto-start on reboot" \
+      "@reboot sleep 45 && docker compose -f $WS/docker-compose.tei-rerank.yml up -d >> /tmp/tei-rerank-startup.log 2>&1" "TEI reranker @reboot cron"
   fi
 fi
 
