@@ -294,6 +294,7 @@ BASE_CRON_NAMES = {
     "note cron gate",          # shared zero-LLM gate (base creates it)
     "daily note review",       # note janitor worker
     "pending note reminder",   # task_bound reminder worker
+    "stall rescuer",           # dead-subagent rescuer (base-owned since 1.34.0)
 }
 try:
     r = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)

@@ -1908,7 +1908,11 @@ if [ "$DO_CRON" = 1 ]; then
   # neuron. neuron's installer FINDS this same gate by name and EXTENDS its env
   # with the project-trio lanes — it never creates a second gate. So a neuron box
   # ends up with ONE gate driving all lanes (no double-dispatch). cron_gate.sh is
-  # the shared superset file; neuron overwrites it with the identical 5-lane copy.
+  # SINGLE-OWNER: only base ships it (all lanes, base + neuron, each env- and
+  # file-guarded). Neuron stopped shipping its own copy in 1.34.1 because the two
+  # drifted (neuron's overwrote this one without the Pending Reminder / Auto
+  # Improve lanes). Same for the Stall Rescuer (stall_watch.py, check_stalls.sh,
+  # templates/stall_rescuer_prompt.md + its cron): base-only, registered below.
   #
   # FALLBACK: if the gateway refuses command-kind crons (operator.admin), we
   # RE-ENABLE both workers on their own schedules (pre-gate behavior) so nothing
@@ -1916,7 +1920,7 @@ if [ "$DO_CRON" = 1 ]; then
   if [ "$DRY_RUN" = 1 ]; then
     plan "register (disabled) Daily Note Review + Pending Note Reminder, then create/extend 'Note Cron Gate' (*/15, zero-LLM)"
   else
-    DINOMEM_AGENT_ID="$AGENT_ID" DINOMEM_WS="$WS" python3 - <<'PYEOF'
+    DINOMEM_AGENT_ID="$AGENT_ID" DINOMEM_WS="$WS" DINOMEM_SKILL_DIR="$SKILL_DIR" python3 - <<'PYEOF'
 import subprocess, json
 import os as _os
 # CLI-TIMEOUT: `openclaw cron *` ops shell out to the node CLI, whose cold-start
@@ -2291,6 +2295,32 @@ job = {
 }
 AI_ID = upsert_gated_worker(job, "auto_improve")
 
+# Stall Rescuer — restarts spawned subagents that DIED unnoticed (check_stalls.sh ->
+# stall_watch.py decides at $0; this LLM turn only runs on a genuine, not-yet-handled
+# stall). BASE owns it (moved from neuron 2026-11-16): neuron ships no copy and never
+# registers it, so upsert-by-name here is the ONLY writer -> one job per gateway, and
+# a box upgraded from neuron 1.34.0 (same job name) is adopted in place, not doubled.
+# The prompt branches on whether claim_note.sh exists, so one text serves base-only
+# and neuron boxes. Missing template -> skip the lane, never abort the heredoc.
+_rp = _os.path.join(_os.environ.get("DINOMEM_SKILL_DIR", ""), "templates", "stall_rescuer_prompt.md")
+SR_ID = ""
+if _os.path.isfile(_rp):
+    job = {
+        "name": "Stall Rescuer",
+        "schedule": {"kind": "cron", "expr": "*/15 * * * *", "tz": "UTC"},
+        "payload": {
+            "kind": "agentTurn",
+            "message": open(_rp).read().replace("DINOMEM_WORKSPACE_PLACEHOLDER", _os.environ.get("DINOMEM_WS", "")),
+            "lightContext": True,
+            "timeoutSeconds": 600
+        },
+        "sessionTarget": "isolated",
+        "delivery": {"mode": "none"}
+    }
+    SR_ID = upsert_gated_worker(job, "stall_rescuer")
+else:
+    print("  \033[33m[warn]\033[0m templates/stall_rescuer_prompt.md missing — Stall Rescuer lane not registered")
+
 # Auto Improve Digest — weekly backstop, COMMAND kind (zero LLM in the gateway).
 # The daily lane announces nothing; this is the only thing that reaches the
 # owner. It prints ONLY when a proposal is actually waiting, so a quiet week
@@ -2339,11 +2369,17 @@ except Exception as _e:
 # it, keep the NEWEST (highest createdAtMs) and remove the rest. Makes 'update
 # dinomem' converge to exactly one of each lane from any starting state. Pure
 # cleanup: never creates anything, only removes true dupes.
-_CANON_BASE = ["Daily Note Review", "Pending Note Reminder", "Note Cron Gate"]
+_CANON_BASE = ["Daily Note Review", "Pending Note Reminder", "Note Cron Gate", "Stall Rescuer"]
+# --all: the gated workers are DISABLED by design, and a plain `cron list` hides
+# disabled jobs (measured 2026-11-16: 23 of 45 listed on analyst) -> without it
+# this sweep could never see a duplicate worker, only a duplicate gate.
 try:
-    _lr = subprocess.run(['openclaw','cron','list','--json'], capture_output=True, text=True, timeout=_CLI_T)
+    _lr = subprocess.run(['openclaw','cron','list','--all','--json'], capture_output=True, text=True, timeout=_CLI_T)
     _data = json.loads(_lr.stdout) if _lr.returncode == 0 else []
-    _jl = _data if isinstance(_data, list) else _data.get('jobs', {}).get('jobs', _data.get('jobs', []))
+    # Same shape-tolerant parse as _find_cron. The old one-liner called .get on the
+    # LIST that `cron list --json` returns under 'jobs' -> AttributeError, swallowed
+    # below -> _jl=[] -> this sweep silently never ran (measured 2026-11-16).
+    _jl = _data if isinstance(_data, list) else (_data.get('jobs') if isinstance(_data.get('jobs'), list) else (_data.get('jobs') or {}).get('jobs', []))
 except Exception:
     _jl = []
 for _cn in _CANON_BASE:
@@ -2351,11 +2387,15 @@ for _cn in _CANON_BASE:
     if len(_m) <= 1:
         continue
     _m.sort(key=lambda j: (j.get('createdAtMs', 0), j.get('updatedAtMs', 0)), reverse=True)
+    # Keep the job THIS run's upsert just refreshed (fresh prompt, and the id the
+    # gate env is about to be given); fall back to the newest for the gate itself.
+    _ours = {"Daily Note Review": DNR_ID, "Pending Note Reminder": PNR_ID, "Stall Rescuer": SR_ID}.get(_cn, '')
+    _m.sort(key=lambda j: j.get('id','') != _ours)  # stable: ours first, else newest
     for _dup in _m[1:]:
         _did = _dup.get('id','')
         if _did:
             subprocess.run(['openclaw','cron','remove',_did], capture_output=True, text=True, timeout=_CLI_T)
-            print("  \033[32m[ok]\033[0m   deduped '%s' — removed duplicate %s (kept newest)" % (_cn, _did[:8]))
+            print("  \033[32m[ok]\033[0m   deduped '%s' — removed duplicate %s (kept %s)" % (_cn, _did[:8], _m[0].get('id','')[:8]))
 
 # ── Note Cron Gate (command cron, */15, ZERO LLM) ───────────────────────────
 # One canonical gate. If it already exists (e.g. a prior run, or neuron created
@@ -2390,6 +2430,7 @@ else:
     if DNR_ID: lane_env["GATE_DAILY_NOTE_REVIEW_ID"] = DNR_ID
     if PNR_ID: lane_env["GATE_PENDING_REMINDER_ID"] = PNR_ID
     if AI_ID:  lane_env["GATE_AUTO_IMPROVE_ID"] = AI_ID
+    if SR_ID:  lane_env["GATE_STALL_RESCUER_ID"] = SR_ID
     gate_id = _find_cron(GATE_NAME)
     if gate_id:
         # Gate exists — MERGE our lanes into its env (preserve any neuron lanes).

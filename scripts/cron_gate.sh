@@ -21,25 +21,29 @@
 #   3. Add a Lane block below (3 lines: if/check/trigger)
 #   4. Disable the worker cron's own schedule
 #
-# SUPERSET FILE: this same cron_gate.sh ships in BOTH dinomem (base) and
-# dinomem-neuron. Every lane is env-guarded — if a lane's GATE_*_ID env var is
-# empty, that lane is skipped silently. So a base-only install (which only sets
-# the note_review + pending_reminder ids) runs 2 lanes; a neuron install (which
-# also sets the project-trio ids) runs all 5 — from ONE gate cron, no duplicates.
+# SINGLE OWNER (2026-11-16): this file ships ONLY in dinomem (base). Neuron used
+# to ship its own copy and overwrite this one; the two drifted (neuron's lacked
+# the Pending Reminder + Auto Improve lanes, so on neuron boxes those env keys
+# were dead), so neuron no longer ships cron_gate.sh at all and its test suite
+# fails if the file reappears there. Neuron-only lanes live HERE, env-guarded and
+# file-guarded: on a base-only box their GATE_*_ID is empty and their check script
+# is absent, so they are skipped silently. One gate cron, one file, no duplicates.
 #
 # Lanes (all optional, enabled by their env var):
 #   GATE_ADVANCER_ID           -> Project Advancer            [neuron]
 #   GATE_IMPROVER_ID           -> Project Improver            [neuron]
 #   GATE_DELETER_ID            -> Verified Note Deleter        [neuron]
-#   GATE_DAILY_NOTE_REVIEW_ID  -> Daily Note Review            [base + neuron]
-#   GATE_PENDING_REMINDER_ID   -> Pending Note Reminder        [base + neuron]
+#   GATE_IDEATOR_ID            -> Brainstorm Ideator           [neuron]
+#   GATE_DAILY_NOTE_REVIEW_ID  -> Daily Note Review            [base]
+#   GATE_PENDING_REMINDER_ID   -> Pending Note Reminder        [base]
+#   GATE_AUTO_IMPROVE_ID       -> Auto Improve                 [base]
+#   GATE_STALL_RESCUER_ID      -> Stall Rescuer                [base]
 #
 # Portable: workspace from $OPENCLAW_WORKSPACE; job IDs from env (install.sh fills
 # them). If a job-id env var is empty, that lane is skipped silently.
 #
-# Output contract: prints a short line per lane it TRIGGERED. If it triggered
-# nothing, prints exactly NO_REPLY so the command-cron delivery layer suppresses
-# any announce. Always exits 0 (a gate that itself errors must not spam failure
+# Output contract: stdout is ALWAYS exactly NO_REPLY (trigger info goes to
+# logs/cron_gate.log, see the end of this file). Always exits 0 (a gate that itself errors must not spam failure
 # alerts; per-lane failures are logged, not fatal).
 set -uo pipefail
 
@@ -58,10 +62,23 @@ if [ -r "$SCRIPTS/lib/gate_lib.sh" ]; then
   source "$SCRIPTS/lib/gate_lib.sh" 2>/dev/null || true
 fi
 
+# git drift-context helper (neuron ships _gate_git_ctx.sh). Best-effort and
+# fire-path only; a missing/broken helper never breaks the $0 dispatcher.
+GIT_CTX_ENABLED=0
+if [ -f "$SCRIPTS/_gate_git_ctx.sh" ]; then
+  # shellcheck source=/dev/null
+  if source "$SCRIPTS/_gate_git_ctx.sh" 2>/dev/null && declare -F write_git_ctx >/dev/null 2>&1; then
+    GIT_CTX_ENABLED=1
+  fi
+fi
+GIT_CTX_REPO="${GIT_CTX_REPO:-/root/.openclaw}"
+
 # Job IDs (env-injected; install.sh substitutes real values). Empty => skip lane.
 ADVANCER_ID="${GATE_ADVANCER_ID:-}"
 IMPROVER_ID="${GATE_IMPROVER_ID:-}"
 DELETER_ID="${GATE_DELETER_ID:-}"
+IDEATOR_ID="${GATE_IDEATOR_ID:-}"
+STALL_RESCUER_ID="${GATE_STALL_RESCUER_ID:-}"
 # Optional lanes — set these env vars to enable:
 DAILY_NOTE_REVIEW_ID="${GATE_DAILY_NOTE_REVIEW_ID:-}"
 PENDING_REMINDER_ID="${GATE_PENDING_REMINDER_ID:-}"
@@ -77,6 +94,10 @@ trigger() {
   local name="$1" jobid="$2"
   if [ -z "$jobid" ] || [ -z "$OPENCLAW_BIN" ]; then
     return 0
+  fi
+  # Fire path only: git drift context for this lane (zero LLM, fail-open).
+  if [ "$GIT_CTX_ENABLED" -eq 1 ]; then
+    write_git_ctx "$name" "$GIT_CTX_REPO" || true
   fi
   if "$OPENCLAW_BIN" cron run "$jobid" >/dev/null 2>&1; then
     triggered+=("$name")
@@ -108,6 +129,14 @@ if [ -n "$DELETER_ID" ] && [ -f "$SCRIPTS/check_deletable.sh" ]; then
   fi
 fi
 
+# Lane 3b — Brainstorm Ideator [neuron]: run when a type:brainstorm/status:design
+# note exists. Pressure-tests THINKING and appends a critique; never builds/reaps.
+if [ -n "$IDEATOR_ID" ] && [ -f "$SCRIPTS/check_ideator.sh" ]; then
+  if bash "$SCRIPTS/check_ideator.sh"; then
+    trigger "ideator" "$IDEATOR_ID"
+  fi
+fi
+
 # Lane 4 — Daily Note Review (optional): run when memory/ has notes to janitor.
 # Enable by setting GATE_DAILY_NOTE_REVIEW_ID in the cron job's env.
 if [ -n "$DAILY_NOTE_REVIEW_ID" ] && [ -f "$SCRIPTS/check_daily_notes.sh" ]; then
@@ -136,9 +165,26 @@ if [ -n "$AUTO_IMPROVE_ID" ] && [ -f "$SCRIPTS/check_improvement.sh" ]; then
   fi
 fi
 
-if [ "${#triggered[@]}" -eq 0 ]; then
-  echo "NO_REPLY"
-else
-  echo "cron_gate: triggered ${triggered[*]}"
+# Lane 7 — Stall Rescuer: a spawned subagent DIED (failed/timeout/ghost) and
+# nothing resolved it. SESSION-driven, unlike lane 1: a dead worker's frozen note
+# looks exactly like an intentional pause to check_projects.sh, and some dead
+# workers have no note at all. check_stalls.sh records each stall in its ledger
+# (fires once); stdout is the JSON list, discarded here because this dispatcher
+# must only ever print NO_REPLY — the rescuer re-reads it via `stall_watch.py pending`.
+if [ -n "$STALL_RESCUER_ID" ] && [ -f "$SCRIPTS/check_stalls.sh" ]; then
+  if bash "$SCRIPTS/check_stalls.sh" >/dev/null; then
+    trigger "stall-rescuer" "$STALL_RESCUER_ID"
+  fi
 fi
+
+# stdout is ALWAYS exactly NO_REPLY. WHY: a trigger tick used to print
+# "cron_gate: triggered advancer" -- plain text that the delivery layer treats as a
+# message. If the live gate's delivery ever drifts from none to announce (measured
+# 2026-11-07: spammed a Telegram topic every 15min), delivery:none was the ONLY thing
+# holding that text back. Trigger info goes to the log so safety no longer depends on it.
+if [ "${#triggered[@]}" -gt 0 ]; then
+  mkdir -p "$WS/logs" 2>/dev/null || true
+  echo "$(date -u +%FT%TZ) cron_gate: triggered ${triggered[*]}" >> "$WS/logs/cron_gate.log" 2>/dev/null || true
+fi
+echo "NO_REPLY"
 exit 0

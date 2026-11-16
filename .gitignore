@@ -14,3 +14,4 @@ memory/peers/imessage_*.md
 # local code-structure index (built on demand, never versioned)
 kb/code_graph/
 *.bak-*
+scripts/.stall_watch.ledger.json
