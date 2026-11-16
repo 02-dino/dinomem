@@ -558,7 +558,7 @@ MEMORY.md                       # Searchable index (auto-generated, do not edit)
 
 | Time | Script | What runs |
 |------|--------|-----------|
-| Every 15 min | `auto_session_reset.py` | Session archive + memory extraction |
+| Every 15 min | `auto_session_reset.py` | Session archive + memory extraction. On a multi-agent box each agent gets its own minute offset (0-14), kept across updates, so up to 15 agents never fire on the same minute |
 | Every 15 min *(default-on, isolated)* | `git-autosnapshot/auto-commit.sh` | Git-snapshot memory + config into `.dinomem-snap.git`; disk-aware self-cleanup |
 | Daily 5:00 UTC | `memory_cleanup.py` | Dedup memory files |
 | Weekly Sun 2:00 UTC | `workspace_backup.py` | Snapshot backup (keep 3) |

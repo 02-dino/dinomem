@@ -1506,6 +1506,32 @@ fi
 # ── 4) Register cron jobs ─────────────────────────────────────────────────────
 # upsert_cron: add or update a cron entry by script keyword
 # Usage: upsert_cron <keyword> <comment> <cron_line> <label>
+# pick_reset_offset <agent> <hash_offset> -> 0..14 minute offset for the */15
+# auto_session_reset cron. WHY: md5(agent)%15 has only 15 buckets, so on a
+# multi-agent box (one shared crontab) agents collide (measured: 12 agents -> 3
+# pairs/triples on the same minute) and hit the shared embedding container at
+# once. Contract: (1) this agent's managed line already exists -> KEEP its minute
+# (updates never reshuffle, hand-tuned spreads survive); (2) else take the hash
+# offset, probing +1,+2.. mod 15 past offsets other agents' managed lines use;
+# (3) all 15 taken -> hash offset. Empty crontab (single agent) == old behaviour.
+pick_reset_offset() {
+  local aid="$1" want="$2" used=" " line a m i c
+  while IFS= read -r line; do
+    case "$line" in \#*|'') continue ;; esac
+    [[ "$line" =~ dinomem-managed:auto_session_reset\.py:([A-Za-z0-9_.-]+) ]] || continue
+    a="${BASH_REMATCH[1]}"; m="${line%%[[:space:]]*}"; m="${m%%,*}"
+    [[ "$m" =~ ^[0-9]+$ ]] || continue
+    m=$(( 10#$m % 15 ))
+    [ "$a" = "$aid" ] && { echo "$m"; return 0; }
+    used="$used$m "
+  done < <(crontab -l 2>/dev/null)
+  for ((i = 0; i < 15; i++)); do
+    c=$(( (want + i) % 15 ))
+    [[ "$used" == *" $c "* ]] || { echo "$c"; return 0; }
+  done
+  echo "$want"
+}
+
 upsert_cron() {
   local keyword="$1" comment="$2" cron_line="$3" label="$4"
   local aid="${AGENT_ID:-default}"
@@ -1809,7 +1835,7 @@ if [ "$DO_CRON" = 1 ]; then
     [ -n "$h" ] || h=0
     printf '%s\n' $(( 0x${h:-0} % mod ))
   }
-  _S15=$(_stagger 15)          # 0..14  — offset within each 15-min slot
+  _S15=$(pick_reset_offset "${AGENT_ID:-default}" "$(_stagger 15)")  # 0..14, unique across agents (see pick_reset_offset)
   _SMIN=$(_stagger 60)         # 0..59  — offset within an hour (dailies/weeklies)
   ok "cron stagger: agent '${AGENT_ID:-default}' -> +${_S15}m (15-min jobs), :${_SMIN} (daily/weekly)"
 
