@@ -1,6 +1,7 @@
 # TEI cross-encoder reranker for dinomem (semantic_search / session_search /
 # hybrid_recall memory_native leg, via dinomem-neuron tools/_rerank.py).
 # Recreate: docker compose -f docker-compose.tei-rerank.yml up -d --force-recreate
+# Operational (2026-11-13): BAAI/bge-reranker-base, mem_limit 3g. Lines mentioning v2-m3 are RETIRED benchmark notes (2026-11-11).
 
 services:
   tei-rerank:
@@ -58,9 +59,10 @@ services:
       - "32"
     # Sized for bge-reranker-base on CPU (weights ~1.1GiB fp32; measured
     # ~1.5GiB peak incl. warmup, 2026-11-11). 512m/1cpu (the MiniLM sizing)
-    # cannot load it; 3g is 2x the measured peak. If you swap in v2-m3, this
-    # must go to 6g AND --max-batch-tokens must stay capped: at the 16384
-    # default its warmup alone OOMed a 6g cgroup on this box.
+    # cannot load it; 3g is 2x the measured peak. v2-m3 is RETIRED: do not swap
+    # it in. If it is ever revisited, mem_limit must go to 6g AND --max-batch-tokens
+    # must stay capped: at the 16384 default its warmup alone OOMed a 6g cgroup
+    # on this box.
     cpus: 2.5
     mem_limit: 3g
     memswap_limit: 3g   # == mem_limit -> no swap; see docker-compose.tei.yml
