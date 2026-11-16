@@ -1,6 +1,6 @@
 ---
 name: auto-improve
-description: Turn one detected session candidate into ONE reviewable self-improvement proposal. Read this when the improvement cron fires, or when the owner asks for an improvement pass. Covers the candidate lifecycle, surface routing, the lessons-not-logs writing rule, and the pending-gate contract.
+description: Turn each detected session candidate (up to 5 per run) into at most ONE reviewable self-improvement proposal. Read this when the improvement cron fires, or when the owner asks for an improvement pass. Covers the candidate lifecycle, surface routing, the lessons-not-logs writing rule, and the pending-gate contract.
 ---
 # Auto-improve (dinomem)
 
@@ -15,12 +15,18 @@ window, which is why the excerpt exists.
 
 ## The pass (run in order, stop early when told to)
 
+The cron run repeats this pass for UP TO 5 candidates (one at a time, each
+closed with `done` or `drop` before the next `next`), stopping early on an
+empty queue or when time runs short. Candidates left `new` for more than 14
+days (`DINOMEM_IMPROVE_EXPIRE_DAYS`) are dropped zero-LLM by
+`improvement_propose.py expire` before dispatch, so you never see them.
+
 1. **Claim one candidate**
    ```bash
    python3 procedures/improvement_propose.py next
    ```
-   Exit 1 = empty queue -> **STOP, say nothing, cost nothing**. This is the
-   normal outcome on most days and is not a failure.
+   Exit 1 = empty queue -> **stop claiming**. If no proposal was written this
+   run, say nothing (`NO_REPLY`). An empty queue is a normal outcome, not a failure.
 
 2. **Decide: is there a real lesson here?**
    The detector optimises for recall, so most candidates are ordinary work that
@@ -33,7 +39,7 @@ window, which is why the excerpt exists.
    ```bash
    python3 procedures/improvement_propose.py drop <id> --why "<one line>"
    ```
-   then STOP. A wrong proposal costs the owner more than a missed one.
+   then move to the next candidate. A wrong proposal costs the owner more than a missed one.
 
 3. **Pick the surface — never guess**
    ```bash
@@ -146,8 +152,16 @@ loaded on demand, so they can afford more.
 
 - **You never write a live surface in this pass.** Only `kb/improvement_pending/`.
   Approval and application belong to the owner via `route.py approve`.
-- **One candidate per run.** Several lessons in one session -> propose the
-  strongest; the rest resurface if they recur, and recurrence is evidence.
+- **One proposal per candidate, at most 5 candidates per run.** Several lessons
+  in one session -> propose the strongest; the rest resurface if they recur,
+  and recurrence is evidence.
+- **The final reply is posted to the agent's group** (same place as the weekly
+  digest). Zero proposals written -> reply exactly `NO_REPLY` (OpenClaw
+  suppresses it; drops are never announced). One or more -> ONE short message:
+  count, then per proposal `id (surface): title`, then how to act:
+  `route.py pending` / `diff <id>` / `approve <id>` / `reject <id> --why`.
+  Never append `NO_REPLY` to a real message — a trailing token suppresses the
+  whole post.
 - **Code in a proposal** (a gate script, a hook handler) must follow
   `build-quality` before it is drafted, and anything landed later is verified
   with `scripts/verify.sh` + `route.py dup` by whoever approves it.

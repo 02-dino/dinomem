@@ -27,18 +27,30 @@ Usage:
   improvement_propose.py done <id>          # mark proposed (leaves pending/ alone)
   improvement_propose.py drop <id> [--why]  # no lesson here; close it out
   improvement_propose.py release <id>       # undo a claim
+  improvement_propose.py expire [--json]    # drop stale `new` candidates (zero-LLM)
+  improvement_propose.py selftest           # offline checks for expire
 
 Exit codes: 0 = ok, 1 = nothing to do / not found (so cron can early-exit).
 """
 
 import argparse
+import calendar
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
 
 CLAIM_TTL_SEC = 3 * 3600   # a dead cron's claim becomes reclaimable after this
+# The scan adds ~5 candidates per pass while the worker clears a handful a day,
+# so an unbounded queue only grows and the oldest lessons go stale first.
+# 0 disables expiry.
+try:
+    EXPIRE_DAYS = max(0, int(os.environ.get("DINOMEM_IMPROVE_EXPIRE_DAYS", "14")))
+except ValueError:
+    EXPIRE_DAYS = 14
+_ISO_DATE = re.compile(r"(\d{4})-(\d{2})-(\d{2})")
 
 _WS_DEFAULT = "DINOMEM_WORKSPACE_PLACEHOLDER"
 if _WS_DEFAULT.startswith("DINOMEM_"):
@@ -191,6 +203,98 @@ def op_due(as_json=False):
     return 0 if ready else 1
 
 
+def _candidate_epoch(path, data):
+    """When did the evidence happen? First ISO date in the session file name
+    (a leading date = session start; reset/orphan archives only carry the
+    archive date in a `.archived.<kind>.<ISO>` suffix), else detected_at,
+    else the queue file's mtime. Never raises: a missing age is 'young'."""
+    name = Path(str((data.get("evidence") or {}).get("session_file") or "")).name
+    m = _ISO_DATE.search(name)
+    if m:
+        try:
+            return calendar.timegm((int(m[1]), int(m[2]), int(m[3]), 0, 0, 0))
+        except (ValueError, OverflowError):
+            pass
+    try:
+        ts = int(data.get("detected_at") or 0)
+    except (TypeError, ValueError):
+        ts = 0
+    if ts > 0:
+        return ts
+    try:
+        return int(path.stat().st_mtime)
+    except OSError:
+        return int(time.time())
+
+
+def op_expire(as_json=False, now=None, days=None):
+    """Drop `new` candidates older than EXPIRE_DAYS. Zero-LLM, idempotent.
+    Only `new` is touched: `claimed` may be mid-run and `proposed` waits for
+    the human. Always exits 0 (a gate step that must never wedge the lane)."""
+    now = int(time.time()) if now is None else now
+    days = EXPIRE_DAYS if days is None else days
+    expired = []
+    if days > 0:
+        cutoff = now - days * 86400
+        for path, data in _candidates():
+            if data.get("status", "new") != "new":
+                continue
+            if _candidate_epoch(path, data) < cutoff:
+                data["status"] = "dropped"
+                data["dropped_reason"] = f"expired: >{days}d unreviewed"
+                data["dropped_at"] = now
+                _save(path, data)
+                expired.append(data["id"])
+    if as_json:
+        print(json.dumps({"ok": True, "expired": len(expired), "ids": expired,
+                          "days": days}))
+    elif expired:
+        print(f"expired {len(expired)} candidate(s) older than {days}d")
+    return 0
+
+
+def op_selftest():
+    """Offline: expiry ages by session-name date, then detected_at, and never
+    touches claimed/proposed. Runs against a temp queue, not the real one."""
+    import tempfile
+    global QUEUE_DIR
+    real = QUEUE_DIR
+    now = calendar.timegm((2026, 11, 16, 0, 0, 0))
+    day = 86400
+    cases = {  # id: (status, session_file, detected_at, expect_status)
+        "old_lead": ("new", "/s/2026-10-01T06-23-11Z_ab.jsonl", now, "dropped"),
+        "old_sfx": ("new", "/s/ab-cd.archived.reset.2026-10-20T01-00-00.jsonl", now, "dropped"),
+        "young": ("new", "/s/x.archived.orphan.2026-11-10T07-23-04.jsonl", 0, "new"),
+        "nodate_old": ("new", "/s/abcdef.jsonl", now - 30 * day, "dropped"),
+        "nodate_young": ("new", "/s/abcdef.jsonl", now - 2 * day, "new"),
+        "proposed_old": ("proposed", "/s/2026-01-01_x.jsonl", 0, "proposed"),
+        "claimed_old": ("claimed", "/s/2026-01-01_x.jsonl", 0, "claimed"),
+    }
+    fails = []
+    with tempfile.TemporaryDirectory() as td:
+        QUEUE_DIR = Path(td)
+        try:
+            for cid, (st, sf, det, _) in cases.items():
+                (QUEUE_DIR / f"{cid}.json").write_text(json.dumps(
+                    {"id": cid, "status": st, "detected_at": det,
+                     "claimed_at": now, "evidence": {"session_file": sf}}))
+            (QUEUE_DIR / SKILL_USAGE_NAME).write_text("{}")
+            op_expire(now=now, days=14)
+            op_expire(now=now, days=0)  # disabled -> no-op
+            for cid, (*_, want) in cases.items():
+                got = json.loads((QUEUE_DIR / f"{cid}.json").read_text())
+                if got["status"] != want:
+                    fails.append(f"{cid}: {got['status']} != {want}")
+                if want == "dropped" and not got.get("dropped_reason", "").startswith("expired: >14d"):
+                    fails.append(f"{cid}: reason {got.get('dropped_reason')!r}")
+        finally:
+            QUEUE_DIR = real
+    for f in fails:
+        print("FAIL", f, file=sys.stderr)
+    print(f"selftest: {len(cases) - len(fails)}/{len(cases)} ok")
+    return 1 if fails else 0
+
+
 def op_show(cand_id, as_json):
     _, data = _find(cand_id)
     if not data:
@@ -202,7 +306,8 @@ def op_show(cand_id, as_json):
 def main():
     ap = argparse.ArgumentParser(
         description="L2 queue reader (zero-LLM). The cron prompt is the reasoning half.")
-    ap.add_argument("op", choices=["due", "next", "list", "show", "done", "drop", "release"])
+    ap.add_argument("op", choices=["due", "next", "list", "show", "done", "drop", "release",
+                                   "expire", "selftest"])
     ap.add_argument("id", nargs="?", help="candidate id (show/done/drop/release)")
     ap.add_argument("--why", default="", help="reason recorded on drop")
     ap.add_argument("--json", action="store_true")
@@ -210,6 +315,10 @@ def main():
 
     if args.op == "due":
         return op_due(args.json)
+    if args.op == "expire":
+        return op_expire(args.json)
+    if args.op == "selftest":
+        return op_selftest()
     if args.op == "next":
         return op_next(args.json)
     if args.op == "list":

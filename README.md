@@ -563,7 +563,7 @@ MEMORY.md                       # Searchable index (auto-generated, do not edit)
 | Daily 5:00 UTC | `memory_cleanup.py` | Dedup memory files |
 | Weekly Sun 2:00 UTC | `workspace_backup.py` | Snapshot backup (keep 3) |
 | Daily 5:30 UTC | `memory_review.py` | LLM review — batched, full cycle ~7 days |
-| Every 15 min *(gate tick)* | `check_improvement.sh` | Zero-LLM scan for lesson candidates; dispatches the **Auto Improve** worker at most **once a day** |
+| Every 15 min *(gate tick)* | `check_improvement.sh` | Zero-LLM scan for lesson candidates (stale ones expire after 14 days); dispatches the **Auto Improve** worker at most **once a day**, which handles up to **5** candidates and posts one message to the agent's group only when it wrote a proposal |
 | Every 15 min *(gate tick)* | `check_stalls.sh` -> `stall_watch.py` | Zero-LLM scan of the session store for spawned subagents that **died** (failed / timeout / ghost after a gateway restart) and that nothing picked up; dispatches the **Stall Rescuer** worker once per genuine stall to release the dead claim and respawn one worker with the lesson |
 | Mondays 9:00 UTC | `gate/improvement-digest.sh` | Runs the skill curator, then messages you **only if** a proposal is waiting |
 

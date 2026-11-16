@@ -2091,23 +2091,38 @@ def _cron_add_argv(job):
     ts = pay.get('timeoutSeconds')
     if ts:
         a += ['--timeout-seconds', str(ts)]
-    dmode = (job.get('delivery', {}) or {}).get('mode')
-    if dmode == 'none':
-        a += ['--no-deliver']
-    elif dmode == 'announce':
-        a += ['--announce']
-        _dch = _dino_deliver_channel()
-        a += ['--channel', _dch]
-        _dto, _dthread, _dacct = _dino_deliver_to(_dch)
-        if _dto:
-            a += ['--to', _dto]
-            if _dthread:
-                a += ['--thread-id', str(_dthread)]
-            if _dacct:
-                a += ['--account', _dacct]
+    a += _delivery_flags(job)
     if job.get('enabled') is False:
         a += ['--disabled']
     a += ['--json']
+    return a
+
+def _delivery_flags(job):
+    """Delivery flags shared by `cron add` and `cron edit`.
+    delivery.mirror = <job name>: copy that job's explicit announce target
+    (channel/to/threadId/account) so a lane posts where the agent's managers
+    already read (Auto Improve -> the Auto Improve Digest's group/topic).
+    No chat id is hardcoded; with no usable mirror the normal
+    channel/target resolution applies."""
+    d = job.get('delivery', {}) or {}
+    dmode = d.get('mode')
+    if dmode == 'none':
+        return ['--no-deliver']
+    if dmode != 'announce':
+        return []
+    m = (_find_cron_job(d['mirror']).get('delivery') or {}) if d.get('mirror') else {}
+    if m.get('mode') == 'announce' and m.get('channel') not in (None, '', 'last') and m.get('to'):
+        _dch, _dto, _dthread, _dacct = m['channel'], str(m['to']), m.get('threadId'), m.get('accountId')
+    else:
+        _dch = _dino_deliver_channel()
+        _dto, _dthread, _dacct = _dino_deliver_to(_dch)
+    a = ['--announce', '--channel', _dch]
+    if _dto:
+        a += ['--to', _dto]
+        if _dthread:
+            a += ['--thread-id', str(_dthread)]
+        if _dacct:
+            a += ['--account', _dacct]
     return a
 
 def _cron_verify(name):
@@ -2170,19 +2185,22 @@ def upsert_selfsched(job, label):
 
 import os
 
-def _find_cron(name):
+def _find_cron_job(name):
+    """The stored job dict for `name` (this agent), or {} when absent/unreadable."""
     try:
         lr = subprocess.run(['openclaw', 'cron', 'list', '--all', '--json'], capture_output=True, text=True, timeout=_CLI_T)
         if lr.returncode != 0:
-            return ''
+            return {}
         data = json.loads(lr.stdout)
         joblist = data if isinstance(data, list) else (data.get('jobs') if isinstance(data.get('jobs'), list) else (data.get('jobs') or {}).get('jobs', []))
         for j in (joblist or []):
             if _dino_name_agent_match(j, name):
-                return j.get('id','')
+                return j
     except Exception:
-        return ''
-    return ''
+        return {}
+    return {}
+def _find_cron(name):
+    return _find_cron_job(name).get('id', '')
 
 def upsert_gated_worker(job, label):
     """Register a gate-driven agentTurn worker: created/kept DISABLED (never
@@ -2196,9 +2214,21 @@ def upsert_gated_worker(job, label):
         if existing_id:
             jid = existing_id
             msg = job.get('payload', {}).get('message', '')
-            subprocess.run(['openclaw', 'cron', 'edit', existing_id, '--message', msg],
-                           capture_output=True, text=True, timeout=_CLI_T)
-            print(f"  \033[32m[ok]\033[0m   {label} OpenClaw cron updated (prompt refreshed)")
+            ed = ['openclaw', 'cron', 'edit', existing_id, '--message', msg]
+            # Opt-in per job: also re-apply timeout + delivery on upgrade, so a
+            # lane whose contract changed (Auto Improve: silent -> announce,
+            # 1 -> 5 candidates) does not keep the old settings forever. Other
+            # lanes stay prompt-only so a hand-tuned delivery is not clobbered.
+            if job.get('refresh_settings'):
+                ts = job.get('payload', {}).get('timeoutSeconds')
+                if ts:
+                    ed += ['--timeout-seconds', str(ts)]
+                ed += _delivery_flags(job)
+            er = subprocess.run(ed, capture_output=True, text=True, timeout=_CLI_T)
+            if er.returncode != 0:
+                print(f"  \033[33m[warn]\033[0m {label} cron edit failed: {er.stderr[:120]}")
+            else:
+                print(f"  \033[32m[ok]\033[0m   {label} OpenClaw cron updated (prompt refreshed)")
         else:
             j2 = dict(job); j2['enabled'] = False
             ar = subprocess.run(_cron_add_argv(j2), capture_output=True, text=True, timeout=_CLI_T)
@@ -2260,20 +2290,37 @@ PNR_ID = upsert_gated_worker(job, "pending_note_reminder")
 # others, but NOT cheap-model: this turn judges whether a lesson is real and
 # then drafts a durable rule, which is exactly the work a downgraded model gets
 # wrong in the expensive direction (a bad proposal costs the owner review time;
-# a missed one costs nothing). delivery none — it writes a proposal to the
-# pending queue and stays silent; the owner is reached by the weekly digest.
+# a missed one costs nothing).
+# Throughput: one dispatch a day (check_improvement.sh stamp) but up to 5
+# candidates per run — the scan adds ~5 per pass, so 1/run could only grow the
+# queue; stale `new` candidates expire zero-LLM in check_improvement.sh.
+# Timeout: measured 25s-708s per candidate (analyst, 2026-10-22..11-16) -> 3600s
+# plus a self-imposed stop on claiming after ~40 min.
+# Delivery: announce, mirroring the Auto Improve Digest's target when it has an
+# explicit one (the group/topic the agent's managers already read), else the
+# agent's own channel. The run posts ONE message only when it created a
+# proposal; otherwise it ends with exactly NO_REPLY, which OpenClaw suppresses
+# (direct + fallback paths, docs/cli/cron.md "Silent token suppression").
+# The weekly digest stays as the backstop for proposals still waiting.
+# refresh_settings: upgrades re-apply timeout + delivery, not just the prompt.
 job = {
     "name": "Auto Improve",
     "schedule": {"kind": "cron", "expr": "0 4 * * *", "tz": "UTC"},
+    "refresh_settings": True,
     "payload": {
         "kind": "agentTurn",
         "message": (
-            "A past session was flagged as possibly containing a durable lesson.\n\n"
+            "Past sessions were flagged as possibly containing a durable lesson.\n\n"
             "READ THIS FIRST and follow it exactly: skills/auto-improve/SKILL.md\n"
             "(path is RELATIVE to the workspace cwd — do NOT prefix it with any shell variable).\n\n"
-            "Claim the candidate: python3 procedures/improvement_propose.py next\n"
-            "If that exits non-zero the queue is empty — reply NO_REPLY and STOP, zero cost.\n\n"
-            "Required stack, do NOT improvise a shortcut:\n"
+            "Work through UP TO 5 candidates in this run, one at a time:\n"
+            "  1. Claim: python3 procedures/improvement_propose.py next\n"
+            "     Non-zero exit = queue empty -> stop looping.\n"
+            "  2. Do the full pass for THAT candidate (below), close it with done or drop.\n"
+            "  3. Repeat until 5 handled, the queue is empty, or ~40 minutes have passed\n"
+            "     (then stop claiming; never leave a claimed candidate unclosed — if you\n"
+            "     must stop mid-candidate run: python3 procedures/improvement_propose.py release <id>).\n\n"
+            "Required stack per candidate, do NOT improvise a shortcut:\n"
             "  - read skills/build-quality/SKILL.md BEFORE writing any code into a proposal\n"
             "  - pick the surface with: python3 tools/route.py classify\n"
             "  - confirm it is not already covered: python3 tools/route.py verify <surface> <needle>\n"
@@ -2284,14 +2331,23 @@ job = {
             "DROPPING IS THE EXPECTED MAJORITY OUTCOME. The detector favours recall, so\n"
             "most candidates are ordinary work that merely looked busy. If there is no\n"
             "durable lesson, run: python3 procedures/improvement_propose.py drop <id> "
-            "--why \"<one line>\" and stop. A wrong proposal costs the owner more than a "
-            "missed one."
+            "--why \"<one line>\" and continue. A wrong proposal costs the owner more than a "
+            "missed one.\n\n"
+            "YOUR FINAL REPLY IS POSTED TO THE GROUP. Make it exactly one of:\n"
+            "  - zero proposals written this run -> reply with exactly NO_REPLY and nothing else\n"
+            "    (no summary of drops; drops are silent).\n"
+            "  - one or more proposals written -> one short message in the owner's language:\n"
+            "      [auto-improve] <N> new proposal(s) waiting for approval:\n"
+            "      - <proposal id> (<surface>): <title>\n"
+            "      Review: python3 tools/route.py pending | diff <id>\n"
+            "      Apply: python3 tools/route.py approve <id>  ·  Reject: python3 tools/route.py reject <id> --why \"...\"\n"
+            "    Never put NO_REPLY anywhere in this message: a trailing NO_REPLY suppresses the whole post."
         ),
         "lightContext": True,
-        "timeoutSeconds": 900
+        "timeoutSeconds": 3600
     },
     "sessionTarget": "isolated",
-    "delivery": {"mode": "none"}
+    "delivery": {"mode": "announce", "mirror": "Auto Improve Digest"}
 }
 AI_ID = upsert_gated_worker(job, "auto_improve")
 
@@ -2322,8 +2378,9 @@ else:
     print("  \033[33m[warn]\033[0m templates/stall_rescuer_prompt.md missing — Stall Rescuer lane not registered")
 
 # Auto Improve Digest — weekly backstop, COMMAND kind (zero LLM in the gateway).
-# The daily lane announces nothing; this is the only thing that reaches the
-# owner. It prints ONLY when a proposal is actually waiting, so a quiet week
+# The daily lane announces each run that created a proposal; this weekly
+# digest is the reminder for proposals still waiting. It prints ONLY when a
+# proposal is actually waiting, so a quiet week
 # costs nothing and sends nothing. delivery announce resolves to whatever
 # channel THIS agent already uses — no channel name is hardcoded anywhere, so a
 # WhatsApp/Discord/Slack install works unchanged.
@@ -2369,7 +2426,7 @@ except Exception as _e:
 # it, keep the NEWEST (highest createdAtMs) and remove the rest. Makes 'update
 # dinomem' converge to exactly one of each lane from any starting state. Pure
 # cleanup: never creates anything, only removes true dupes.
-_CANON_BASE = ["Daily Note Review", "Pending Note Reminder", "Note Cron Gate", "Stall Rescuer"]
+_CANON_BASE = ["Daily Note Review", "Pending Note Reminder", "Note Cron Gate", "Stall Rescuer", "Auto Improve"]
 # --all: the gated workers are DISABLED by design, and a plain `cron list` hides
 # disabled jobs (measured 2026-11-16: 23 of 45 listed on analyst) -> without it
 # this sweep could never see a duplicate worker, only a duplicate gate.
@@ -2389,7 +2446,7 @@ for _cn in _CANON_BASE:
     _m.sort(key=lambda j: (j.get('createdAtMs', 0), j.get('updatedAtMs', 0)), reverse=True)
     # Keep the job THIS run's upsert just refreshed (fresh prompt, and the id the
     # gate env is about to be given); fall back to the newest for the gate itself.
-    _ours = {"Daily Note Review": DNR_ID, "Pending Note Reminder": PNR_ID, "Stall Rescuer": SR_ID}.get(_cn, '')
+    _ours = {"Daily Note Review": DNR_ID, "Pending Note Reminder": PNR_ID, "Stall Rescuer": SR_ID, "Auto Improve": AI_ID}.get(_cn, '')
     _m.sort(key=lambda j: j.get('id','') != _ours)  # stable: ours first, else newest
     for _dup in _m[1:]:
         _did = _dup.get('id','')

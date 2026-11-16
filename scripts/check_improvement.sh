@@ -41,6 +41,9 @@ fi
 # Detect. Never fatal: a scan failure must not wedge the lane, and `due` below
 # is the real decision point anyway.
 "$PY" "$WS/procedures/improvement_scan.py" >>"$WS/logs/improvement_scan.log" 2>&1 || true
+# Expire `new` candidates older than DINOMEM_IMPROVE_EXPIRE_DAYS (default 14) so
+# the queue cannot only grow; runs before `due` so a stale-only queue is idle.
+"$PY" "$WS/procedures/improvement_propose.py" expire >>"$WS/logs/improvement_scan.log" 2>&1 || true
 
 if "$PY" "$WS/procedures/improvement_propose.py" due >/dev/null 2>&1; then
   # Stamp only on a real dispatch, so a day with no candidates does not consume
