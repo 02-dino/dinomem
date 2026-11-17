@@ -498,7 +498,7 @@ def get_fallback_config():
                 config = json.load(f)
             or_key = config.get('models', {}).get('providers', {}).get('openrouter', {}).get('apiKey')
             if or_key:
-                return "google/gemini-2.5-flash", or_key, "https://openrouter.ai/api/v1"
+                pass  # was a hardcoded "google/gemini-2.5-flash" route; removed (owner 2026-11-17: no hardcoded ids)
         except Exception:
             pass
     # Nothing resolvable — caller skips fallback (gateway-only).
@@ -528,7 +528,7 @@ try:
     from _cheap_model import cheap_model as _cheap_model_fn
     CHEAP_MODEL = _cheap_model_fn()
 except Exception:
-    CHEAP_MODEL = os.environ.get("DINOMEM_CHEAP_MODEL", "").strip() or "ninerouter/cc/claude-haiku-4-5-20251001"
+    CHEAP_MODEL = os.environ.get("DINOMEM_CHEAP_MODEL", "").strip() or ""  # no hardcoded id (owner 2026-11-17): resolver lands on compaction or primary
 # Thinking level passed to the gateway for reasoning=True calls.
 REASONING_THINKING = os.environ.get("DINOMEM_REASONING_THINKING", "high").strip() or "high"
 # No-reasoning model = same auto-linked cheap tier (compaction anchor).

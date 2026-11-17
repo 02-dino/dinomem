@@ -196,7 +196,7 @@ except Exception:
     NO_REASONING_MODEL = (
         os.environ.get("DINOMEM_CHEAP_MODEL", "").strip()
         or os.environ.get("DINOMEM_NO_REASONING_MODEL", "").strip()
-        or "ninerouter/cc/claude-haiku-4-5-20251001"
+        or ""  # no hardcoded id (owner 2026-11-17): resolver lands on compaction or primary
     )
 
 # LLM per-call timeout. The cheap-model call is ~40s idle, but under host

@@ -93,7 +93,12 @@ def _compaction_model(config_path: str = "") -> str:
 def cheap_model(config_path: str = "") -> str:
     """Resolve the cheap model.
 
-    env override -> compaction anchor -> legacy env -> "" (caller uses default).
+    env override -> compaction anchor -> legacy env -> agent's model.primary.
+    Owner rule 2026-11-17: NO model id is ever hardcoded anywhere; every caller
+    resolves to the compaction model or the primary, both read from config, so
+    changing a model in openclaw.json moves everything with zero manual edits.
+    A home with no compaction anchor (multi-agent homes) therefore lands on its
+    own primary instead of "" -> no caller ever needs a literal fallback id.
     """
     env = os.environ.get("DINOMEM_CHEAP_MODEL", "").strip()
     if env:
@@ -101,8 +106,42 @@ def cheap_model(config_path: str = "") -> str:
     anchor = _compaction_model(config_path)
     if anchor:
         return anchor
-    return os.environ.get("DINOMEM_NO_REASONING_MODEL", "").strip()
+    legacy = os.environ.get("DINOMEM_NO_REASONING_MODEL", "").strip()
+    if legacy:
+        return legacy
+    return primary_model(config_path)
 
 
+def primary_model(config_path: str = "", agent_id: str = "") -> str:
+    """The agent's own model.primary (the reasoning tier). Read from config, never
+    hardcoded: agents.list[id==agent_id].model.primary -> agents.defaults.model.primary
+    -> "". agent_id defaults to DINOMEM_AGENT_ID. Used ONLY as the last rung of
+    model_ladder() when the cheap route is down (owner 2026-11-17: cheap -> primary)."""
+    path = config_path or _config_path()
+    aid = (agent_id or os.environ.get("DINOMEM_AGENT_ID", "")).strip()
+    try:
+        with open(path, "r") as fh:
+            agents = json.load(fh).get("agents", {})
+    except Exception:
+        return ""
+    def _p(m):
+        return (m.get("primary", "") if isinstance(m, dict) else (m or "")).strip()
+    if aid:
+        for a in agents.get("list", []) or []:
+            if a.get("id") == aid and _p(a.get("model")):
+                return _p(a.get("model"))
+    return _p(agents.get("defaults", {}).get("model"))
+def model_ladder(config_path: str = "", agent_id: str = "") -> list:
+    """Ordered, de-duplicated models to try: [cheap, primary]. Empty rungs dropped.
+    Caller walks it and moves to the next rung only when a route is DOWN."""
+    out = []
+    for m in (cheap_model(config_path), primary_model(config_path, agent_id)):
+        if m and m not in out:
+            out.append(m)
+    return out
 if __name__ == "__main__":
-    print(cheap_model())
+    import sys
+    if "--ladder" in sys.argv:
+        print(" -> ".join(model_ladder()) or "(empty)")
+    else:
+        print(cheap_model())
