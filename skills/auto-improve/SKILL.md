@@ -47,9 +47,15 @@ days (`DINOMEM_IMPROVE_EXPIRE_DAYS`) are dropped zero-LLM by
    ```
    Apply the schema it prints. The fork that matters: does this RECORD
    something (fact/outcome/todo -> memory) or GOVERN future turns (rule/SOP/
-   tool spec/persona -> root)? Both -> split, and propose only the stronger half
-   this pass. Root is last by cost and must earn it; a schedule -> cron, an
-   event -> hook, an on-demand procedure -> skill.
+   tool spec/persona)? A GOVERN item walks the cost order IN ORDER and stops at
+   the first surface whose test it passes: schedule -> cron, a moment the
+   gateway can see (an inbound message, a command, a tool call) -> hook/plugin,
+   an on-demand procedure -> skill, always-on -> root (last, must earn it).
+   Both RECORD and GOVERN -> split, and the half you propose this pass is the
+   GOVERN half. WHY: memory is retrieved only when searched, so a rule parked
+   there never fires at the moment it is needed -- the fact half loses nothing
+   by waiting, the rule half loses everything. `route.py approve` refuses a
+   memory proposal that carries a rule header (`Aturan:` / `Rule:` / `SOP:`).
 
 4. **Check it is not already covered**
    ```bash

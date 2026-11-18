@@ -584,6 +584,21 @@ LEAF_TOOLS = {
     "root":  ("config_tool.py", None),   # takes no confirm flag; guards internally
 }
 _MEM_NAME_OK = re.compile(r"^_(pin|note)_[A-Za-z0-9][A-Za-z0-9._-]*\.md$")
+# A memory proposal that HEADS a section as a rule is a GOVERN item misrouted to
+# a RECORD surface: memory is retrieved only on search, so the rule never fires
+# when needed. Header-only on purpose -- counting imperative words (jangan/must)
+# flagged 9 of 14 live pins, most of them legitimate facts that quote a rule;
+# a gate that cries wolf gets bypassed. Fenced code is ignored (examples).
+_MEM_RULE_HEADER = re.compile(
+    r"^[ \t]*(?:#+[ \t]*|[-*][ \t]*)?(?:\*\*)?(?:aturan|rule|rules|sop)(?:\*\*)?[ \t]*:",
+    re.I | re.M)
+
+
+def _memory_rule_header(content):
+    """First rule-header line in a memory proposal (outside code fences), or None."""
+    body = re.sub(r"^[ \t]*```.*?^[ \t]*```", "", content or "", flags=re.S | re.M)
+    m = _MEM_RULE_HEADER.search(body)
+    return m.group(0).strip() if m else None
 
 
 def _pending_dir():
@@ -636,6 +651,12 @@ def _validate_action(data):
             return False, f"memory file must be _pin_*.md or _note_*.md, got {base!r}", None
         if not (action.get("content") or "").strip():
             return False, "memory proposal carries no content", None
+        hdr = _memory_rule_header(action.get("content"))
+        if hdr and not data.get("rule_split_ok"):
+            return False, (f"memory proposal carries a rule header {hdr!r}: a rule in "
+                           "memory is never loaded when needed. Split it -- rule to "
+                           "cron/hook/skill/root, the fact half stays here -- or set "
+                           "\"rule_split_ok\": true with the reason in the argument"), None
         return True, f"write {rel}", {"kind": "memory", "rel": rel,
                                       "content": action["content"]}
 
