@@ -4350,6 +4350,68 @@ PYEOF
   fi
 fi
 
+# ── Install cross-instance-exec-warn plugin (before_tool_call, SOFT) ──
+# Every exec inherits the calling gateway's OPENCLAW_CONFIG_PATH/STATE_DIR/
+# GATEWAY_PORT, so on a box with several instances a script owned by another
+# instance silently reads the caller's config and calls the caller's gateway.
+# A memory note can't catch that (memory is read only when searched), so this
+# warns ONCE per command at the moment it happens and names the fix
+# (scripts/run-as-instance.sh); re-issuing the identical command passes.
+# Ownership is read from each instance's own agents.list[].workspace, so a
+# single-instance box never matches and it costs nothing there. Fail-open.
+hr "Cross-instance exec warning plugin"
+XIPLUGIN_SRC="$SKILL_DIR/plugins/cross-instance-exec-warn"
+XIPLUGIN_DST="$OPENCLAW_DIR/extensions/cross-instance-exec-warn"
+if [ ! -d "$XIPLUGIN_SRC" ]; then
+  warn "plugin source $XIPLUGIN_SRC missing — skipping"
+else
+  mkdir -p "$XIPLUGIN_DST"
+  cp "$XIPLUGIN_SRC/openclaw.plugin.json" "$XIPLUGIN_SRC/package.json" "$XIPLUGIN_SRC/index.ts" "$XIPLUGIN_SRC/detect.js" "$XIPLUGIN_DST/"
+  ok "plugin files -> $XIPLUGIN_DST"
+  if [ ! -f "$OPENCLAW_JSON" ]; then
+    warn "openclaw.json not found — plugin copied but NOT wired. Add id 'cross-instance-exec-warn' to plugins.allow + its path to plugins.load.paths, then restart."
+  else
+    DINOMEM_DRY_RUN="$DRY_RUN" DINOMEM_OPENCLAW_JSON="$OPENCLAW_JSON" DINOMEM_PLUGIN_DST="$XIPLUGIN_DST" python3 - <<'PYEOF'
+import json, os
+path = os.environ["DINOMEM_OPENCLAW_JSON"]
+dst = os.environ["DINOMEM_PLUGIN_DST"]
+PID = "cross-instance-exec-warn"
+with open(path) as f:
+    cfg = json.load(f)
+changed = []
+plugins = cfg.setdefault("plugins", {})
+allow = plugins.get("allow")
+if not isinstance(allow, list):
+    allow = plugins["allow"] = []
+if PID not in allow:
+    allow.append(PID); changed.append(f"plugins.allow += {PID}")
+load = plugins.setdefault("load", {})
+paths = load.get("paths")
+if not isinstance(paths, list):
+    paths = load["paths"] = []
+for sp in [p for p in paths if isinstance(p, str) and p.rstrip("/").endswith("/" + PID) and p != dst]:
+    paths.remove(sp); changed.append(f"plugins.load.paths -= {sp} (stale)")
+if dst not in paths:
+    paths.append(dst); changed.append(f"plugins.load.paths += {dst}")
+entries = plugins.setdefault("entries", {})
+entry = entries.setdefault(PID, {})
+if entry.get("enabled") is not True:
+    entry["enabled"] = True; changed.append(f"plugins.entries.{PID}.enabled -> true")
+if changed and os.environ.get("DINOMEM_DRY_RUN") == "1":
+    for c in changed:
+        print(f"  \033[36m[plan]\033[0m wire openclaw.json: {c}")
+elif not changed:
+    print(f"  \033[33m[skip]\033[0m {PID} already wired in openclaw.json")
+else:
+    with open(path, "w") as f:
+        json.dump(cfg, f, indent=2)
+    for c in changed:
+        print(f"  \033[32m[ok]\033[0m   wired: {c}")
+    print("  \033[33m[warn]\033[0m Restart OpenClaw to load the plugin: openclaw gateway restart")
+PYEOF
+  fi
+fi
+
 # ── System tuning: reduce swap thrashing ──────────────────────────────────────
 hr "System tuning"
 if [ "$(uname)" = "Linux" ]; then

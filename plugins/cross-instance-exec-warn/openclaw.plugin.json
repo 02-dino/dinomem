@@ -1,0 +1,19 @@
+{
+  "id": "cross-instance-exec-warn",
+  "name": "Cross-instance exec warning",
+  "description": "before_tool_call: soft one-time warning when exec runs a script of another OpenClaw instance (inherited OPENCLAW_CONFIG_PATH/STATE_DIR/GATEWAY_PORT would point it at the caller's config/gateway). Re-issuing the identical command passes.",
+  "version": "0.1.0",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  },
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "hooks": [
+      "before_tool_call"
+    ]
+  }
+}
