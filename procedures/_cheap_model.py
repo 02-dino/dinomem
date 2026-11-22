@@ -139,9 +139,27 @@ def model_ladder(config_path: str = "", agent_id: str = "") -> list:
         if m and m not in out:
             out.append(m)
     return out
+def router_ladder(config_path: str = "", agent_id: str = "", prefix: str = "") -> list:
+    """model_ladder() for scripts that POST to an OpenAI-compatible router by HTTP
+    (9router) instead of going through the gateway. Keeps only rungs whose provider
+    name starts with `prefix` (env DINOMEM_ROUTER_PREFIX, default "ninerouter") and
+    strips that provider segment, because the router wants "cc/x", not
+    "ninerouter-cs/cc/x". Rungs on other providers (claude-cli/...) are DROPPED,
+    not translated: they are not callable over HTTP and guessing a mapping would
+    reintroduce a literal. Empty list = no router model configured -> caller must
+    degrade (skip the LLM section), never fall back to a hardcoded id."""
+    pre = (prefix or os.environ.get("DINOMEM_ROUTER_PREFIX", "") or "ninerouter").strip()
+    out = []
+    for m in model_ladder(config_path, agent_id):
+        prov, sep, rest = m.partition("/")
+        if sep and rest and prov.startswith(pre) and rest not in out:
+            out.append(rest)
+    return out
 if __name__ == "__main__":
     import sys
-    if "--ladder" in sys.argv:
+    if "--router" in sys.argv:
+        print("\n".join(router_ladder()))  # one rung per line; empty output = none
+    elif "--ladder" in sys.argv:
         print(" -> ".join(model_ladder()) or "(empty)")
     else:
         print(cheap_model())
