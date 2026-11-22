@@ -65,7 +65,7 @@ export DINOMEM_CHEAP_MODEL="your-provider/your-cheap-high-context-model"
 - Unset = no change (default-safe). One model runs everything, exactly as before.
 - dinomem never auto-swaps models. It only routes when you set the var.
 
-> **Reasoning tier (only if you add [dinomem-neuron](https://github.com/02-dino/dinomem#want-more--dinomem-neuron-private-repo)):**
+> **Reasoning tier (only if you add [dinomem-neuron](https://github.com/02-dino/dinomem-neuron)):**
 > neuron adds scripts that *do* need a reasoning model — `memory_synthesis` and
 > `contradiction_check` (emergent insight, contradiction logic). Those always run
 > on your **default** model and ignore `DINOMEM_CHEAP_MODEL` on purpose,

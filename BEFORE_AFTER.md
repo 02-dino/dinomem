@@ -128,9 +128,9 @@ Most memory systems are bottlenecked at the embedding layer and stay flat as mod
 
 Everything above is dinomem **base** — it *remembers*. **dinomem-neuron** is the learning layer on top.
 
-> ⚠️ **dinomem-neuron is a separate private repo** — not included in dinomem base. Access is granted after onboarding — DM [**@dinotlgrm on Telegram**](https://t.me/dinotlgrm). The full tease + install path lives at the bottom of the main README → [Want more? → dinomem-neuron](README.md#want-more--dinomem-neuron-private-repo).
+> **dinomem-neuron is a separate repo** — not bundled with dinomem base, but just as open (MIT): **https://github.com/02-dino/dinomem-neuron**. Feature list + install command are at the bottom of the main README → [Want more? → dinomem-neuron](README.md#want-more--dinomem-neuron).
 
-The rest of this section is the neuron before/after in full — the same story you'd read in the neuron repo, so you can decide before you ever ask for access.
+The rest of this section is the neuron before/after in full — the same story you'd read in the neuron repo, so you can decide whether you want it before installing.
 
 ## The neuron fix: it figures out what you *meant*, not just what you said
 
@@ -204,7 +204,7 @@ Now **every** investing conversation reflects it — no recall, no prompting, no
 
 And like base, it **compounds with model quality** — synthesis is an LLM finding patterns across *your* memory, not weights you fine-tune. Every model upgrade sharpens the patterns for free.
 
-> ⚠️ Again: neuron is a **separate private repo**. Access after onboarding — DM [**@dinotlgrm on Telegram**](https://t.me/dinotlgrm) · full feature tease → [Want more? → dinomem-neuron](README.md#want-more--dinomem-neuron-private-repo)
+> Neuron lives in its own repo: **https://github.com/02-dino/dinomem-neuron** · feature list + install → [Want more? → dinomem-neuron](README.md#want-more--dinomem-neuron)
 
 ---
 

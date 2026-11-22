@@ -33,8 +33,8 @@ Most systems inject everything into context, or retrieve blindly. dinomem gives 
 > **New here?** See the [**Before / After**](BEFORE_AFTER.md) — what actually changes for you the day you install dinomem, in plain lived-experience terms.
 
 > Want your agent to not just remember, but learn?
-> dinomem-neuron is a separate private repo — not included here. Scheduled pattern synthesis, contradiction detection, and behavioral promotion.
-> [↓ dinomem-neuron](#want-more--dinomem-neuron-private-repo)
+> [dinomem-neuron](https://github.com/02-dino/dinomem-neuron) is the open-source learning layer on top (MIT, separate repo). Scheduled pattern synthesis, contradiction detection, and behavioral promotion.
+> [↓ dinomem-neuron](#want-more--dinomem-neuron)
 
 ---
 
@@ -235,7 +235,7 @@ This writes `memory/_user_migration_worksheet.json` with each pre-router line de
 
 > Want the agent to create and drive these itself?
 > In dinomem-neuron it writes notes from its own commitments and turns big requests into step-by-step projects it works through on its own.
-> [↓ dinomem-neuron](#want-more--dinomem-neuron-private-repo)
+> [↓ dinomem-neuron](#want-more--dinomem-neuron)
 
 > **Note:** Memory is recall-based, not always-on. The agent searches for relevant memories when needed — nothing is automatically injected into every turn.
 
@@ -762,7 +762,7 @@ Run `openclaw gateway restart` after uninstall to apply config changes.
 
 ---
 
-## Want more? → dinomem-neuron (private repo)
+## Want more? → dinomem-neuron
 
 dinomem remembers.
 **dinomem-neuron learns.**
@@ -885,9 +885,19 @@ status:           provisional → trusted
 
 ---
 
-Access granted after onboarding — DM [**@dinotlgrm on Telegram**](https://t.me/dinotlgrm)
+### Install neuron
 
-> dinomem-neuron install instructions are in the private repo after access is granted.
+Repo: **https://github.com/02-dino/dinomem-neuron** (MIT, same as base).
+
+```bash
+git clone https://github.com/02-dino/dinomem-neuron
+bash dinomem-neuron/scripts/install.sh \
+  --workspace ~/.openclaw/workspace-myagent \
+  --agent-id myagent
+openclaw gateway restart
+```
+
+The neuron installer installs/refreshes dinomem base first (it's a required dependency), so you can run it on a fresh workspace or on top of an existing base install. Full prerequisites, verification steps, and tuning live in the [neuron README](https://github.com/02-dino/dinomem-neuron#readme).
 
 
 ---

@@ -162,7 +162,7 @@ while [ $# -gt 0 ]; do
     --health-cron)     DO_HEALTH_CRON=1; shift ;;
     --force)      FORCE=1; shift ;;
     --dry-run)    DRY_RUN=1; shift ;;
-    --agree)      shift ;;  # no-op: base has no license gate; neuron passes this through after the human accepted the neuron license. Accept+ignore so neuron auto-base install doesn't die on 'unknown arg'.
+    --agree)      shift ;;  # no-op: base has no license gate. Older neuron installers pass --agree through to base; accept+ignore so that path doesn't die on 'unknown arg'.
     -h|--help)    grep -E '^#( |$)' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
@@ -4688,7 +4688,7 @@ echo "  reasoning tier included — you don't need to remember it now.)"
 echo "  Guide: https://github.com/02-dino/dinomem#model-selection"
 echo ""
 echo "  ✨ Want your agent to learn, not just remember?"
-echo "  https://github.com/02-dino/dinomem#want-more--dinomem-neuron-private-repo"
+echo "  https://github.com/02-dino/dinomem-neuron"
 echo ""
 echo "  License: MIT — https://github.com/02-dino/dinomem/blob/main/LICENSE"
 echo "  Undo: bash $SKILL_DIR/scripts/uninstall.sh --workspace $WS --agent-id $AGENT_ID"
