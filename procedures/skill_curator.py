@@ -17,6 +17,13 @@ EXCLUSIONS (a skill is MANAGED and therefore untouchable when any holds):
   2. it ships with dinomem-neuron    (github/dinomem-neuron/skills/)
   3. any cron job references it      (including disabled/paused jobs)
   4. it is pinned                    (skills/<name>/.pinned marker)
+  5. a package installer shipped it  (skills/<name>/.managed marker; written by
+     dinomem, dinomem-neuron and dinotrust install.sh)
+Rule 5 exists because rules 1-2 only fire when the repos happen to be cloned
+at <workspace>/github/. MEASURED 2026-11-23: installers run from wherever the
+repo is cloned, so on a fleet box 10 of 11 workspaces had no github/ dir and
+proposed archiving base skills (backup-restore, build-quality) plus
+dinotrust-security-model, which rules 1-2 never covered at all.
 Rule 3 mirrors Hermes and is correct: a slow or paused schedule must not be able
 to lose its own skill. Rules 1-2 are measured from the repos themselves, so a
 future base release needs no edit here.
@@ -106,6 +113,14 @@ def _is_pinned(name):
     return (SKILLS_DIR / name / ".pinned").exists()
 
 
+def _installer_managed(name):
+    """Package that shipped this skill (rule 5), or '' if none."""
+    try:
+        return (SKILLS_DIR / name / ".managed").read_text(encoding="utf-8").strip() or "package"
+    except OSError:
+        return ""
+
+
 def _load_usage():
     try:
         data = json.loads(USAGE_FILE.read_text(encoding="utf-8"))
@@ -158,6 +173,9 @@ def survey():
         reasons = []
         if name in repo:
             reasons.append("ships with dinomem base/neuron")
+        pkg = _installer_managed(name)
+        if pkg:
+            reasons.append(f"installed by {pkg}")
         if _is_pinned(name):
             reasons.append("pinned")
         if cron_ok and name in cron_blob:
@@ -213,7 +231,7 @@ def _argument_for(row, meta):
         f"'{row['name']}' has not been read once {window}, and its SKILL.md is "
         f"{row['age_days']:.0f} days old — past the {ARCHIVE_AFTER_DAYS}-day "
         f"archive threshold and the {GRACE_DAYS}-day grace floor for never-used "
-        f"skills. It is not shipped by dinomem base/neuron, not pinned, and no "
+        f"skills. It is not shipped by any installed package, not pinned, and no "
         f"cron job (enabled or disabled) references it. Archiving moves it to "
         f"skills/.archive/ and is reversible; it is never deleted. Keep it if "
         f"you expect the task it covers to recur — absence of use over one "

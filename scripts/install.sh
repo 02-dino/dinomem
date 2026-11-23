@@ -1220,6 +1220,9 @@ if [ -d "$SKILL_DIR/skills" ]; then
     _skname="$(basename "$_sk")"
     _skdst="$WS/skills/$_skname"
         copy_dir_upgradeable "$_sk" "$_skdst" "skills/$_skname/"
+    # .managed = skill_curator exclusion rule 5 (package-shipped, never propose
+    # archiving). Written after the copy because an upgrade replaces the dir.
+    [ "$DRY_RUN" = 1 ] || { [ -d "$_skdst" ] && echo dinomem > "$_skdst/.managed"; }
   done
 else
   skip "no skills/ in package"
