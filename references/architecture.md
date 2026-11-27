@@ -81,6 +81,7 @@ status: pending | done
 date: YYYY-MM-DD
 done_when: <checkable condition — file path exists / feature shipped>   # task_bound only
 stale_after: YYYY-MM-DD   # fallback GC; default date+30d, reminders date+7d
+remind_on: YYYY-MM-DD     # optional; first reminder date
 <content>
 ```
 
@@ -94,6 +95,7 @@ Location: `memory/`. Slug: lowercase-hyphens, max 30 chars.
 | `status` | `pending` until resolved. Flipped to `done` only when `done_when` is verified. The field is human-readable — resolution is driven by `done_when`/`stale_after`, not by grepping `status`. |
 | `done_when` | Concrete artifact check (file exists, feature shipped). The lever the cron uses to flip `done` and delete. Without it, resolution falls back to fuzzy content inference and ambiguous notes linger. |
 | `stale_after` | Fallback garbage collector. Deletes abandoned notes that never resolved. Default `date + 30d` (build/feature), `date + 7d` (reminder/quick todo). Agent may override explicitly. |
+| `remind_on` | Optional. Date the Pending Note Reminder lane first nags about this note (default: halfway between `date` and `stale_after`, else `date + 3d`). After that it re-reminds at most once per 24h (`PENDING_REMINDER_COOLDOWN_H`). |
 
 > The resolver only acts on `done_when` and `stale_after`. Any other fields present on a note are left untouched.
 

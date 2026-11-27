@@ -127,13 +127,14 @@ For todos, reminders, planned tasks, time-bound items.
 | `type` | `task_bound` resolves via `done_when`; `time_bound` is a date-based reminder. |
 | `done_when` | Concrete artifact check; the lever the resolver cron uses to flip `status: done` and delete the note (task_bound only). |
 | `stale_after` | Fallback GC for abandoned notes. Default `date + 30d` (reminders `date + 7d`); may override. |
+| `remind_on` | Optional. When the reminder lane first nags (default: halfway to `stale_after`, else `date + 3d`); then at most once per 24h. Set it whenever you promise a review date — a date written only in the body is never read. |
 | `status` | Flip to `done` **only** when `done_when` is verified; otherwise `pending`. |
 
 **`done_when` MUST be locally verifiable** — the resolver runs against local state
 only (no chat history, no network). Good: `file exists`, `grep`, `exit 0`; git
 push → `git -C <repo> rev-parse HEAD == @{u}`. Never write narrative done_when
 ("pushed to repo", "told the user") — unverifiable notes never auto-close and rot.
-The resolver only acts on `done_when` + `stale_after`; other fields are left untouched.
+The resolver only acts on `done_when` + `stale_after` (`remind_on` only drives the reminder lane); other fields are left untouched.
 
 ### `shipped_when` — the brainstorm resolver key (added 2026-07-25)
 
